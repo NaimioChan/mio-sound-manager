@@ -1,0 +1,10 @@
+[package]
+name = "wasapi3-probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasapi = "0.27"
+
+[profile.release]
+opt-level = 3

@@ -114,5 +114,113 @@ cargo build --release && ./target/release/asio-probe.exe 20
 ASIO 构建的两个坑（已踩过，写下来免得重踩）：
 
 1. `asio-sys` 的 build.rs 会下载 Steinberg ASIO SDK 到系统临时目录再 `rename` 成 `asio_sdk`，在 Windows 上常因目录被占用失败。绕过办法：手动把 SDK 解压到 `%TEMP%\asio_sdk`（顶层目录名必须是 `asio_sdk`，里面要有 `host`、`common`、`host/pc`），build.rs 检测到它就跳过下载。
-2. 之后 `bindgen` 需要 `libclang.dll`。装 LLVM 或单独提供 libclang 并设 `LIBCLANG_PATH`。**最省的办法是 `pip install libclang`**，它带的 DLL 就够用（约 60MB，本机路径 `.../site-packages/clang/native/`），不用装整套 LLVM。
-3. cpal 的 ASIO host 常常拒绝 `default_output_config()`。必须遍历 `supported_output_configs()` 逐个试，并按 `sample_format()` 分派不同的闭包类型（f32/i16/i32/u16 各一份）。
+2. 之后 `bindgen` 需要 `libclang.dll`。**不必装整套 LLVM**：`pip install libclang` 会附带一个 `libclang.dll`（本机在 `.../site-packages/clang/native/`，约 60MB），把它设进 `LIBCLANG_PATH` 即可。
+3. ASIO 的 `default_output_config()` 常常不可用；要遍历 `supported_output_configs()` 逐个试建流，并按 `sample_format()` 分派不同的闭包类型（f32/i16/i32/u16 各一份）。
+
+## 6. WASAPI 的重新实测（2026-11-16 第二轮，纠正第 2 节的口径）
+
+第 2 节的数字只计到「回调把这一块写进设备缓冲」，**没有算缓冲里已经排在前面的音频**。真实的点击到出声必须把这段排队时间加上。本节用 `wasapi` crate 0.27 直接对接 `IAudioClient` / `IAudioClient3`，用 `get_current_padding()` 把排队量单独量出来。
+
+参考设备：`Playback 1/2 (2- E2x2)`（真实 USB 声卡，44.1k / 2ch / f32）。TOPPING Pro 本轮未接，因此 ASIO 无法用同一方法复测。
+
+### 6.1 共享模式：引擎周期固定 10ms，且不可调
+
+`IAudioClient3::GetSharedModeEnginePeriod` 在三台在线设备（E2x2、Realtek、FxSound 虚拟声卡）上返回的 `min` / `default` / `max` **全部相等，等于 10.00ms**：
+
+```
+E2x2     : default=441 fundamental=441 min=441 max=441 frames (10.00ms)
+Realtek  : default=480 fundamental=480 min=480 max=480 frames (10.00ms)
+FxSound  : default=441 fundamental=441 min=441 max=441 frames (10.00ms)
+```
+
+扫过 f32 / i16 / i24-in-32 × 44100 / 48000 / 96000 × 2ch 的全部组合，结论一致：**只要设备接受该格式，引擎周期就是 10ms，换格式无效。** 调 `InitializeSharedAudioStream` 请求 `2 × fundamental`（882 帧）会被拒绝（`0x88890020`）。
+
+含义：Windows 10+ 上 `IAudioClient3` 能压低共享模式周期的说法，在本机三台设备上都不成立。这个下限来自驱动/引擎，不是 API 用法问题。
+
+### 6.2 共享模式的真实延迟：17.5ms，不是 8.33ms
+
+常驻流，每 50ms 发布一次「切换片段」，同时记录写入时刻的排队深度：
+
+```
+端点缓冲 970 帧 (22.00ms)
+写入时队列深度: 中位 529 帧 (12.00ms)，恒定不抖
+publish -> 回调写入:  中位 4.71ms (min 0.26, p90 8.60, max 9.84)
+  其中已排在前面:     中位 12.00ms (恒定)
+publish -> 首样本进 DAC: 中位 17.5ms (min 12.0, p90 20.9, max 21.9)   三轮独立复测
+```
+
+`autoconvert` 开关、请求 5/10/20ms 缓冲，都改变不了 22ms 端点缓冲和 12ms 排队：引擎自己管理这个预滚，应用侧看不进去也排不掉。
+
+**这是对第 2 节 8.33ms 的修正。** 8.33ms 是「等一个回调周期」的均值，真实点击到出声还要再加恒定 12ms 排队。
+
+### 6.3 空闲不喂料可以把队列排空，但会下溢静音
+
+空闲时**完全不写**（让引擎自行填静音），队列降到 0，切换延迟掉到 5.6ms：
+
+```
+policy FillAll   : padding 中位 529 帧 | publish->DAC 中位 17.14ms
+policy DrainIdle : padding 中位 529 帧 | publish->DAC 中位 17.14ms
+policy StarveIdle: padding 中位   0 帧 | publish->DAC 中位  5.56ms
+```
+
+代价是连续播放时每两个回调就有一次下溢（实测 250/252 次回调 padding 为 0），也就是音频被静音填充，听感是断续。因此 5.6ms 只适用于「切一下就停」的试听，不能用于连续播放一个 20 秒 loop。
+
+### 6.4 独占模式：3ms 周期、4.5ms 出声，但会让别的程序静音
+
+独占模式要求整数格式，浮点 mix format 被拒（`0x88890008`）。E2x2 只接受 16bit 与 24-in-32、且只在 44100Hz：
+
+```
+[exclusive 16bit 44k1]  period 3.00ms -> buffer 132 帧 (2.99ms)
+  publish->DAC: 中位 4.42ms (min 3.00, p90 5.57, max 5.74)
+[exclusive 24in32 44k1] period 3.00ms -> buffer 132 帧 (2.99ms)
+  publish->DAC: 中位 4.41ms (min 3.10, p90 5.59, max 5.91)
+```
+
+设备冲突已实测（持有独占后再开客户端）：
+
+```
+second exclusive client: REFUSED (0x8889000A)
+shared client while we hold exclusive: REFUSED (0x8889000A)
+```
+
+**结论：WASAPI 独占会让用户开着的 DAW / 浏览器 / 播放器全部静音。** 对采样管理器这是硬伤，与之前对 ASIO 的担心方向相反——真正会抢设备的是独占模式，不是 ASIO（ASIO 在本机驱动上已验证多客户端）。
+
+### 6.5 三种后端的同一口径对比
+
+| 后端 | 模式 | 设备周期 | publish→写入 | 排队 | **publish→出声（中位）** | 抢设备 |
+| --- | --- | --- | --- | --- | --- | --- |
+| WASAPI 共享 | event | 10.00ms 固定 | 4.7ms | 12.0ms | **17.5ms** | 否 |
+| WASAPI 共享（空闲不喂） | event | 10.00ms | — | 0 | **5.6ms**（连续播放会下溢） | 否 |
+| WASAPI 独占 | event | 3.00ms | — | 3.0ms | **4.5ms** | **是** |
+| ASIO 64 帧 | — | 1.45ms | 0.68ms | ≤1.45ms | **约 2ms**（未用同一方法复测） | 否（本机驱动多客户端） |
+
+ASIO 那一行是第 4 节的数字加一个 ASIO 缓冲的保守估计，本轮 TOPPING 未接，无法用排队法复测，标为待验。
+
+### 6.6 队列清空的尝试（失败，记录以免重试）
+
+想在切换时丢掉排队音频，试过 `Reset()`：
+
+- 流运行中调用 `Reset()` 被拒：`0x88890005`（AUDCLNT_E_NOT_STOPPED），必须先 `Stop()`。
+- `Stop()` → `Reset()` → `Start()` 之后 `Start()` 报 `0x88890014`（AUDCLNT_E_EVENTHANDLE_NOT_SET）：`Reset()` 会清掉注册的事件句柄。
+- 重新 `set_get_eventhandle()` 报 `0x8000FFFF`（E_UNEXPECTED），`wasapi` crate 0.27 这条路径走不通。
+- 单纯 `Stop()` + `Start()` 不清队列：padding 仍为 529 帧，延迟仍 18.3ms。
+
+含义：**共享模式下排队时间在流生命周期内无法丢弃。** 要绕过只能在每次切换时重建整条流（`build_output_stream` 一次性成本 15–34ms，得不偿失）。
+
+### 6.7 复现
+
+```bash
+cd probes/wasapi3-probe          # wasapi 0.27，本轮数据来源
+cargo build --release
+./target/release/wasapi3-probe.exe devices
+./target/release/wasapi3-probe.exe periods "E2x2"    # 引擎周期范围
+./target/release/audible.exe "E2x2"                  # 排队 + 真实出声
+./target/release/compare.exe "E2x2"                  # 共享 vs 独占，同口径
+./target/release/drain.exe "E2x2"                    # 三种喂料策略
+./target/release/steady.exe "E2x2"                   # 连续播放下的策略
+./target/release/conflict.exe                        # 独占对其它客户端的影响
+./target/release/switch2.exe "E2x2"                  # 队列清空尝试
+```
+
+探针已收进仓库 `probes/`，详见 `probes/README.md`。
+

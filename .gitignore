@@ -1,15 +1,15 @@
-# Rust / cargo
-/target
-**/*.rs.bk
+# Rust build output
+target/
+**/target/
 
-# 探针与临时产物
-*.pdb
-*.exe
+# Tauri
+/src-tauri/target/
 
-# 编辑器
-.vscode/
-.idea/
+# Node
+node_modules/
+dist/
 
-# 系统
-Thumbs.db
-.DS_Store
+# Local data
+*.db
+*.db-wal
+*.db-shm

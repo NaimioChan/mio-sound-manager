@@ -1,0 +1,13 @@
+[package]
+name = "index-probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+rayon = "1.11"
+walkdir = "2.5"
+symphonia = { version = "0.5", features = ["all-formats", "all-codecs"] }
+
+[profile.release]
+opt-level = 3
