@@ -2,7 +2,7 @@
 
 ReSlip: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **P0（拖拽导出）与 P1（音频引擎原型）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；调研结论见 `docs/TODO-low-latency-audio.md`；实测数据见 `docs/research-notes-playback.md`；进度与遗留见 `docs/agent-log.md`。
+Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎与索引的模块细节见 `docs/engine.md`、`docs/index.md`；调研结论见 `docs/TODO-low-latency-audio.md`；实测数据见 `docs/research-notes-playback.md`；进度与遗留见 `docs/agent-log.md`。
 
 ## Stack (decided)
 
@@ -29,12 +29,18 @@ Status: **P0（拖拽导出）与 P1（音频引擎原型）已通过。** 产�
 
 ```bash
 cargo build --release          # workspace, release profile
-cargo test                     # engine unit tests
+cargo test                     # engine + index unit tests
 cargo run --release -p reslip-cli -- devices
 cargo run --release -p reslip-cli -- play <file> --device E2x2
 cargo run --release -p reslip-cli -- switch <f1> <f2> ... --device E2x2 --interval 25 --rounds 5
 cargo run --release -p reslip-cli -- probe <file>                          # decode cost only
 cargo run --release -p reslip-cli -- render <in> <out.wav> --device E2x2   # PCM path check
+cargo run --release -p reslip-cli -- index <folder>                        # incremental pass
+cargo run --release -p reslip-cli -- index <folder> --full                 # re-probe + prune
+cargo run --release -p reslip-cli -- index-stats <folder>
+cargo run --release -p reslip-cli -- search <folder> <query> --limit 25
+cargo run --release -p reslip-cli -- classify-diff <folder> <reference.db> # parity vs Slip Sound
+cargo run --release -p reslip-cli -- probe-bench <folder> --limit 20000    # per-format probe cost
 ```
 
 `--device` matches a friendly-name substring. The default device is FxSound (a virtual card), so latency measured without `--device E2x2` means nothing.
@@ -44,10 +50,14 @@ cargo run --release -p reslip-cli -- render <in> <out.wav> --device E2x2   # PCM
 | Area | Path |
 | --- | --- |
 | 音频引擎（解码、重采样、双槽、WASAPI 输出） | `crates/reslip-engine/` |
-| 命令行验收工具（P1 的验收产物） | `crates/reslip-cli/` |
+| 索引器（头探测、分类、schema、搜索、文件夹树） | `crates/reslip-index/` |
+| 命令行验收工具（P1 / P2 的验收产物） | `crates/reslip-cli/` |
 | 架构决策（后端选型、线程模型、技术栈、实施顺序） | `docs/architecture.md` |
+| 引擎模块细节 | `docs/engine.md` |
+| 索引模块细节 | `docs/index.md` |
 | 调研结论（Q1–Q6 逐条答复） | `docs/TODO-low-latency-audio.md` |
 | 实测数据（延迟、索引、格式探测） | `docs/research-notes-playback.md` |
 | 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
+| 分类词典生成器（勿手改 `dictionary.rs`） | `tools/gen-category-dict.mjs` |
 | 开工提示词（复制到新对话） | `docs/prompt-for-implementation.md` |
 | Handoff log | `docs/agent-log.md` |

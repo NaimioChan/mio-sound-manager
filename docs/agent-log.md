@@ -2,6 +2,60 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-16 14:40 · hermes · P2 索引器 + schema 落地
+
+- 改: 新建 `crates/reslip-index`（probe / wav_header / classify / db / folders / indexer）；`crates/reslip-cli` 新增 `index` / `index-stats` / `search` / `classify-diff` / `probe-bench` 五个子命令；新增 `tools/gen-category-dict.mjs`（词典生成器）与 `probes/wav-fmt20`（缺陷复现）；新增 `docs/index.md`；本条日志
+- 状态: **P2 通过**，产品代码 = engine + index + cli
+- 验证库: `D:\reslip-test-library`，280,805 个文件的硬链接镜像（原库 `SoundLibrary` 被 Slip Sound 应用占用，未动）
+
+### 分类一致性：271,350 行零差异
+
+`reslip-cli classify-diff` 用 Rust 分类器重新分类旧库每条路径，逐字段比对 category / subcategory / confidence / matched_terms：**四项全部 0 差异**。
+
+这个检查抓到两个真实移植缺陷，都是不测就会静默错下去的：
+
+1. **同分裁决依赖插入顺序。** 参考实现遍历 `Object.entries(scores)`（插入顺序），我用 `HashMap`（随机顺序），同级子分类打平时选中项不同 → 3,932 行归错分类。改用 `Vec<(String, u32)>` 保持插入顺序。
+2. **`matched_terms` 未全局去重。** 参考是 `[...new Set()]`，我用了 `Vec::dedup`（只去相邻重复），短语与单词同时命中时留下 `["magic","spell","magic","spell","magic","spell"]`。
+
+两条都补了回归测试，注释写明实测来源。
+
+### 实测（本机，D 盘 Kingston SNV2S2000G，无 DRAM 的入门 SSD）
+
+| 场景 | 文件数 | 耗时 | 吞吐 |
+| --- | --- | --- | --- |
+| 全量首次 | 271,350 | **63.9s** | 4,247 文件/s |
+| 增量（无变化） | 271,350 | **5.4s** | 探测 0 个文件 |
+
+分阶段（全量）：
+
+| 阶段 | 耗时 | 说明 |
+| --- | --- | --- |
+| 遍历 | 4.98s | 单线程目录扫描 |
+| 探测（16 线程） | 32.5s | 每文件 1.9ms，随机读延迟受限 |
+| 分类 | 6.24s | 每文件 0.023ms |
+| 写入 | 7.04s | 批量事务，索引后建 |
+| prune | 2.94s | `NOT EXISTS` 命中主键 |
+| FTS 重建 | 10.18s | 一次性 rebuild |
+
+**与架构文档 5.1 的 9s 外推不符，且不能靠调优弥合。** 那个数字外推自 2 万文件合成库（预生成文件 + NVMe），这里是 28 万真实文件在无 DRAM SSD 上。探测阶段的 `stat + open + 读 64KB` 累计占 80%，解析只占 20%——瓶颈是随机读，不是解析代码。同一份代码在热缓存小样本上跑 10,790 文件/s，在冷缓存全库上 4,247 文件/s，差距就是磁盘。
+
+优化过的三处，都有实测依据：
+
+- **重复 stat 去掉两次**：`walkdir` 返回的 `DirEntry::metadata()` 在 Windows 上取自 `FindNextFileW`，不额外系统调用。之前遍历、探测、增量检查各 stat 一次，8.2s 浪费在这里。
+- **线程上限从 8 放开到核数**：8 → 16 线程还有 22% 收益（4,347 → 5,331 文件/s），因为探测是延迟受限而非 CPU 受限。
+- **批量装载卸掉 FTS 触发器与二级索引**：写入阶段 16.9s → 6–7s；prune 的 `NOT IN` 子查询 36s → 3s（改 `NOT EXISTS`）。
+
+### 修掉的两个真实缺陷
+
+1. **WAV 的 20 字节 `fmt ` chunk 被 symphonia 拒绝**。`symphonia-format-riff` 的 `read_pcm_fmt` 只接受 16 / 18 / 40，其它长度报 `malformed fmt_pcm chunk`。20 字节是合法的 `WAVEFORMATEX`（`cbSize = 2`），真实库里有 284 个，全部是可正常播放的 PCM。新增 `wav_header.rs` 做 RIFF 头兜底解析（只读头，不碰音频数据）。复现程序在 `probes/wav-fmt20`。
+2. **路径分隔符混用导致 prune 删光旧行**。`walkdir` 返回的路径继承传入根的分隔符，根传 `D:/lib` 会得到 `D:/lib\sub\a.wav`。混合形式破坏唯一键，一次全量扫描把旧库 271,350 行全部 prune 掉。修法是在入口统一归一化（`normalize_root` / `store_path`），文件夹树与文件夹区间查询对根做同样处理。
+
+另外过滤了 macOS 的 `._*` 资源叉文件（9,455 个，带音频扩展名的 AppleDouble 元数据）。过滤后元数据为 null 的行从 9,739 降到 224（0.08%），剩下的都是内容非音频的 `.wav`。
+
+- 验证: `cargo test --release` 44 个单测通过（probe 兜底、WAV 头解析、分类插入顺序与去重、upsert 保留用户状态、prune、FTS 操作符注入、文件夹区间、增量与全量）；真实库 271,350 行分类零差异；搜索 "gunshot" 208 命中 / 2.0ms、"rain" 611 命中 / 5.2ms；文件夹树 Bought 13,875 + UnBought 257,475
+- 遗留: ① `index_ms` 字段（FTS 重建）10.2s 是第二大项，可考虑增量重建而非全量 rebuild；② 分类器每文件 0.023ms，28 万文件 6.2s，`Classifier::new()` 的词典构建未跨批次复用（已在 `Arc` 里，但 `target.key()` 每次 format 分配）；③ 大文件（>10 分钟）仍整段解码，P1 的取舍未变；④ `docs/architecture.md` 5.1 的 9s 外推需要在文档里标注为「合成库条件」，避免下一任 agent 当成目标
+- 下一步: P3 Tauri 外壳 + IPC 骨架（空窗口能调 `play` / `get_waveform`）
+
 ## 2026-11-16 12:30 · hermes · P0 拖拽导出通过 + P1 音频引擎原型落地
 
 - 改: 新建 Rust workspace（根 `Cargo.toml` + `crates/reslip-engine` + `crates/reslip-cli`）；新增 `probes/tauri-drag-p0`（Tauri 2 拖拽验证窗口）；`docs/architecture.md` 补 P0/P1 实测结论；`docs/agent-log.md` 本条

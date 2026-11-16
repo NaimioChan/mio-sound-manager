@@ -22,6 +22,8 @@ use reslip_engine::{
     DecodedAudio, Decoder, Engine, EngineConfig, LatencyReport, OutputFormat, PublishSource,
 };
 
+mod index_cmd;
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
@@ -76,6 +78,18 @@ fn parse_args() -> Result<Args> {
 }
 
 fn run() -> Result<()> {
+    // The index commands take a folder and their own flags, which the playback
+    // parser would reject; route them before it sees the arguments.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(command) = argv.first().map(|s| s.as_str()) {
+        if matches!(
+            command,
+            "index" | "index-stats" | "search" | "classify-diff" | "probe-bench"
+        ) {
+            return run_index_command(command, &argv[1..]);
+        }
+    }
+
     let args = parse_args()?;
     match args.command.as_str() {
         "devices" => list_devices(),
@@ -83,7 +97,25 @@ fn run() -> Result<()> {
         "play" => play(&args),
         "switch" => switch(&args),
         "render" => render(&args),
-        other => bail!("unknown command {other}; expected play | switch | devices | probe"),
+        other => bail!(
+            "unknown command {other}; expected play | switch | devices | probe | render \
+                        | index | index-stats | search | classify-diff"
+        ),
+    }
+}
+
+fn run_index_command(command: &str, rest: &[String]) -> Result<()> {
+    let folder = rest
+        .first()
+        .context("expected a library folder as the first argument")?;
+    let args = index_cmd::parse(command, PathBuf::from(folder), &rest[1..])?;
+    match command {
+        "index" => index_cmd::run_index(&args),
+        "index-stats" => index_cmd::run_index_stats(&args),
+        "search" => index_cmd::run_search(&args),
+        "classify-diff" => index_cmd::run_classify_diff(&args),
+        "probe-bench" => index_cmd::run_probe_bench(&args),
+        other => bail!("unhandled index command {other}"),
     }
 }
 
@@ -290,10 +322,7 @@ fn switch(args: &Args) -> Result<()> {
 /// latency number would reveal it.
 fn render(args: &Args) -> Result<()> {
     let path = args.files.first().context("render needs a file")?;
-    let out_path = args
-        .files
-        .get(1)
-        .context("render needs an output path")?;
+    let out_path = args.files.get(1).context("render needs an output path")?;
 
     let mut engine = Engine::start(EngineConfig {
         device_filter: args.device.clone(),

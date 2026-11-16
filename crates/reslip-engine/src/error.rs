@@ -5,15 +5,9 @@ use std::fmt;
 #[derive(Debug)]
 pub enum EngineError {
     Audio(String),
-    Decode {
-        path: String,
-        detail: String,
-    },
+    Decode { path: String, detail: String },
     Unsupported(String),
-    DeviceNotFound {
-        filter: String,
-        available: String,
-    },
+    DeviceNotFound { filter: String, available: String },
     Io(std::io::Error),
 }
 
@@ -24,7 +18,10 @@ impl fmt::Display for EngineError {
             EngineError::Decode { path, detail } => write!(f, "cannot decode {path}: {detail}"),
             EngineError::Unsupported(what) => write!(f, "unsupported: {what}"),
             EngineError::DeviceNotFound { filter, available } => {
-                write!(f, "no render device matching {filter:?}; available: {available}")
+                write!(
+                    f,
+                    "no render device matching {filter:?}; available: {available}"
+                )
             }
             EngineError::Io(e) => write!(f, "io: {e}"),
         }

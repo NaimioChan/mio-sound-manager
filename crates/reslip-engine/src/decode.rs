@@ -182,12 +182,7 @@ impl Decoder {
         };
 
         let mut format: Box<dyn FormatReader> = symphonia::default::get_probe()
-            .format(
-                &hint,
-                stream,
-                &format_options,
-                &MetadataOptions::default(),
-            )
+            .format(&hint, stream, &format_options, &MetadataOptions::default())
             .map_err(|e| EngineError::Decode {
                 path: display.clone(),
                 detail: format!("probe: {e}"),
@@ -346,12 +341,7 @@ fn leading_is_priming(samples: &[f32], channels: usize, frames: usize) -> bool {
 }
 
 /// Resample interleaved f32 from `rate_in` to `rate_out`, whole clip at once.
-fn resample(
-    input: &[f32],
-    channels: usize,
-    rate_in: u32,
-    rate_out: u32,
-) -> Result<Vec<f32>> {
+fn resample(input: &[f32], channels: usize, rate_in: u32, rate_out: u32) -> Result<Vec<f32>> {
     use rubato::audioadapter_buffers::direct::InterleavedSlice;
     use rubato::{Fft, FixedSync, Resampler, WindowFunction};
 
@@ -397,11 +387,7 @@ fn remap_channels(input: &[f32], in_ch: usize, out_ch: usize) -> Vec<f32> {
 
     for f in 0..frames {
         for c in 0..out_ch {
-            let src = if in_ch == 1 {
-                0
-            } else {
-                c.min(in_ch - 1)
-            };
+            let src = if in_ch == 1 { 0 } else { c.min(in_ch - 1) };
             out[f * out_ch + c] = input[f * in_ch + src];
         }
     }

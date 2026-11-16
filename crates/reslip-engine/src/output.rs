@@ -13,9 +13,9 @@
 //! The render callback allocates nothing, locks nothing, does no IO, and never
 //! formats a string. Measurements leave it through a preallocated lock-free queue.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -308,8 +308,8 @@ fn output_format_of(mix: &WaveFormat) -> Result<OutputFormat> {
 /// Ask Windows for a real-time-ish thread. Best effort: failing here costs
 /// scheduling jitter, not correctness, so it must never stop playback.
 fn join_pro_audio_group() -> Option<windows::Win32::Foundation::HANDLE> {
-    use windows::core::PCWSTR;
     use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+    use windows::core::PCWSTR;
 
     // "Pro Audio" is the MMCSS task DAWs and audio servers register under.
     let name: Vec<u16> = "Pro Audio\0".encode_utf16().collect();
@@ -481,7 +481,10 @@ fn render_loop(
         // callback never allocates.
         scratch[filled..want_bytes].fill(0);
 
-        if render.write_to_device(&scratch[..want_bytes], None).is_err() {
+        if render
+            .write_to_device(&scratch[..want_bytes], None)
+            .is_err()
+        {
             // A failed write means the stream is gone (device removed, session
             // reset). Stop instead of spinning on a dead client.
             shared.running.store(false, Ordering::Release);

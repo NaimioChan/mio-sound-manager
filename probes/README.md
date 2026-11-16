@@ -94,8 +94,20 @@ SRC="../tauri-drag-p0/samples/p0-tone-440-44k-stereo.wav"
 for f in flac mp3 ogg m4a aiff; do ffmpeg -y -loglevel error -i "$SRC" "tone.$f"; done
 ```
 
+## wav-fmt20/
+
+复现一个 symphonia 的 WAV 头部缺陷：`fmt ` chunk 长度为 20 字节（合法的 `WAVEFORMATEX`，`cbSize = 2`）时，`symphonia-format-riff` 报 `malformed stream: wav: malformed fmt_pcm chunk`，探测拿不到任何字段。真实库 28 万文件里有 284 个是这种，全部可正常播放。
+
+```bash
+cd wav-fmt20
+cargo build --release
+./target/release/wave_fmt20.exe <某个 fmt chunk 为 20 字节的 wav>
+```
+
+产品代码的兜底在 `crates/reslip-index/src/wav_header.rs`，只在 symphonia 拒绝时启用。
+
 ## 已知限制
 
 - `wasapi3-probe` 的 `audible.exe` 用 `get_current_padding()` 估算「进 DAC」的时刻，不含 DAC 之前的硬件缓冲。真实感知延迟会略高。
-- `index-probe` 的吞吐数据来自合成库（小 WAV、热缓存）。真实混合格式库会更慢。
+- `index-probe` 的吞吐数据来自合成库（小 WAV、热缓存）。真实混合格式库会更慢——P2 在 28 万文件真实库上的实测是 4,247 文件/s（全量）与 5.4s（增量），见 `docs/agent-log.md`。
 - ASIO 探针（第一轮）在 `%TEMP%\asio-probe`，未纳入本仓库：它需要 ASIO SDK 与 libclang，不适合随仓库分发。

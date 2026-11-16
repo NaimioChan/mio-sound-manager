@@ -1,0 +1,16 @@
+[package]
+name = "wav-fmt20"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wave_fmt20"
+path = "src/bin/wave_fmt20.rs"
+
+[dependencies]
+symphonia = { version = "0.5", features = ["all-formats", "all-codecs"] }
+
+[profile.release]
+opt-level = 3
+
+[workspace]
