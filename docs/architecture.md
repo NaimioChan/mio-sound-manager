@@ -1,6 +1,6 @@
 # ReSlip 架构设计
 
-状态：**设计定稿，未开始实现**。本文回答「后端怎么做、栈怎么选」，不描述功能（功能与 UI/UX 沿用 Slip Sound，行为基准见 `C:\Users\Naimio\projects\slip-sound` 的 `AGENTS.md` 与 `src/renderer/src/components/WAVEFORM-PLAYBACK.md`）。所有延迟数字来自 `docs/research-notes-playback.md`，索引数字来自第 5 节，均为本机实测。
+状态：**设计定稿，P0–P4 已实现**。本文回答「后端怎么做、栈怎么选」，不描述功能（功能与 UI/UX 沿用 Slip Sound，行为基准见 `C:\Users\Naimio\projects\slip-sound` 的 `AGENTS.md` 与 `src/renderer/src/components/WAVEFORM-PLAYBACK.md`）。延迟数字取自本文第 2、3、8.1 节的实测，索引数字来自第 5 节与 `docs/index.md`，均为本机实测；原始测量笔记已随调研阶段结束移除，需要复测时用 `probes/` 重跑。
 
 ## 1. 结论先行
 
@@ -284,7 +284,7 @@ FTS5 配置不变（`unicode61 remove_diacritics 2`，索引 `filename`/`categor
 
 ### 6.2 选型理由
 
-**Tauri 2 而不是继续 Electron。** 理由不是延迟（webview 不参与音频，见 `docs/research-notes-playback.md` 第 3 节），而是：安装包从 ~150MB 降到 ~15MB；空闲内存从 ~200MB 降到 ~80MB；Rust 后端与音频引擎同进程，IPC 是函数调用而非序列化。UI 是纯展示层，换成 webview 没有行为损失。
+**Tauri 2 而不是继续 Electron。** 理由不是延迟（webview 不参与音频，见第 4 节线程模型），而是：安装包从 ~150MB 降到 ~15MB；空闲内存从 ~200MB 降到 ~80MB；Rust 后端与音频引擎同进程，IPC 是函数调用而非序列化。UI 是纯展示层，换成 webview 没有行为损失。
 
 **`wasapi` 而不是 `cpal`。** 见 4.2。
 
@@ -346,8 +346,9 @@ webview 需要知道「播到哪了」来画播放头。不用事件推送（每
 | **P2** ✅ | 索引器 + schema | 对真实库跑一遍，打印各阶段耗时，与第 5 节数字对照。**2026-11-16 通过**：`crates/reslip-index`，28 万真实文件全量 63.9s、增量 5.4s；分类与 Slip Sound 旧库 271,350 行零差异。与 5.1 的 9s 外推不符，原因见 5.1 末尾 |
 | **P3** ✅ | Tauri 外壳 + IPC 骨架 | 空窗口能调 `play`/`get_waveform`。**2026-11-16 通过**：`crates/reslip-app` + `ui/`，22 个 Rust 测试（其中 15 个走真实设备与真实索引，不开窗口）；真实 28 万库打开到首屏 69ms、搜索 65ms、点击到波形 30–43ms。窗口内交互用 CDP 驱动断言（播放头推进 / seek / 停止），细节见 `docs/app.md` |
 | **P4** ✅ | 前端搬迁（列表、波形、搜索） | 能浏览、搜索、点击播放。**2026-11-16 通过**：列表虚拟化 + 键盘/多选/右键/拖拽导出、分类侧栏 facet 计数、原生目录选择、收藏与手动分类（批量事务，扛得住全量重索引）、空格暂停。`cargo test --release --workspace` 83 个通过；CDP 驱动真实 28 万库 40 项交互断言全绿，DOM 几何断言无重叠无裁切；点击到波形 30–36ms，Ctrl+A 选中 271,350 条路径。细节见 `docs/app.md` |
-| **P5** | 工具功能（Slicer / Effects / Loop / Export） | 逐项对照 Slip Sound 行为 |
-| **P6** | ASIO 可选后端 | feature flag 打开后延迟下降，关闭时功能不变 |
+| **P5** ✅ | 工作区（多库、持久化、undo、阻塞索引、设置） | 能当日常工具用。**2026-11-16 通过**：同时打开多个库并在侧栏分组切换、启动恢复上次的库、无限翻页、收藏与分类的 undo/redo、索引期间锁窗并显示读条、设置页、可拖拽宽度的侧栏、搜索框移到列表列顶部。`cargo test --release --workspace` 97 个通过；CDP 三份脚本（工作区 26 项、索引遮罩 7 项、P4 回归 40 项）全绿 |
+
+**P6 及之后不做。** 原计划的「Slicer / Effects / Loop / Export」小工具与「ASIO 可选后端」已从路线图移除：这一版的目标是一个好用的采样浏览器，不是 Slip Sound 的功能全集。`docs/architecture.md` 第 2 节关于 ASIO 的论证保留，作为「为什么默认 WASAPI 共享模式」的依据，不再作为待实现项。
 
 P0 必须先做：如果拖拽导出在 Tauri 2 + Windows 上无解，整个外壳选型要重新考虑（退回 Electron 的代价是体积和内存，但能保住交互）。
 

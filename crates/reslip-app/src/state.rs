@@ -14,7 +14,7 @@
 //! * The **library** is a SQLite handle plus a folder path, replaced when the user
 //!   opens a different folder.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
@@ -31,7 +31,9 @@ use crate::commands::{
     WaveformDto,
 };
 use crate::error::{AppError, AppResult};
+use crate::history::History;
 use crate::library::Library;
+use crate::session::{Session, SessionStore};
 
 /// What the app learns about audio at startup and never afterwards.
 #[derive(Debug, Clone)]
@@ -118,7 +120,10 @@ pub struct AppState {
     jobs: Arc<LatestSlot>,
     worker: Mutex<Option<JoinHandle<()>>>,
 
-    library: Mutex<Option<Arc<Library>>>,
+    /// Every open library, keyed by root. Several at once is the point: a sample
+    /// collection is usually split across packs, and switching folders should not
+    /// mean reopening and reindexing.
+    libraries: Mutex<LibrarySet>,
 
     /// The last decoded clip, so replaying the same sound is a publish rather
     /// than a decode. Keyed by path so a different sound never reuses it.
@@ -131,6 +136,42 @@ pub struct AppState {
     /// Bumped on every play/stop so a decode that finishes late can be discarded
     /// instead of starting stale audio.
     play_epoch: AtomicU64,
+
+    /// Undo/redo for library edits. `None` in tests that do not want history.
+    history: Mutex<History>,
+
+    /// Where the open-library list is remembered between runs. `None` in tests,
+    /// which must not touch the user's real session file.
+    session: Option<SessionStore>,
+}
+
+/// The open libraries plus which one the window is showing.
+///
+/// Kept as one struct behind one lock so "add a library" and "switch to it" cannot
+/// interleave into a state where the active root is not in the set.
+#[derive(Default)]
+pub struct LibrarySet {
+    libs: Vec<Arc<Library>>,
+    active: Option<PathBuf>,
+}
+
+impl LibrarySet {
+    fn find(&self, root: &Path) -> Option<Arc<Library>> {
+        self.libs.iter().find(|l| l.root() == root).cloned()
+    }
+
+    /// The active library, falling back to the first one when the active root is
+    /// gone (a library removed while it was selected).
+    fn active(&self) -> Option<Arc<Library>> {
+        match &self.active {
+            Some(root) => self.find(root).or_else(|| self.libs.first().cloned()),
+            None => self.libs.first().cloned(),
+        }
+    }
+
+    fn roots(&self) -> Vec<PathBuf> {
+        self.libs.iter().map(|l| l.root().to_path_buf()).collect()
+    }
 }
 
 impl AppState {
@@ -183,10 +224,69 @@ impl AppState {
             decoder: Decoder::new(format),
             jobs,
             worker: Mutex::new(Some(worker)),
-            library: Mutex::new(None),
+            libraries: Mutex::new(LibrarySet::default()),
             last_clip: Mutex::new(None),
             dropped_publishes: AtomicU64::new(0),
             play_epoch: AtomicU64::new(0),
+            history: Mutex::new(crate::history::History::new()),
+            session: None,
+        }
+    }
+
+    /// Point the state at a session file and reopen the libraries it remembers.
+    ///
+    /// Called once from Tauri's `setup` with the app's config directory. Tests do
+    /// not call it, so a test run never reads or writes the user's real session.
+    ///
+    /// Reopening is best-effort and non-blocking: the databases are opened (which
+    /// only migrates the schema) but **no index pass runs here**. A first launch
+    /// after a long absence would otherwise block the window for a minute before
+    /// it could paint; instead the UI asks for a pass and shows its bar.
+    pub fn attach_session(&mut self, dir: impl AsRef<Path>) {
+        let store = SessionStore::new(dir);
+        let session = store.load();
+
+        let mut set = LibrarySet::default();
+        for root in session.present() {
+            match Library::open(&root) {
+                Ok(library) => set.libs.push(Arc::new(library)),
+                Err(e) => log::warn!("could not reopen {}: {e}", root.display()),
+            }
+        }
+        if !set.libs.is_empty() {
+            set.active = session.first_open().filter(|root| {
+                set.libs.iter().any(|l| l.root() == root.as_path())
+            });
+            if set.active.is_none() {
+                set.active = set.libs.first().map(|l| l.root().to_path_buf());
+            }
+        }
+
+        if let Ok(mut slot) = self.libraries.lock() {
+            *slot = set;
+        }
+        self.session = Some(store);
+    }
+
+    /// Write the current open-library list back to the session file.
+    ///
+    /// Called after anything that changes the set. Failures are logged, not
+    /// surfaced: losing the list costs one folder pick, and an error dialog for it
+    /// would be worse than the problem.
+    pub fn persist_session(&self) {
+        let Some(store) = self.session.as_ref() else {
+            return;
+        };
+        let Ok(set) = self.libraries.lock() else {
+            return;
+        };
+        let session = Session {
+            libraries: set.roots(),
+            active: set.active.clone(),
+        };
+        drop(set);
+        if let Err(e) = store.save(&session) {
+            log::warn!("could not write session file: {e}");
         }
     }
 
@@ -301,26 +401,55 @@ impl AppState {
         }
     }
 
+    /// The library the window is showing.
     pub fn library(&self) -> AppResult<Arc<Library>> {
-        self.library
+        self.libraries
             .lock()
             .map_err(|_| AppError::internal("library lock poisoned"))?
-            .clone()
+            .active()
             .ok_or(AppError::NoLibrary)
     }
 
-    pub fn set_library(&self, library: Option<Arc<Library>>) -> AppResult<()> {
-        let mut slot = self
-            .library
+    /// Every open library, for undo to find the one an edit belonged to.
+    pub fn all_libraries(&self) -> AppResult<Vec<Arc<Library>>> {
+        Ok(self
+            .libraries
             .lock()
-            .map_err(|_| AppError::internal("library lock poisoned"))?;
-        *slot = library;
-        Ok(())
+            .map_err(|_| AppError::internal("library lock poisoned"))?
+            .libs
+            .clone())
     }
 
-    /// Root folder of the open library, if any.
+    /// Roots of every open library, in the order they were opened.
+    pub fn library_roots(&self) -> AppResult<Vec<PathBuf>> {
+        Ok(self
+            .libraries
+            .lock()
+            .map_err(|_| AppError::internal("library lock poisoned"))?
+            .roots())
+    }
+
+    /// Root folder of the active library, if any.
     pub fn library_root(&self) -> AppResult<PathBuf> {
         Ok(self.library()?.root().to_path_buf())
+    }
+
+    /// Open a folder, replacing whatever was open.
+    ///
+    /// Kept for the single-library path (tests, the CLI harness). The UI uses
+    /// [`add_library`](Self::add_library) and [`remove_library`](Self::remove_library).
+    pub fn set_library(&self, library: Option<Arc<Library>>) -> AppResult<()> {
+        let mut set = self
+            .libraries
+            .lock()
+            .map_err(|_| AppError::internal("library lock poisoned"))?;
+        set.libs.clear();
+        set.active = None;
+        if let Some(library) = library {
+            set.active = Some(library.root().to_path_buf());
+            set.libs.push(library);
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------- IPC-facing logic
@@ -445,28 +574,117 @@ impl AppState {
         })
     }
 
-    /// Open a library folder and start an incremental pass.
+    /// Add a library folder and index it **before returning**.
     ///
-    /// Re-opening the same folder does not rebuild anything: it returns the
-    /// current status and starts a pass only if none is running.
-    pub fn open_library(&self, root: &str) -> AppResult<LibraryStatus> {
+    /// Blocking on purpose. The user's call: an index you can browse half of is
+    /// worse than a progress bar that says how long it will be, because every row
+    /// you can see might be missing half its siblings. So this runs the pass on the
+    /// calling thread and reports progress through `progress`; the UI shows a modal
+    /// bar and the window stays unusable until it returns.
+    ///
+    /// On a 280k library that is 64 seconds for a first pass and ~5s incremental,
+    /// both measured (`docs/index.md`). A pass that is already running for this
+    /// folder is not started twice.
+    pub fn add_library<F>(&self, root: &str, full: bool, progress: F) -> AppResult<LibraryStatus>
+    where
+        F: FnMut(usize, usize),
+    {
         let path = PathBuf::from(root);
         if !path.is_dir() {
             return Err(AppError::internal(format!("not a folder: {root}")));
         }
 
-        if let Ok(existing) = self.library() {
-            if existing.root() == path.as_path() {
-                existing.reindex()?;
-                return crate::commands::library_status(&existing);
-            }
-        }
+        // Re-adding a folder that is already open just reindexes it: the user
+        // means "refresh", not "open a second copy".
+        let existing = self
+            .libraries
+            .lock()
+            .map_err(|_| AppError::internal("library lock poisoned"))?
+            .find(&path);
 
-        let library = Arc::new(Library::open(&path)?);
-        library.reindex()?;
-        let status = crate::commands::library_status(&library)?;
-        self.set_library(Some(library))?;
-        Ok(status)
+        let library = match existing {
+            Some(library) => library,
+            None => {
+                let library = Arc::new(Library::open(&path)?);
+                let mut set = self
+                    .libraries
+                    .lock()
+                    .map_err(|_| AppError::internal("library lock poisoned"))?;
+                set.libs.push(Arc::clone(&library));
+                set.active = Some(path.clone());
+                library
+            }
+        };
+
+        library.index_blocking_with(full, progress)?;
+
+        // Selecting the folder that was just indexed is what the user expects;
+        // adding a second library should not silently leave the first one active.
+        if let Ok(mut set) = self.libraries.lock() {
+            set.active = Some(path);
+        }
+        self.persist_session();
+        crate::commands::library_status(&library)
+    }
+
+    /// Close a library. Returns whether the active one changed.
+    pub fn remove_library(&self, root: &str) -> AppResult<bool> {
+        let path = PathBuf::from(root);
+        let changed = {
+            let mut set = self
+                .libraries
+                .lock()
+                .map_err(|_| AppError::internal("library lock poisoned"))?;
+            let before = set.active.clone();
+            set.libs.retain(|l| l.root() != path.as_path());
+            if before.as_deref() == Some(path.as_path()) {
+                set.active = set.libs.first().map(|l| l.root().to_path_buf());
+            }
+            set.active != before
+        };
+        self.persist_session();
+        Ok(changed)
+    }
+
+    /// Show a different open library.
+    pub fn set_active_library(&self, root: &str) -> AppResult<()> {
+        let path = PathBuf::from(root);
+        {
+            let mut set = self
+                .libraries
+                .lock()
+                .map_err(|_| AppError::internal("library lock poisoned"))?;
+            if set.find(&path).is_none() {
+                return Err(AppError::internal(format!("library is not open: {root}")));
+            }
+            set.active = Some(path);
+        }
+        self.persist_session();
+        Ok(())
+    }
+
+    /// Every open library with its counts, for the sidebar.
+    pub fn library_list(&self) -> AppResult<Vec<LibraryStatus>> {
+        let libraries = self.all_libraries()?;
+        let active = self.library_root().ok();
+        libraries
+            .iter()
+            .map(|library| {
+                let mut status = crate::commands::library_status(library)?;
+                status.active = active.as_deref() == Some(library.root());
+                Ok(status)
+            })
+            .collect()
+    }
+
+    /// Reindex the active library, blocking, with progress.
+    pub fn reindex_active<F>(&self, full: bool, progress: F) -> AppResult<LibraryStatus>
+    where
+        F: FnMut(usize, usize),
+    {
+        let library = self.library()?;
+        library.index_blocking_with(full, progress)?;
+        crate::commands::library_status(&library)
     }
 
     pub fn library_status(&self) -> AppResult<Option<LibraryStatus>> {
@@ -535,26 +753,78 @@ impl AppState {
         })
     }
 
-    /// Star or unstar many sounds in one transaction.
+    /// Star or unstar many sounds in one transaction, recording it for undo.
     pub fn set_favorite(&self, paths: &[String], favorite: bool) -> AppResult<u64> {
-        Ok(self.library()?.set_favorite(paths, favorite)?)
+        let library = self.library()?;
+        let label = if favorite { "Add to Favorites" } else { "Remove from Favorites" };
+        let edit = crate::history::run(&library, label, paths, || {
+            Ok(library.set_favorite(paths, favorite)?)
+        })?;
+        self.record(edit);
+        Ok(paths.len() as u64)
     }
 
-    /// Assign one category to many sounds, marking them manual.
+    /// Assign one category to many sounds, marking them manual, recording for undo.
     pub fn set_category(
         &self,
         paths: &[String],
         category: &str,
         subcategory: Option<&str>,
     ) -> AppResult<u64> {
-        Ok(self
-            .library()?
-            .set_category(paths, category, subcategory)?)
+        let library = self.library()?;
+        let edit = crate::history::run(&library, "Set Category", paths, || {
+            Ok(library.set_category(paths, category, subcategory)?)
+        })?;
+        self.record(edit);
+        Ok(paths.len() as u64)
     }
 
-    /// Drop the manual category on many sounds.
+    /// Drop the manual category on many sounds, recording for undo.
     pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
-        Ok(self.library()?.clear_category(paths)?)
+        let library = self.library()?;
+        let edit = crate::history::run(&library, "Clear Category", paths, || {
+            Ok(library.clear_category(paths)?)
+        })?;
+        self.record(edit);
+        Ok(paths.len() as u64)
+    }
+
+    fn record(&self, edit: crate::history::Edit) {
+        if let Ok(mut history) = self.history.lock() {
+            history.push(edit);
+        }
+    }
+
+    /// Undo the last edit. Returns the label that was undone, if any.
+    pub fn undo(&self) -> AppResult<Option<String>> {
+        let libraries = self.all_libraries()?;
+        let mut history = self
+            .history
+            .lock()
+            .map_err(|_| AppError::internal("history lock poisoned"))?;
+        history.undo(&libraries)
+    }
+
+    /// Redo the last undone edit.
+    pub fn redo(&self) -> AppResult<Option<String>> {
+        let libraries = self.all_libraries()?;
+        let mut history = self
+            .history
+            .lock()
+            .map_err(|_| AppError::internal("history lock poisoned"))?;
+        history.redo(&libraries)
+    }
+
+    /// What undo/redo would do, for the menu labels.
+    pub fn history_state(&self) -> (Option<String>, Option<String>) {
+        let history = match self.history.lock() {
+            Ok(h) => h,
+            Err(_) => return (None, None),
+        };
+        (
+            history.undo_label().map(str::to_string),
+            history.redo_label().map(str::to_string),
+        )
     }
 }
 

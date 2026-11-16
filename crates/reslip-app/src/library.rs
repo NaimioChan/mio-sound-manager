@@ -148,19 +148,41 @@ impl Library {
         Ok(true)
     }
 
-    /// Run a pass synchronously and return its report. Used by tests and by
-    /// tooling; the UI never calls this.
-    pub fn index_blocking(&self, full: bool) -> AppResult<IndexReport> {
+    /// Run a pass synchronously and return its report.
+    ///
+    /// `progress` is called with `(done, total)` as the pass advances, which is how
+    /// the blocking open screen draws its bar. `full` re-probes every file and
+    /// prunes vanished ones; the incremental form only touches what changed.
+    ///
+    /// This blocks the calling thread for the whole pass — 64 seconds on a 280k
+    /// library, measured. The caller decides whether that is acceptable: the UI's
+    /// open screen shows a bar and the window is unusable until it returns, which
+    /// is the behaviour the user asked for (an index you can browse half of is
+    /// worse than a bar that tells you how long it will be).
+    pub fn index_blocking_with<F>(&self, full: bool, progress: F) -> AppResult<IndexReport>
+    where
+        F: FnMut(usize, usize),
+    {
         let options = IndexOptions {
             incremental: !full,
             prune: full,
             ..Default::default()
         };
-        Ok(index_folder(&self.root, &options, |_, _| {})?)
+        Ok(index_folder(&self.root, &options, progress)?)
+    }
+
+    /// Run a pass synchronously and return its report, without progress.
+    pub fn index_blocking(&self, full: bool) -> AppResult<IndexReport> {
+        self.index_blocking_with(full, |_, _| {})
     }
 
     pub fn search(&self, params: &SearchParams) -> AppResult<Vec<Sound>> {
         Ok(self.db()?.search(params)?)
+    }
+
+    /// One sound by absolute path, or `None` if it is not indexed.
+    pub fn get(&self, path: &str) -> AppResult<Option<Sound>> {
+        Ok(self.db()?.get_by_path(path)?)
     }
 
     pub fn count_matching(&self, params: &SearchParams) -> AppResult<u64> {
@@ -200,6 +222,23 @@ impl Library {
     /// Drop the manual category on many paths, letting the next pass reclassify.
     pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
         Ok(self.db()?.clear_category_many(paths)?)
+    }
+
+    /// Put a category back exactly as recorded, including whether it was manual.
+    ///
+    /// Undo needs this rather than `set_category`: a row the classifier filled in
+    /// must go back to being the classifier's, not become a manual choice with the
+    /// same string.
+    pub fn restore_category(
+        &self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+        manual: bool,
+    ) -> AppResult<u64> {
+        Ok(self
+            .db()?
+            .restore_category_many(paths, category, subcategory, manual)?)
     }
 
     /// Folder tree with recursive counts. Built from indexed paths, never from

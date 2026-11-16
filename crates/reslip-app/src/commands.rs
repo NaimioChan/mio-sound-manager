@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
-use crate::library::{self, IndexProgress, Library};
+use crate::library::{self, Library};
 use crate::state::AppState;
 
 /// Everything the window needs at startup, in one round trip.
@@ -43,10 +43,16 @@ pub struct AppStatus {
 #[serde(rename_all = "camelCase")]
 pub struct LibraryStatus {
     pub root: String,
+    /// Folder name only. The sidebar groups by library, and a full path in a
+    /// 232px rail is unreadable — this is what the header shows, with the path
+    /// in the tooltip.
+    pub name: String,
     pub count: u64,
     pub indexing: bool,
     pub indexed: usize,
     pub total: usize,
+    /// Whether the window is currently showing this library.
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -238,13 +244,19 @@ pub fn channel_label(channels: Option<u32>) -> String {
 
 /// Current library status, or `NoLibrary` when none is open.
 pub fn library_status(library: &Library) -> AppResult<LibraryStatus> {
-    let progress: IndexProgress = library.progress();
+    let progress = library.progress();
+    let root = library.root();
     Ok(LibraryStatus {
-        root: library.root().display().to_string(),
+        root: root.display().to_string(),
+        name: root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.display().to_string()),
         count: library.count()?,
         indexing: progress.running,
         indexed: progress.done,
         total: progress.total,
+        active: false,
     })
 }
 
@@ -294,11 +306,122 @@ pub async fn get_waveform(
     state.waveform(&path, buckets).await
 }
 
-/// Open a library folder. Returns before indexing finishes; the renderer polls
-/// `library.indexing` / `indexed` / `total` for progress.
+/// One progress tick from a blocking index pass.
+///
+/// Separate from `library::IndexProgress`, which also carries `running` and is
+/// read by polling. This is the shape that goes over a `Channel` while the pass is
+/// happening, so it only needs the two numbers the bar draws.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// Add a library folder and index it before returning.
+///
+/// **Blocking, by design.** The pass runs on a blocking worker and reports
+/// progress through `onProgress`, which the window uses to draw a modal bar. The
+/// window stays unusable until this resolves — the user asked for that, because a
+/// half-indexed library shows a list where every row might be missing siblings.
+///
+/// `onProgress` is a required `Channel` of `{done, total}`: Tauri 2 has no
+/// `Option<Channel>` (the type is not `Deserialize`), so the caller always passes
+/// one. A script that does not care about progress sends an ignored channel.
 #[tauri::command]
-pub fn open_library(state: State<'_, AppState>, root: String) -> AppResult<LibraryStatus> {
-    state.open_library(&root)
+pub async fn add_library(
+    app: tauri::AppHandle,
+    root: String,
+    full: Option<bool>,
+    on_progress: tauri::ipc::Channel<IndexProgress>,
+) -> AppResult<LibraryStatus> {
+    use tauri::Manager;
+
+    let full = full.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        // `State` borrows the command's stack frame and cannot cross into a
+        // blocking task, so the handle is used to reach the managed state instead.
+        let state = app.state::<AppState>();
+        state.add_library(&root, full, |done, total| {
+            // A dropped receiver means the window closed; the pass still has to
+            // finish so the database is consistent.
+            let _ = on_progress.send(IndexProgress { done, total });
+        })
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("index task failed: {e}")))?
+}
+
+/// Every open library, for the sidebar's groups.
+#[tauri::command]
+pub fn list_libraries(state: State<'_, AppState>) -> AppResult<Vec<LibraryStatus>> {
+    state.library_list()
+}
+
+/// Close a library. The remaining one becomes active if this was the active one.
+#[tauri::command]
+pub fn remove_library(state: State<'_, AppState>, root: String) -> AppResult<Vec<LibraryStatus>> {
+    state.remove_library(&root)?;
+    state.library_list()
+}
+
+/// Show a different open library.
+#[tauri::command]
+pub fn set_active_library(
+    state: State<'_, AppState>,
+    root: String,
+) -> AppResult<Vec<LibraryStatus>> {
+    state.set_active_library(&root)?;
+    state.library_list()
+}
+
+/// Reindex the active library, blocking, with the same progress channel as opening.
+#[tauri::command]
+pub async fn reindex_library(
+    app: tauri::AppHandle,
+    full: Option<bool>,
+    on_progress: tauri::ipc::Channel<IndexProgress>,
+) -> AppResult<LibraryStatus> {
+    use tauri::Manager;
+
+    let full = full.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.reindex_active(full, |done, total| {
+            let _ = on_progress.send(IndexProgress { done, total });
+        })
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("index task failed: {e}")))?
+}
+
+/// Undo the last library edit. Returns the label, or `None` when there is nothing
+/// to undo.
+#[tauri::command]
+pub fn undo(state: State<'_, AppState>) -> AppResult<Option<String>> {
+    state.undo()
+}
+
+#[tauri::command]
+pub fn redo(state: State<'_, AppState>) -> AppResult<Option<String>> {
+    state.redo()
+}
+
+/// What undo and redo would do, for the menu labels.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryState {
+    pub undo_label: Option<String>,
+    pub redo_label: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_history(state: State<'_, AppState>) -> AppResult<HistoryState> {
+    let (undo_label, redo_label) = state.history_state();
+    Ok(HistoryState {
+        undo_label,
+        redo_label,
+    })
 }
 
 #[tauri::command]

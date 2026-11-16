@@ -18,12 +18,14 @@
 
 mod commands;
 mod error;
+mod history;
 mod library;
+mod session;
 mod state;
 
 pub use commands::{
-    AppStatus, FacetDto, FolderNodeDto, LibraryStatus, PlaybackPosition, SearchRequest, SidebarDto,
-    SoundDto, WaveformDto,
+    AppStatus, FacetDto, FolderNodeDto, HistoryState, IndexProgress, LibraryStatus,
+    PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
 };
 pub use error::AppError;
 pub use library::Library;
@@ -42,7 +44,16 @@ pub fn run() {
             // for the life of the process (architecture section 4). If the device
             // is missing, the app still starts — playback commands then report
             // the device error instead of taking the window down with it.
-            let state = AppState::boot();
+            let mut state = AppState::boot();
+
+            // Reopen whatever libraries were open last time. The databases are
+            // opened here (schema migration only); the UI asks for an index pass
+            // and shows its bar, so startup never blocks for a minute.
+            match app.path().app_config_dir() {
+                Ok(dir) => state.attach_session(dir),
+                Err(e) => log::warn!("no config directory, session will not persist: {e}"),
+            }
+
             app.manage(state);
             Ok(())
         })
@@ -54,7 +65,11 @@ pub fn run() {
             commands::resume,
             commands::get_playback_position,
             commands::get_waveform,
-            commands::open_library,
+            commands::add_library,
+            commands::list_libraries,
+            commands::remove_library,
+            commands::set_active_library,
+            commands::reindex_library,
             commands::search,
             commands::get_library,
             commands::list_folders,
@@ -64,6 +79,9 @@ pub fn run() {
             commands::set_favorite,
             commands::set_category,
             commands::clear_category,
+            commands::undo,
+            commands::redo,
+            commands::get_history,
             commands::pick_library_folder,
             commands::reveal_in_folder,
         ])

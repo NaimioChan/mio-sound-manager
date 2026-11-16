@@ -13,10 +13,14 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 
 export interface LibraryStatus {
   root: string
+  /** Folder name only, for the sidebar header. The path is the tooltip. */
+  name: string
   count: number
   indexing: boolean
   indexed: number
   total: number
+  /** Whether the window is showing this library. */
+  active: boolean
 }
 
 export interface AppStatus {
@@ -85,6 +89,17 @@ export interface Sidebar {
   total: number
 }
 
+export interface HistoryState {
+  undoLabel: string | null
+  redoLabel: string | null
+}
+
+/** One tick from a blocking index pass. */
+export interface IndexProgress {
+  done: number
+  total: number
+}
+
 export interface SearchRequest {
   query?: string
   maxDuration?: number
@@ -125,9 +140,31 @@ export const api = {
   waveform: (path: string, buckets?: number) =>
     invoke<Waveform>('get_waveform', { path, buckets: buckets ?? null }),
 
-  openLibrary: (root: string) => invoke<LibraryStatus>('open_library', { root }),
+  /**
+   * Add a library and index it **before resolving**.
+   *
+   * Blocking by design: the window shows a modal bar and stays unusable until
+   * this settles, so nothing is ever half-indexed. `onProgress` is a required
+   * channel — Tauri 2 cannot take an optional one.
+   */
+  addLibrary: (root: string, onProgress: (p: IndexProgress) => void, full = false) => {
+    const channel = new Channel<IndexProgress>()
+    channel.onmessage = onProgress
+    return invoke<LibraryStatus>('add_library', { root, full, onProgress: channel })
+  },
 
-  library: () => invoke<LibraryStatus | null>('get_library'),
+  listLibraries: () => invoke<LibraryStatus[]>('list_libraries'),
+
+  removeLibrary: (root: string) => invoke<LibraryStatus[]>('remove_library', { root }),
+
+  setActiveLibrary: (root: string) => invoke<LibraryStatus[]>('set_active_library', { root }),
+
+  /** Reindex the active library, blocking, with the same progress channel. */
+  reindexLibrary: (onProgress: (p: IndexProgress) => void, full = false) => {
+    const channel = new Channel<IndexProgress>()
+    channel.onmessage = onProgress
+    return invoke<LibraryStatus>('reindex_library', { full, onProgress: channel })
+  },
 
   search: (request: SearchRequest) => invoke<SoundRow[]>('search', { request }),
 
@@ -155,6 +192,10 @@ export const api = {
     invoke<number>('set_category', { paths, category, subcategory: subcategory ?? null }),
 
   clearCategory: (paths: string[]) => invoke<number>('clear_category', { paths }),
+
+  undo: () => invoke<string | null>('undo'),
+  redo: () => invoke<string | null>('redo'),
+  history: () => invoke<HistoryState>('get_history'),
 
   /** Native folder picker. Resolves `null` when the user cancels. */
   pickLibraryFolder: () => invoke<string | null>('pick_library_folder'),
@@ -191,4 +232,3 @@ export async function startDrag(paths: string[]): Promise<void> {
 /** 1x1 transparent PNG. The plugin rejects anything that is not a PNG data URL. */
 const DRAG_IMAGE =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
-

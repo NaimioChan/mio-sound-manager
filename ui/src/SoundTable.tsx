@@ -84,6 +84,12 @@ interface Props {
   active: SoundRow | null
   sortKey: SortKey
   sortAsc: boolean
+  /** Hide the category column; the value is still filterable from the rail. */
+  showCategory: boolean
+  /** Total rows the filter matches, for the "showing N of M" footer. */
+  matching: number
+  /** Whether another page can still be fetched. */
+  hasMore: boolean
   onSort: (key: SortKey) => void
   onSelectionChange: (paths: string[], active: SoundRow | null) => void
   /** Clicking a row plays it when auto-play is on. */
@@ -92,6 +98,8 @@ interface Props {
   onToggleFavorite: (row: SoundRow) => void
   /** Ctrl+A: select every row the current filter matches, not just the page. */
   onSelectAll: () => void
+  /** Infinite scroll: called when the viewport nears the end of what is loaded. */
+  onLoadMore: () => void
 }
 
 export function SoundTable(props: Props) {
@@ -105,6 +113,12 @@ export function SoundTable(props: Props) {
   const [scrollbarW, setScrollbarW] = createSignal(0)
   /** Anchor for Shift+click. A path, so a re-query cannot move it to another row. */
   const [anchor, setAnchor] = createSignal<string | null>(null)
+
+  /** Columns actually drawn, which the header and every row must agree on. */
+  const columns = createMemo(() =>
+    COLUMNS.filter((c) => c.key !== 'category' || props.showCategory)
+  )
+  const template = createMemo(() => columns().map((c) => c.width).join(' '))
 
   let body: HTMLDivElement | undefined
 
@@ -261,11 +275,11 @@ export function SoundTable(props: Props) {
       <div
         class="table-head"
         style={{
-          'grid-template-columns': COLUMNS.map((c) => c.width).join(' '),
+          'grid-template-columns': template(),
           width: `calc(100% - ${scrollbarW()}px)`
         }}
       >
-        <For each={COLUMNS}>
+        <For each={columns()}>
           {(col) => (
             <button
               class={col.numeric ? 'head-cell numeric' : 'head-cell'}
@@ -296,7 +310,17 @@ export function SoundTable(props: Props) {
           observer.observe(el)
           measure()
         }}
-        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+        onScroll={(e) => {
+          const el = e.currentTarget
+          setScrollTop(el.scrollTop)
+          // Infinite scroll: ask for the next page once the viewport is within
+          // two screens of the end. The threshold is generous on purpose — a
+          // search answers in ~2ms, so there is no reason to wait for the user to
+          // hit the bottom and see a gap.
+          if (!props.hasMore) return
+          const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+          if (remaining < el.clientHeight * 2) props.onLoadMore()
+        }}
       >
         <div style={{ height: `${sorted().length * ROW_H}px`, position: 'relative' }}>
           <For each={sorted().slice(range().first, range().last)}>
@@ -311,7 +335,7 @@ export function SoundTable(props: Props) {
                     position: 'absolute',
                     top: `${(range().first + index()) * ROW_H}px`,
                     height: `${ROW_H}px`,
-                    'grid-template-columns': COLUMNS.map((c) => c.width).join(' ')
+                    'grid-template-columns': template()
                   }}
                   onClick={(e) => handleRowClick(row, e)}
                   onDblClick={() => props.onActivate(row)}
@@ -350,12 +374,14 @@ export function SoundTable(props: Props) {
                   <span class="cell name" title={row.path}>
                     {row.filename}
                   </span>
-                  <span class="cell dim" title={row.matchedTerms.join(', ')}>
-                    {row.category}
-                    <Show when={row.subcategory}>
-                      <span class="sub"> / {row.subcategory}</span>
-                    </Show>
-                  </span>
+                  <Show when={props.showCategory}>
+                    <span class="cell dim" title={row.matchedTerms.join(', ')}>
+                      {row.category}
+                      <Show when={row.subcategory}>
+                        <span class="sub"> / {row.subcategory}</span>
+                      </Show>
+                    </span>
+                  </Show>
                   <span class="cell numeric">{row.durationLabel}</span>
                   <span class="cell dim">{row.channelLabel}</span>
                   <span class="cell numeric dim">{formatRate(row.sampleRate)}</span>
@@ -369,6 +395,20 @@ export function SoundTable(props: Props) {
 
       <Show when={props.rows.length === 0}>
         <div class="table-empty">No sounds match.</div>
+      </Show>
+
+      {/*
+        The footer says how much of the filter is loaded. With infinite scroll the
+        number creeps up as you scroll; without it, this is the only place that
+        tells you the list is not the whole library.
+      */}
+      <Show when={props.rows.length > 0}>
+        <div class="table-foot dim">
+          {props.rows.length.toLocaleString()} of {props.matching.toLocaleString()}
+          <Show when={props.hasMore}>
+            <span> · scroll for more</span>
+          </Show>
+        </div>
       </Show>
     </div>
   )

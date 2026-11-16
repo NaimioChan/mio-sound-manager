@@ -639,6 +639,44 @@ impl IndexDb {
         Ok(changed)
     }
 
+    /// Write a category back exactly as given, including the "the classifier owns
+    /// this" flag.
+    ///
+    /// This exists for undo. `set_category` always marks the row manual and
+    /// `clear_category` always resets it to `Uncategorized`, so neither can
+    /// reproduce a state that was *neither* — a row the classifier filled in.
+    /// Undo needs to put back the exact string and the exact ownership, or it
+    /// silently converts a guess into a manual choice.
+    pub fn restore_category_many(
+        &mut self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+        manual: bool,
+    ) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let changed = {
+            let mut stmt = tx.prepare(
+                "UPDATE sounds
+                 SET category = ?1, subcategory = ?2, category_manual = ?3,
+                     confidence = CASE WHEN ?3 = 1 THEN 1 ELSE confidence END
+                 WHERE path = ?4",
+            )?;
+            let mut changed = 0u64;
+            for path in paths {
+                changed += stmt.execute(params![
+                    category,
+                    subcategory,
+                    manual as i64,
+                    path
+                ])? as u64;
+            }
+            changed
+        };
+        tx.commit()?;
+        Ok(changed)
+    }
+
     pub fn search(&self, params: &SearchParams) -> Result<Vec<Sound>> {
         let (sql, args) = self.build_search_sql(params, false);
         let mut stmt = self.conn.prepare(&sql)?;

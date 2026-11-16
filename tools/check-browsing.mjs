@@ -42,12 +42,18 @@ function check(ok, label, detail = '') {
 // The native folder picker cannot be driven from the page: it is a Win32 dialog.
 // So the library is opened through the same command the picker feeds, which is
 // what the rest of the checks need. The picker itself is asserted separately.
+//
+// `add_library` blocks until the pass is done, so there is nothing to poll
+// afterwards — the rows are there when it resolves.
 const openViaCommand = await page.evaluate(async (root) => {
-  // `__TAURI_INTERNALS__` is the same bridge the app's own ipc module uses.
-  const status = await window.__TAURI_INTERNALS__.invoke('open_library', { root })
-  return status
+  const id = window.__TAURI_INTERNALS__.transformCallback(() => {})
+  return window.__TAURI_INTERNALS__.invoke('add_library', {
+    root,
+    full: false,
+    onProgress: `__CHANNEL__:${id}`
+  })
 }, library)
-check(Boolean(openViaCommand?.root), 'open_library returns the folder it opened')
+check(Boolean(openViaCommand?.root), 'add_library returns the folder it opened')
 
 // Wait for the background pass so the counts are final.
 for (let i = 0; i < 600; i++) {
@@ -67,8 +73,12 @@ check(rowCount > 0, 'table renders rows after the library is open', `${rowCount}
 await page.screenshot({ path: `${shotDir}/reslip-p4-open.png` })
 
 // ---------------------------------------------------------------- sidebar
-const sideMode = await page.locator('.side-mode').count()
-check(sideMode === 2, 'sidebar offers both categories and folders', `${sideMode} modes`)
+const sideModes = await page.locator('.side-mode').allTextContents()
+check(
+  sideModes.some((t) => t.includes('Categories')) && sideModes.some((t) => t.includes('Folders')),
+  'sidebar offers both categories and folders',
+  sideModes.join(' | ')
+)
 
 // The rail remembers which mode it was left in, so the test asks for categories
 // rather than assuming the default. This also exercises the toggle.

@@ -2,7 +2,7 @@
 
 ReSlip: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；调研结论见 `docs/TODO-low-latency-audio.md`；实测数据见 `docs/research-notes-playback.md`；进度与遗留见 `docs/agent-log.md`。
+Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）已通过。P6 及之后不做。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。
 
 ## Stack (decided)
 
@@ -17,7 +17,7 @@ Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + s
 
 ## Rules
 
-- **Latency is a measured number, not an adjective.** Any claim about click-to-sound must state which measurement it is: `publish → 回调写入` and `publish → 出声` differ by 12ms on shared mode. Numbers must come with the machine's audio stack (driver, sample rate, buffer period). The numbers in `docs/research-notes-playback.md` were measured on the reference machine and must be re-verified before being used as targets.
+- **Latency is a measured number, not an adjective.** Any claim about click-to-sound must state which measurement it is: `publish → 回调写入` and `publish → 出声` differ by 12ms on shared mode. Numbers must come with the machine's audio stack (driver, sample rate, buffer period). The figures in `docs/architecture.md` sections 2, 3 and 8.1 were measured on the reference machine and must be re-verified with `probes/` before being used as targets.
 - **No placeholder engines.** Do not ship a stub audio path "to be optimized later"; the whole point of this project is the engine.
 - **The UI/UX is inherited.** Slip Sound's interaction design is considered good and is the reference; this project replaces the backend, not the interaction model. Read the Slip Sound repo's `AGENTS.md` and `src/renderer/src/components/WAVEFORM-PLAYBACK.md` for the behaviour that must be preserved.
 - Indexing and playback are separate subsystems with separate acceptance numbers. Do not let one block the other.
@@ -77,10 +77,7 @@ They resolve `playwright-core` from `slip-sound/package.json` through `createReq
 | 引擎模块细节 | `docs/engine.md` |
 | 索引模块细节 | `docs/index.md` |
 | 外壳与 IPC 细节 | `docs/app.md` |
-| 调研结论（Q1–Q6 逐条答复） | `docs/TODO-low-latency-audio.md` |
-| 实测数据（延迟、索引、格式探测） | `docs/research-notes-playback.md` |
 | 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
 | 外壳的 CDP 驱动与检查脚本 | `tools/` |
 | 分类词典生成器（勿手改 `dictionary.rs`） | `tools/gen-category-dict.mjs` |
-| 开工提示词（复制到新对话） | `docs/prompt-for-implementation.md` |
 | Handoff log | `docs/agent-log.md` |

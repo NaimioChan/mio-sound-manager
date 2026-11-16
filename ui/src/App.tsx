@@ -4,6 +4,8 @@ import {
   type AppStatus,
   type Facet,
   type FolderNode,
+  type IndexProgress,
+  type LibraryStatus,
   type SoundRow
 } from './ipc'
 import { SoundTable, DEFAULT_DIR, type RowMenuRequest, type SortKey } from './SoundTable'
@@ -11,6 +13,8 @@ import { WaveformDock } from './WaveformDock'
 import { Sidebar } from './Sidebar'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
+import { SettingsDialog, loadSettings, saveSettings, type Settings } from './SettingsDialog'
+import { IndexOverlay } from './IndexOverlay'
 
 /**
  * Playhead polling, per `docs/architecture.md` 7.3: read position from
@@ -60,12 +64,17 @@ function usePlayhead() {
   return { positionS, durationS, playing, paused }
 }
 
-/** How many rows one page of the list asks for. The index answers in ~2ms. */
-const PAGE = 500
+/** Sidebar width, remembered per machine. Clamped to what the layout can take. */
+const SIDEBAR_KEY = 'reslip:sidebar-width'
+const SIDEBAR_MIN = 160
+const SIDEBAR_MAX = 520
 
 export function App() {
+  const [settings, setSettings] = createSignal<Settings>(loadSettings())
+
   const [status, setStatus] = createSignal<AppStatus | null>(null)
   const [bootError, setBootError] = createSignal<string | null>(null)
+  const [libraries, setLibraries] = createSignal<LibraryStatus[]>([])
   const [rows, setRows] = createSignal<SoundRow[]>([])
   const [matching, setMatching] = createSignal(0)
   const [folders, setFolders] = createSignal<FolderNode | null>(null)
@@ -85,21 +94,39 @@ export function App() {
   const [selection, setSelection] = createSignal<string[]>([])
   const [active, setActive] = createSignal<SoundRow | null>(null)
 
-  const [autoPlay, setAutoPlay] = createSignal(
-    localStorage.getItem('reslip:autoplay') !== 'false'
-  )
   const [menu, setMenu] = createSignal<RowMenuRequest | null>(null)
   const [categoryDialog, setCategoryDialog] = createSignal<SoundRow[] | null>(null)
+  const [settingsOpen, setSettingsOpen] = createSignal(false)
+  const [history, setHistory] = createSignal<{ undo: string | null; redo: string | null }>({
+    undo: null,
+    redo: null
+  })
 
   const [notice, setNotice] = createSignal<string | null>(null)
   const [waveMs, setWaveMs] = createSignal<number | null>(null)
-  const [busy, setBusy] = createSignal(false)
+
+  /** A blocking index pass is running; the window is locked behind the overlay. */
+  const [indexing, setIndexing] = createSignal<{ label: string; progress: IndexProgress | null } | null>(
+    null
+  )
+  /** Guards against a second `onLoadMore` while one is in flight. */
+  const [loadingMore, setLoadingMore] = createSignal(false)
+
+  const [sidebarW, setSidebarW] = createSignal(
+    Math.min(
+      SIDEBAR_MAX,
+      Math.max(SIDEBAR_MIN, Number(localStorage.getItem(SIDEBAR_KEY)) || 232)
+    )
+  )
 
   const playhead = usePlayhead()
 
+  const activeLibrary = createMemo(() => libraries().find((l) => l.active) ?? null)
+  const hasMore = createMemo(() => rows().length < matching())
+
   /**
-   * The search request, derived once so the search call and Ctrl+A cannot drift
-   * apart: selecting "all" must select exactly what the list is showing.
+   * The search request, derived once so the search call, "select all" and the
+   * next page cannot drift apart.
    */
   const request = createMemo(() => ({
     query: query(),
@@ -108,26 +135,55 @@ export function App() {
     folder: folder() ?? undefined,
     favoriteOnly: favoritesOnly() ? true : undefined,
     sortBy: sortKey(),
-    sortDir: (sortAsc() ? 'asc' : 'desc') as 'asc' | 'desc',
-    limit: PAGE
+    sortDir: (sortAsc() ? 'asc' : 'desc') as 'asc' | 'desc'
   }))
 
+  /** Replace the list with the first page. */
   const runSearch = async () => {
-    if (!status()?.library) {
+    if (libraries().length === 0) {
       setRows([])
       setMatching(0)
       return
     }
-    const req = request()
+    const req = { ...request(), limit: settings().pageSize, offset: 0 }
     try {
-      // The page and the total are asked for together: the status bar reads "38
-      // of 27,525", and a total fetched separately would sometimes belong to the
-      // previous query.
-      const [page, count] = await Promise.all([api.search(req), api.countMatching(req)])
+      const [page, count] = await Promise.all([api.search(req), api.countMatching(request())])
       setRows(page)
       setMatching(count)
     } catch (e) {
       setNotice(String(e))
+    }
+  }
+
+  /**
+   * Append the next page.
+   *
+   * Offset is the number of rows already loaded, which is correct because the
+   * request is sorted: the index returns a stable window for a given sort, so
+   * page two cannot overlap page one. A re-sort resets the list, so a stale
+   * offset cannot survive into a different ordering.
+   */
+  const loadMore = async () => {
+    if (loadingMore() || !hasMore()) return
+    setLoadingMore(true)
+    try {
+      const req = {
+        ...request(),
+        limit: settings().pageSize,
+        offset: rows().length
+      }
+      const page = await api.search(req)
+      if (page.length === 0) {
+        // Nothing came back: the count is ahead of the data (a pass finished
+        // between the two queries). Trusting the count would keep asking forever.
+        setMatching(rows().length)
+      } else {
+        setRows([...rows(), ...page])
+      }
+    } catch (e) {
+      setNotice(String(e))
+    } finally {
+      setLoadingMore(false)
     }
   }
 
@@ -164,13 +220,24 @@ export function App() {
     }
   }
 
+  const loadHistory = async () => {
+    try {
+      const state = await api.history()
+      setHistory({ undo: state.undoLabel, redo: state.redoLabel })
+    } catch {
+      setHistory({ undo: null, redo: null })
+    }
+  }
+
+  /** Re-read everything about the active library and the open-library list. */
   const refresh = async () => {
     try {
       const next = await api.status()
       setStatus(next)
       setBootError(null)
+      setLibraries(await api.listLibraries())
       if (next.library) {
-        await Promise.all([loadTree(), loadSidebar()])
+        await Promise.all([loadTree(), loadSidebar(), loadHistory()])
       }
       await runSearch()
     } catch (e) {
@@ -207,21 +274,77 @@ export function App() {
     }
   }
 
-  const openLibrary = async () => {
-    setBusy(true)
-    try {
+  /**
+   * Add a library. Blocks on the index pass and shows the overlay while it runs.
+   *
+   * `add_library` only resolves when the pass is done, so the overlay is driven by
+   * the promise lifetime, not by a separate poll: there is no window in which the
+   * app thinks it is idle while the database is still being written.
+   */
+  const addLibrary = async (root?: string) => {
+    let target = root
+    if (!target) {
       const picked = await api.pickLibraryFolder()
       if (!picked) return
-      const lib = await api.openLibrary(picked)
-      // A 280k-file pass takes a minute; the count is only meaningful once it
-      // ends, so the notice says where the library is and the status bar carries
-      // the progress.
-      setNotice(`opened ${lib.root.split(/[\\/]/).pop()}`)
+      target = picked
+    }
+
+    setIndexing({ label: 'Indexing library…', progress: null })
+    try {
+      await api.addLibrary(target, (progress) => {
+        setIndexing({ label: 'Indexing library…', progress })
+      })
+      setSettingsOpen(false)
       await refresh()
     } catch (e) {
       setNotice(String(e))
     } finally {
-      setBusy(false)
+      setIndexing(null)
+    }
+  }
+
+  const reindex = async (full: boolean) => {
+    setIndexing({
+      label: full ? 'Re-probing every file…' : 'Looking for changes…',
+      progress: null
+    })
+    try {
+      await api.reindexLibrary((progress) => {
+        setIndexing({
+          label: full ? 'Re-probing every file…' : 'Looking for changes…',
+          progress
+        })
+      }, full)
+      setSettingsOpen(false)
+      await refresh()
+    } catch (e) {
+      setNotice(String(e))
+    } finally {
+      setIndexing(null)
+    }
+  }
+
+  const switchLibrary = async (root: string) => {
+    try {
+      setLibraries(await api.setActiveLibrary(root))
+      setCategory(null)
+      setSubcategory(null)
+      setFolder(null)
+      setFavoritesOnly(false)
+      await Promise.all([loadTree(), loadSidebar()])
+      await runSearch()
+    } catch (e) {
+      setNotice(String(e))
+    }
+  }
+
+  const removeLibrary = async (root: string) => {
+    try {
+      setLibraries(await api.removeLibrary(root))
+      await Promise.all([loadTree(), loadSidebar()])
+      await runSearch()
+    } catch (e) {
+      setNotice(String(e))
     }
   }
 
@@ -231,15 +354,16 @@ export function App() {
   }
 
   const activate = (row: SoundRow) => {
-    if (autoPlay()) void play(row)
+    if (settings().autoPlay) void play(row)
     else setActive(row)
   }
 
-  const toggleAutoPlay = () => {
-    const next = !autoPlay()
-    setAutoPlay(next)
-    localStorage.setItem('reslip:autoplay', String(next))
+  const changeSettings = (next: Settings) => {
+    setSettings(next)
+    saveSettings(next)
   }
+
+  const toggleAutoPlay = () => changeSettings({ ...settings(), autoPlay: !settings().autoPlay })
 
   const changeSort = (key: SortKey) => {
     if (sortKey() === key) {
@@ -269,7 +393,7 @@ export function App() {
    */
   const selectAll = async () => {
     try {
-      const paths = await api.matchingPaths(request())
+      const paths = await api.matchingPaths({ ...request(), limit: 0 })
       setSelection(paths)
       if (paths[0]) {
         const first = rows().find((r) => r.path === paths[0])
@@ -281,12 +405,34 @@ export function App() {
     }
   }
 
-  /** Apply a library edit, then refresh the counts and the visible rows. */
+  /** Apply a library edit, then refresh the counts, the rows and the undo labels. */
   const editThenRefresh = async (paths: string[], apply: () => Promise<unknown>) => {
     if (paths.length === 0) return
     try {
       await apply()
-      await Promise.all([loadSidebar(), runSearch()])
+      await Promise.all([loadSidebar(), runSearch(), loadHistory()])
+    } catch (e) {
+      setNotice(String(e))
+    }
+  }
+
+  const undo = async () => {
+    try {
+      const label = await api.undo()
+      if (!label) return
+      setNotice(`Undid ${label.toLowerCase()}`)
+      await Promise.all([loadSidebar(), runSearch(), loadHistory()])
+    } catch (e) {
+      setNotice(String(e))
+    }
+  }
+
+  const redo = async () => {
+    try {
+      const label = await api.redo()
+      if (!label) return
+      setNotice(`Redid ${label.toLowerCase()}`)
+      await Promise.all([loadSidebar(), runSearch(), loadHistory()])
     } catch (e) {
       setNotice(String(e))
     }
@@ -367,7 +513,7 @@ export function App() {
           if (!one) return
           const dir = one.path.slice(0, Math.max(one.path.lastIndexOf('/'), one.path.lastIndexOf('\\')))
           setCategoryFilter(null, null)
-          setFolderFilter(dir === status()?.library?.root ? null : dir)
+          setFolderFilter(dir === activeLibrary()?.root ? null : dir)
         }
       },
       {
@@ -406,23 +552,47 @@ export function App() {
   }
 
   /**
-   * Shortcuts that belong to the app rather than the table: Space, Ctrl+O, and
-   * the auto-play toggle. The table owns arrow keys and Ctrl+A.
+   * Shortcuts that belong to the app rather than the table: Space, Ctrl+O,
+   * Ctrl+Z/Y, Ctrl+, and the auto-play toggle. The table owns arrows and Ctrl+A.
    */
   const onKeyDown = (event: KeyboardEvent) => {
     const el = document.activeElement as HTMLElement | null
     const inField =
-      el?.tagName === 'INPUT' || el?.tagName === 'TEXTAREA' || el?.isContentEditable === true
+      el?.tagName === 'INPUT' ||
+      el?.tagName === 'TEXTAREA' ||
+      el?.tagName === 'SELECT' ||
+      el?.isContentEditable === true
 
-    if (event.code === 'Space' && !inField && !categoryDialog() && !menu()) {
+    // Nothing but Escape works while a blocking index pass owns the window.
+    if (indexing()) return
+
+    const mod = event.ctrlKey || event.metaKey
+
+    if (mod && event.key.toLowerCase() === 'z' && !inField) {
       event.preventDefault()
-      void togglePlayback()
+      if (event.shiftKey) void redo()
+      else void undo()
+      return
+    }
+    if (mod && event.key.toLowerCase() === 'y' && !inField) {
+      event.preventDefault()
+      void redo()
+      return
+    }
+    if (mod && event.key === ',') {
+      event.preventDefault()
+      setSettingsOpen(true)
+      return
+    }
+    if (mod && event.key.toLowerCase() === 'o') {
+      event.preventDefault()
+      void addLibrary()
       return
     }
 
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') {
+    if (event.code === 'Space' && !inField && !categoryDialog() && !settingsOpen() && !menu()) {
       event.preventDefault()
-      void openLibrary()
+      void togglePlayback()
       return
     }
 
@@ -432,36 +602,34 @@ export function App() {
       return
     }
 
-    if (event.key === 'Escape' && menu()) {
-      setMenu(null)
+    if (event.key === 'Escape') {
+      if (menu()) setMenu(null)
+      else if (settingsOpen()) setSettingsOpen(false)
     }
+  }
+
+  /** Drag the divider to resize the rail; double-click resets it. */
+  const startResize = (event: PointerEvent) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startW = sidebarW()
+    const move = (e: PointerEvent) => {
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + e.clientX - startX))
+      setSidebarW(next)
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      localStorage.setItem(SIDEBAR_KEY, String(sidebarW()))
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
   }
 
   onMount(() => {
     void refresh()
     window.addEventListener('keydown', onKeyDown)
     onCleanup(() => window.removeEventListener('keydown', onKeyDown))
-  })
-
-  // While a pass runs, poll the library so the sidebar count grows instead of
-  // sitting at zero until the whole pass ends.
-  onMount(() => {
-    const timer = window.setInterval(async () => {
-      const current = status()
-      if (!current?.library?.indexing) return
-      try {
-        const lib = await api.library()
-        if (!lib) return
-        setStatus({ ...current, library: lib })
-        if (!lib.indexing) {
-          await Promise.all([loadTree(), loadSidebar()])
-          await runSearch()
-        }
-      } catch {
-        // best effort
-      }
-    }, 500)
-    onCleanup(() => clearInterval(timer))
   })
 
   const filterChips = () => {
@@ -479,7 +647,13 @@ export function App() {
       })
     }
     if (favoritesOnly()) {
-      chips.push({ label: '★ Favorites', clear: () => { setFavoritesOnly(false); void runSearch() } })
+      chips.push({
+        label: '★ Favorites',
+        clear: () => {
+          setFavoritesOnly(false)
+          void runSearch()
+        }
+      })
     }
     return chips
   }
@@ -489,30 +663,26 @@ export function App() {
       <header class="topbar">
         <div class="brand">ReSlip</div>
 
-        <input
-          class="search"
-          placeholder="Search samples…"
-          value={query()}
-          onInput={(e) => {
-            setQuery(e.currentTarget.value)
-            scheduleSearch()
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              setQuery('')
-              void runSearch()
-              e.currentTarget.blur()
-            }
-          }}
-        />
-
-        {filterChips().map((chip) => (
-          <button class="chip" onClick={chip.clear}>
-            {chip.label} <span class="chip-x">×</span>
-          </button>
-        ))}
+        <Show when={activeLibrary()}>
+          {(library) => (
+            <span class="lib-chip" title={library().root}>
+              {library().name}
+            </span>
+          )}
+        </Show>
 
         <div class="spacer" />
+
+        <Show when={history().undo}>
+          <button class="ghost" onClick={() => void undo()} title="Undo (Ctrl+Z)">
+            ↶ Undo
+          </button>
+        </Show>
+        <Show when={history().redo}>
+          <button class="ghost" onClick={() => void redo()} title="Redo (Ctrl+Shift+Z)">
+            ↷ Redo
+          </button>
+        </Show>
 
         <Show when={notice()}>
           <button class="notice" onClick={() => setNotice(null)} title="dismiss">
@@ -521,40 +691,83 @@ export function App() {
         </Show>
 
         <button
-          class={autoPlay() ? 'ghost on' : 'ghost'}
+          class={settings().autoPlay ? 'ghost on' : 'ghost'}
           onClick={toggleAutoPlay}
           title="Play the row you click (Alt+A)"
         >
-          Auto-play {autoPlay() ? 'on' : 'off'}
+          Auto-play {settings().autoPlay ? 'on' : 'off'}
         </button>
 
-        <button class="ghost" onClick={() => void openLibrary()} disabled={busy()}>
-          {status()?.library ? 'Change library' : 'Open library'}
+        <button class="ghost" onClick={() => setSettingsOpen(true)} title="Settings (Ctrl+,)">
+          ⚙ Settings
         </button>
       </header>
 
-      <div class="body">
-        <Sidebar
-          folders={folders()}
-          library={status()?.library ?? null}
-          facets={facets()}
-          favorites={favorites()}
-          total={total()}
-          category={category()}
-          subcategory={subcategory()}
-          folder={folder()}
-          favoritesOnly={favoritesOnly()}
-          onCategory={setCategoryFilter}
-          onFolder={setFolderFilter}
-          onToggleFavorites={() => {
-            setFavoritesOnly(!favoritesOnly())
-            void runSearch()
-          }}
-        />
+      <div class="body" style={{ 'grid-template-columns': `${sidebarW()}px 1fr` }}>
+        {/*
+          The rail and its drag handle share a wrapper so the handle can sit on the
+          rail's own edge. It cannot be a grid child of `.body`: that would add a
+          third column and push the table sideways.
+        */}
+        <div class="rail">
+          <Sidebar
+            libraries={libraries()}
+            facets={facets()}
+            favorites={favorites()}
+            total={total()}
+            folders={folders()}
+            category={category()}
+            subcategory={subcategory()}
+            folder={folder()}
+            favoritesOnly={favoritesOnly()}
+            onActivate={(root) => void switchLibrary(root)}
+            onCategory={setCategoryFilter}
+            onFolder={setFolderFilter}
+            onToggleFavorites={() => {
+              setFavoritesOnly(!favoritesOnly())
+              void runSearch()
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+          <div class="rail-resize" onPointerDown={startResize} title="Drag to resize" />
+        </div>
 
         <main class="main">
+          <div class="main-head">
+            <input
+              class="search"
+              placeholder="Search samples…"
+              value={query()}
+              onInput={(e) => {
+                setQuery(e.currentTarget.value)
+                scheduleSearch()
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setQuery('')
+                  void runSearch()
+                  e.currentTarget.blur()
+                }
+              }}
+            />
+            {filterChips().map((chip) => (
+              <button class="chip" onClick={chip.clear}>
+                {chip.label} <span class="chip-x">×</span>
+              </button>
+            ))}
+            <div class="spacer" />
+            <Show when={matching() > 0}>
+              <span class="dim small">
+                {matching().toLocaleString()} match{matching() === 1 ? '' : 'es'}
+              </span>
+            </Show>
+            <button class="ghost" onClick={() => void addLibrary()} title="Add a library (Ctrl+O)">
+              Add library
+            </button>
+          </div>
+
           <Show
-            when={status()?.library}
+            when={libraries().length > 0}
             fallback={
               <div class="empty">
                 <h1>{bootError() ? 'Backend error' : 'No library open'}</h1>
@@ -569,7 +782,7 @@ export function App() {
                 >
                   <p class="bad">{bootError()}</p>
                 </Show>
-                <button class="primary" onClick={() => void openLibrary()} disabled={busy()}>
+                <button class="primary" onClick={() => void addLibrary()}>
                   Open library…
                 </button>
               </div>
@@ -581,12 +794,16 @@ export function App() {
               active={active()}
               sortKey={sortKey()}
               sortAsc={sortAsc()}
+              showCategory={settings().showCategory}
+              matching={matching()}
+              hasMore={hasMore() && settings().infiniteScroll}
               onSort={changeSort}
               onSelectionChange={changeSelection}
               onActivate={activate}
               onRowMenu={setMenu}
               onToggleFavorite={toggleFavorite}
               onSelectAll={() => void selectAll()}
+              onLoadMore={() => void loadMore()}
             />
           </Show>
 
@@ -628,21 +845,10 @@ export function App() {
           <span class="dim">{selection().length.toLocaleString()} selected</span>
         </Show>
 
-        <Show when={status()?.library}>
-          {(lib) => (
-            <Show
-              when={!lib().indexing}
-              fallback={
-                <span class="dim">
-                  indexing {lib().indexed.toLocaleString()} / {lib().total.toLocaleString()}
-                </span>
-              }
-            >
-              <span class="dim">
-                {rows().length.toLocaleString()} of {matching().toLocaleString()} sounds
-              </span>
-            </Show>
-          )}
+        <Show when={libraries().length > 0}>
+          <span class="dim">
+            {rows().length.toLocaleString()} of {matching().toLocaleString()} loaded
+          </span>
         </Show>
 
         <Show when={waveMs()}>
@@ -672,6 +878,25 @@ export function App() {
           />
         )}
       </Show>
+
+      <Show when={settingsOpen()}>
+        <SettingsDialog
+          settings={settings()}
+          onChange={changeSettings}
+          libraries={libraries()}
+          onClose={() => setSettingsOpen(false)}
+          onReindex={(full) => void reindex(full)}
+          onRemoveLibrary={(root) => void removeLibrary(root)}
+          onAddLibrary={() => void addLibrary()}
+          busy={indexing() !== null}
+        />
+      </Show>
+
+      <IndexOverlay
+        open={indexing() !== null}
+        label={indexing()?.label ?? ''}
+        progress={indexing()?.progress ?? null}
+      />
     </div>
   )
 }

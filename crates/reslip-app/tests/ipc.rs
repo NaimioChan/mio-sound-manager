@@ -347,29 +347,22 @@ fn waveform_bucket_count_is_clamped_not_trusted() {
 }
 
 #[test]
-fn opening_a_library_starts_a_pass_and_search_finds_the_rows() {
+fn opening_a_library_indexes_it_before_returning_and_search_finds_the_rows() {
     let Some(state) = state() else { return };
     let root = scratch("library");
     write_wav(&root.join(r"Foley\door_slam.wav"), 44_100, 2, 4_410);
     write_wav(&root.join(r"Weapons\Firearms\gunshot_01.wav"), 44_100, 2, 8_820);
     std::fs::write(root.join("readme.txt"), b"not audio").unwrap();
 
-    let status = state.open_library(&root.to_string_lossy()).expect("open");
+    // Blocking now: when this returns, the pass is done and the rows are there.
+    // That is the whole point of the change — a caller cannot see a half-built
+    // index, so there is nothing to poll and nothing to race.
+    let status = state
+        .add_library(&root.to_string_lossy(), false, |_, _| {})
+        .expect("open");
     assert_eq!(status.root, root.to_string_lossy());
-    assert!(status.indexing, "a pass should have started");
-
-    // Wait for the background pass. Polling is what the UI does; a fixed sleep
-    // would make this test slow on success and flaky on a loaded machine.
-    let mut library = status;
-    for _ in 0..600 {
-        library = state.library_status().expect("library status").expect("open");
-        if !library.indexing {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(!library.indexing, "index pass never finished");
-    assert_eq!(library.count, 2, "the .txt must not be indexed");
+    assert!(!status.indexing, "the pass finished before returning");
+    assert_eq!(status.count, 2, "the .txt must not be indexed");
 
     // Search returns the wire shape, with the formatted labels the table needs.
     let rows = state
@@ -414,14 +407,9 @@ fn folder_tree_comes_from_the_index_not_from_disk() {
     // paths, so a folder with no indexed audio is not part of the library.
     std::fs::create_dir_all(root.join("EmptyFolder")).unwrap();
 
-    state.open_library(&root.to_string_lossy()).expect("open");
-    for _ in 0..600 {
-        let status = state.library_status().expect("status").expect("open");
-        if !status.indexing {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    state
+        .add_library(&root.to_string_lossy(), false, |_, _| {})
+        .expect("open");
 
     let tree = state.list_folders().expect("folders");
     assert_eq!(tree.count, 3, "root count");
@@ -463,35 +451,34 @@ fn search_without_a_library_is_an_error_the_ui_can_display() {
 }
 
 #[test]
-fn reopening_the_same_library_does_not_start_a_second_indexer() {
+fn reopening_the_same_library_reindexes_it_instead_of_opening_a_second_copy() {
     let Some(state) = state() else { return };
     let root = scratch("reopen");
     write_wav(&root.join("a.wav"), 44_100, 2, 1_000);
 
-    let first = state.open_library(&root.to_string_lossy()).expect("first open");
-    assert!(first.indexing);
+    let first = state
+        .add_library(&root.to_string_lossy(), false, |_, _| {})
+        .expect("first open");
+    assert_eq!(first.count, 1);
 
-    // While the first pass runs, a second open must not spawn another write
-    // against the same database.
-    let second = state.open_library(&root.to_string_lossy()).expect("second open");
+    // Re-adding the same folder means "refresh", not "open it twice": the user
+    // gets one entry in the sidebar and one pass, not two of each.
+    let second = state
+        .add_library(&root.to_string_lossy(), false, |_, _| {})
+        .expect("second open");
     assert_eq!(second.root, first.root);
+    assert_eq!(second.count, 1, "one file, indexed once");
 
-    for _ in 0..600 {
-        let status = state.library_status().expect("status").expect("open");
-        if !status.indexing {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let settled = state.library_status().expect("status").expect("open");
-    assert_eq!(settled.count, 1, "one file, indexed once");
+    let libraries = state.library_list().expect("list");
+    assert_eq!(libraries.len(), 1, "the folder must not be listed twice");
+    assert_eq!(libraries[0].count, 1);
 }
 
 #[test]
 fn opening_a_folder_that_does_not_exist_is_rejected() {
     let Some(state) = state() else { return };
     let err = state
-        .open_library(r"C:\definitely\not\a\real\folder\reslip")
+        .add_library(r"C:\definitely\not\a\real\folder\reslip", false, |_, _| {})
         .expect_err("a missing folder must be rejected");
     assert!(err.to_string().contains("not a folder"), "{err}");
 }
@@ -511,14 +498,9 @@ fn settled_library(state: &AppState, name: &str) -> PathBuf {
     write_wav(&root.join(r"Weapons\Firearms\gunshot_01.wav"), 44_100, 2, 8_820);
     write_wav(&root.join(r"Weapons\Firearms\gunshot_02.wav"), 44_100, 2, 8_820);
 
-    state.open_library(&root.to_string_lossy()).expect("open");
-    for _ in 0..600 {
-        let status = state.library_status().expect("status").expect("open");
-        if !status.indexing {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    state
+        .add_library(&root.to_string_lossy(), false, |_, _| {})
+        .expect("open");
     root
 }
 
@@ -715,6 +697,230 @@ fn pause_freezes_the_playhead_and_resume_continues_without_re_decoding() {
     assert_eq!(stopped.position_s, 0.0);
     assert!(!stopped.paused);
     assert!(stopped.finished);
+
+    drop(root);
+}
+
+// ------------------------------------------------------ P5: multi-library, undo
+//
+// The three gaps that made P4 unusable as a daily tool: no memory of which
+// library was open, no way to page past the first 500 rows, and no way to take
+// back a mis-clicked star. These tests cover the first and third; paging is a
+// front-end concern with a back-end `offset`, asserted by the CDP script.
+
+#[test]
+fn several_libraries_can_be_open_at_once_and_the_active_one_switches() {
+    let Some(state) = state() else { return };
+    let a = scratch("multi-a");
+    let b = scratch("multi-b");
+    write_wav(&a.join("a.wav"), 44_100, 2, 1_000);
+    write_wav(&b.join("b.wav"), 44_100, 2, 1_000);
+    write_wav(&b.join("b2.wav"), 44_100, 2, 1_000);
+
+    state
+        .add_library(&a.to_string_lossy(), false, |_, _| {})
+        .expect("open a");
+    state
+        .add_library(&b.to_string_lossy(), false, |_, _| {})
+        .expect("open b");
+
+    let libraries = state.library_list().expect("list");
+    assert_eq!(libraries.len(), 2, "both folders stay open");
+
+    // Adding a library makes it the active one: opening a folder is a request to
+    // look at it, not to file it away.
+    let active = libraries.iter().find(|l| l.active).expect("one active");
+    assert_eq!(active.root, b.to_string_lossy());
+    assert_eq!(
+        active.name,
+        b.file_name().unwrap().to_string_lossy(),
+        "the rail shows the folder name, not the path"
+    );
+    assert_eq!(active.count, 2);
+
+    // Searching only sees the active library's rows.
+    let rows = state
+        .search(SearchRequest {
+            query: String::new(),
+            ..Default::default()
+        })
+        .expect("search");
+    assert_eq!(rows.len(), 2, "the other library's rows must not leak in");
+
+    // Switching back changes what search sees.
+    state.set_active_library(&a.to_string_lossy()).expect("switch");
+    let rows = state
+        .search(SearchRequest {
+            query: String::new(),
+            ..Default::default()
+        })
+        .expect("search after switch");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].filename, "a.wav");
+
+    drop((a, b));
+}
+
+#[test]
+fn closing_the_active_library_falls_back_to_another_open_one() {
+    let Some(state) = state() else { return };
+    let a = scratch("close-a");
+    let b = scratch("close-b");
+    write_wav(&a.join("a.wav"), 44_100, 2, 1_000);
+    write_wav(&b.join("b.wav"), 44_100, 2, 1_000);
+
+    state
+        .add_library(&a.to_string_lossy(), false, |_, _| {})
+        .expect("open a");
+    state
+        .add_library(&b.to_string_lossy(), false, |_, _| {})
+        .expect("open b");
+
+    // Closing the active one must leave the window on a working library, not on
+    // "no library open" while another one is sitting there.
+    let changed = state.remove_library(&b.to_string_lossy()).expect("close b");
+    assert!(changed, "the active library changed");
+
+    let libraries = state.library_list().expect("list");
+    assert_eq!(libraries.len(), 1);
+    assert_eq!(libraries[0].root, a.to_string_lossy());
+    assert!(libraries[0].active);
+
+    // Closing the last one leaves nothing open, and search says so cleanly.
+    state.remove_library(&a.to_string_lossy()).expect("close a");
+    assert!(state.library_list().expect("list").is_empty());
+    let err = state
+        .search(SearchRequest::default())
+        .expect_err("no library left");
+    assert!(err.to_string().contains("no library"), "{err}");
+
+    drop((a, b));
+}
+
+#[test]
+fn switching_to_a_library_that_is_not_open_is_rejected() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "switch-missing");
+
+    let err = state
+        .set_active_library(r"C:\not\an\open\library")
+        .expect_err("an unopened folder cannot be made active");
+    assert!(err.to_string().contains("not open"), "{err}");
+
+    drop(root);
+}
+
+#[test]
+fn undo_restores_a_favorite_and_redo_puts_it_back() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "undo-favorite");
+
+    let row = state
+        .search(SearchRequest {
+            query: "gunshot_01".into(),
+            ..Default::default()
+        })
+        .expect("search")
+        .into_iter()
+        .next()
+        .expect("row");
+    let paths = vec![row.path.clone()];
+
+    state.set_favorite(&paths, true).expect("favorite");
+    let (undo_label, redo_label) = state.history_state();
+    assert_eq!(undo_label.as_deref(), Some("Add to Favorites"));
+    assert_eq!(redo_label, None);
+
+    // Undo takes the star off, and the label it reports is the edit it reversed.
+    let undone = state.undo().expect("undo").expect("something to undo");
+    assert_eq!(undone, "Add to Favorites");
+    let (favorites, _) = state.library().unwrap().summary().unwrap();
+    assert_eq!(favorites, 0, "the star is gone again");
+
+    // Redo puts it back, and the stacks swap.
+    let (undo_label, redo_label) = state.history_state();
+    assert_eq!(undo_label, None);
+    assert_eq!(redo_label.as_deref(), Some("Add to Favorites"));
+
+    let redone = state.redo().expect("redo").expect("something to redo");
+    assert_eq!(redone, "Add to Favorites");
+    let (favorites, _) = state.library().unwrap().summary().unwrap();
+    assert_eq!(favorites, 1);
+
+    // With nothing left, both return `None` rather than failing.
+    assert_eq!(state.undo().expect("undo"), Some("Add to Favorites".into()));
+    assert_eq!(state.undo().expect("undo again"), None);
+    assert_eq!(state.redo().expect("redo"), Some("Add to Favorites".into()));
+
+    drop(root);
+}
+
+#[test]
+fn undo_restores_the_previous_category_not_just_the_previous_flag() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "undo-category");
+
+    let row = state
+        .search(SearchRequest {
+            query: "gunshot_01".into(),
+            ..Default::default()
+        })
+        .expect("search")
+        .into_iter()
+        .next()
+        .expect("row");
+    let paths = vec![row.path.clone()];
+    let before = row.category.clone();
+    let before_manual = row.category_manual;
+
+    state
+        .set_category(&paths, "Undo Check", Some("Temp"))
+        .expect("set category");
+    assert_eq!(state.history_state().0.as_deref(), Some("Set Category"));
+
+    state.undo().expect("undo").expect("entry");
+
+    // Back to exactly what it was, including whether the classifier or the user
+    // owned the value: restoring only the category string would silently pin a
+    // guess as a manual choice.
+    let after = state
+        .search(SearchRequest {
+            query: "gunshot_01".into(),
+            ..Default::default()
+        })
+        .expect("search after undo")
+        .into_iter()
+        .next()
+        .expect("row");
+    assert_eq!(after.category, before);
+    assert_eq!(after.category_manual, before_manual);
+
+    drop(root);
+}
+
+#[test]
+fn a_multi_row_edit_undoes_as_one_step() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "undo-batch");
+
+    let rows = state
+        .search(SearchRequest {
+            query: "gunshot".into(),
+            ..Default::default()
+        })
+        .expect("search");
+    assert_eq!(rows.len(), 2);
+    let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
+
+    state.set_favorite(&paths, true).expect("favorite both");
+    let (favorites, _) = state.library().unwrap().summary().unwrap();
+    assert_eq!(favorites, 2);
+
+    // One Ctrl+Z for a 200-row selection, not 200. That is the whole reason the
+    // history stores per-path previous values in a single entry.
+    state.undo().expect("undo").expect("entry");
+    let (favorites, _) = state.library().unwrap().summary().unwrap();
+    assert_eq!(favorites, 0, "one undo cleared the whole selection");
 
     drop(root);
 }

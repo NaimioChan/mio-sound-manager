@@ -2,6 +2,40 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-16 18:40 · hermes · P5 工作区（多库 / 持久化 / undo / 阻塞索引 / 设置）
+
+- 改: 新增 `crates/reslip-app/src/session.rs`（打开过的库 + 活跃库写 `%APPDATA%\com.naimio.reslip\session.json`）、`src/history.rs`（undo/redo 栈）；`state.rs` 从单库改成 `LibrarySet` 多库 + `add_library`（阻塞）/`remove_library`/`set_active_library`/`library_list`/`reindex_active`/`undo`/`redo`/`attach_session`/`persist_session`；`library.rs` 加 `index_blocking_with`（带进度回调）与 `restore_category`；`reslip-index/src/db.rs` 加 `restore_category_many`；`commands.rs` 换 `open_library` 为 `add_library`，新增 `list_libraries`/`remove_library`/`set_active_library`/`reindex_library`/`undo`/`redo`/`get_history`，`LibraryStatus` 加 `name`/`active`；`ui/` 重写 `App.tsx`/`Sidebar.tsx`，`SoundTable.tsx` 加无限滚动与可配列，新增 `SettingsDialog.tsx`/`IndexOverlay.tsx`，`styles.css` 加库分组/设置/遮罩/rail 把手/表尾；新增 `tools/check-workspace.mjs`、`tools/check-index-overlay.mjs`；`docs/app.md` 重写，`docs/architecture.md` 第 8 节把 P5 标通过并写明 P6 不做
+- 状态: **P5 通过**。P6（Slicer/Effects/Loop/Export + ASIO）按用户决定不做
+- 顺带: 用户删了四篇过时文档（`TODO-low-latency-audio` / `research-notes-playback` / 两份 `prompt-for-*`），把仓库里七处悬空引用改掉了——`AGENTS.md` 状态行与目录表、`docs/architecture.md` 开头与 6.2、`probes/README.md`
+
+### 用户要的六项，逐条落地
+
+| 要求 | 做法 |
+| --- | --- |
+| 记住库，不要每次重选 | `session.json` 存打开过的库 + 活跃库；启动 `attach_session` 只开数据库不跑索引 |
+| 无限翻页 | `offset = 已加载行数` 追加，距底部两屏触发；表尾显示「500 of 271,350 · scroll for more」 |
+| undo 栈 | 最近 50 次编辑，每条存每路径的旧值；Ctrl+Z / Ctrl+Shift+Z / 顶栏按钮 |
+| 同时开多个库，文件夹树显示各自母文件夹名而不是 All Files | 侧栏按库分组，每组头部是文件夹名（完整路径做 tooltip）；非活跃组只显示头部 |
+| 索引期间占用 | `add_library` 阻塞到 pass 结束，铺满窗口的遮罩吞掉点击与键盘 |
+| 左栏可调宽 | `.rail` 内的绝对定位把手，160–520px，写 `localStorage` |
+| 搜索框移到中间区块顶部 | `.main-head` 里，窗口顶部只留「我在哪个库」+ undo/redo + 设置 |
+| 二级设置页 | Playback / List / Libraries 三节，改动即时生效并存 `localStorage` |
+
+### 实测抓到的两个真实缺陷
+
+1. **undo 恢复不了分类。** 第一版 `restore` 走 `set_category` / `clear_category`，但这两个只能造出「手动且是这个字符串」或「Uncategorized」，造不出「分类器填的值」——撤销一次手动分类会把旧值抹成 Uncategorized。集成测试直接抓到（期望 `Weapons`，得到 `Uncategorized`）。修法是索引层加 `restore_category_many`，精确写回字符串与 `category_manual`。
+2. **`Option<Channel<T>>` 编译不过。** Tauri 2 的 `Channel` 不实现 `Deserialize`，`onProgress` 必须必填。同理 `State<'_, T>` 借的是命令栈帧，跨不进 `spawn_blocking`，两个阻塞命令改成拿 `AppHandle` 再 `app.state()`。
+
+### 验收
+
+`cargo test --release --workspace` **97 个通过**（P4 是 83）。新增 14 个：多库切换与搜索隔离、关闭活跃库回退、切到未打开的库被拒、undo/redo 收藏、undo 恢复旧分类与旧归属、多行编辑一次撤销、session 往返/损坏降级/消失文件夹、history 栈上限与分叉。
+
+CDP 三份脚本共 73 项断言全绿：`check-workspace.mjs` 26 项（含拖拽改宽 232→322px、无限滚动 5→1500 行、undo/redo 两条路径）、`check-index-overlay.mjs` 7 项（遮罩铺满、点击打不到列表、空格不播、结束后消失）、`check-browsing.mjs` 40 项 P4 回归。`check-layout.mjs` 几何断言无重叠无裁切。
+
+- 验证: `cargo test --release --workspace` 97 个通过；`tsc --noEmit` + `vite build` 通过（53KB JS）；真实 28 万库 `add_library` 增量 11.6s（阻塞到完成）；三份 CDP 脚本 73 项全绿；布局几何断言通过
+- 遗留: ① 想改 `AGENTS.md` 的命令表（`cargo test` 的 83→97、CDP 脚本清单加两份新的）被保护机制拦下（审批超时），**现状是没改**——`AGENTS.md` 第 32 行仍写 83，第 59 行的脚本清单缺 `check-workspace` 与 `check-index-overlay`；② 分类侧栏折叠状态不持久（模式/宽度/设置项都持久）；③ undo 不跨重启，不覆盖删除/改名/重索引；④ 拖拽悬停光标样式不变
+- 下一步: 没有排定的阶段了。这一版是可用产品，后续按试用反馈修
+
 ## 2026-11-16 16:15 · hermes · P4 前端搬迁（列表/波形/搜索完整交互）
 
 - 改: `crates/reslip-engine/src/output.rs`（`pause`/`resume`/`paused`，`PlaybackSnapshot.paused`）；`crates/reslip-index/src/db.rs`（`set_favorite_many`/`set_category_many`/`clear_category_many`/`summary`）；`crates/reslip-app`（`commands.rs` 新增 `pause`/`resume`/`get_sidebar`/`set_favorite`/`set_category`/`clear_category`/`pick_library_folder`/`reveal_in_folder`/`list_matching_paths`/`count_matching`，`state.rs` 对应封装与 `matching_paths`，`Cargo.toml` 加 `tauri-plugin-dialog` + `tauri-plugin-opener`，`capabilities/default.json` 加两个 ACL，`tauri.conf.json` 的 CSP 加 `connect-src`）；`ui/src` 重写 `App.tsx`/`SoundTable.tsx`/`Sidebar.tsx`，新增 `ContextMenu.tsx`/`CategoryDialog.tsx`，`ipc.ts` 补类型与 `startDrag`，`styles.css` 补菜单/模态/facet/行对齐；新增 `tools/check-browsing.mjs`、`tools/check-layout.mjs`；`docs/app.md` 重写，`docs/architecture.md` 第 8 节标 P4 通过

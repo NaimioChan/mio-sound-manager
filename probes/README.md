@@ -1,6 +1,6 @@
 # 探针项目
 
-支撑 `docs/architecture.md` 与 `docs/research-notes-playback.md` 中所有数字的一次性验证程序。它们不是产品代码，不参与构建，只在需要复测时运行。
+支撑 `docs/architecture.md` 中所有延迟与格式数字的一次性验证程序。它们不是产品代码，不参与构建，只在需要复测时运行。
 
 ## wasapi3-probe
 
