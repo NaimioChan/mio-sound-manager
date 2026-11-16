@@ -1,5 +1,9 @@
 # ReSlip 低延迟播放调研 — 启动提示词
 
+> **已完成（2026-11-16）。本文件保留作历史记录，不要再拿它开调研对话。**
+> 调研结论见 `docs/TODO-low-latency-audio.md`，架构决策见 `docs/architecture.md`。
+> 开工请用 `docs/prompt-for-implementation.md`。
+
 把下面整段复制到新对话。项目路径 `C:\Users\Naimio\projects\reslip`。
 
 ---

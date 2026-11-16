@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::{FormatOptions, SeekMode, SeekTo};
+use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
@@ -55,8 +55,9 @@ fn run(path: &Path, target_ms: f64) -> Option<Row> {
         .ok()?;
     let track = probed.format.default_track()?.clone();
     let track_id = track.id;
-    let mut decoder =
-        symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).ok()?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .ok()?;
     let open_ms = t_open.elapsed().as_secs_f64() * 1000.0;
 
     let t_first = Instant::now();

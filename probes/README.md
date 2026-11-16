@@ -44,9 +44,9 @@ cargo build --release
 ./target/release/switch2.exe "E2x2"
 ```
 
-设备名参数是子串匹配，不区分大小写。省略则用默认渲染设备。
+设备名参数是子串匹配，不区分大小写。省略则用默认渲染设备。传错名字会列出当前所有可用设备。
 
-**注意**：默认渲染设备是虚拟声卡（FxSound）。测真实硬件要显式传 `"E2x2"` 或 `"TOPPING"`。
+**注意**：默认渲染设备是虚拟声卡（FxSound）。测真实硬件要显式传 `"E2x2"` 或 `"TOPPING"`。本机当前在线的是 E2x2（真实 USB 声卡），TOPPING Pro 需要接上才有。
 
 ## index-probe
 

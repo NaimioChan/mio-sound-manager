@@ -9,7 +9,6 @@
 // The point is to find out whether the work is IO bound (so more threads do
 // not help) or CPU bound, and what the 170k-file target should be.
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -30,9 +29,8 @@ fn probe_meta(path: &Path) -> (Option<f64>, Option<u32>, Option<u32>, u64) {
     );
     let fmt_opts = symphonia::core::formats::FormatOptions::default();
     let meta_opts = symphonia::core::meta::MetadataOptions::default();
-    let codec_opts = symphonia::core::codecs::DecoderOptions::default();
 
-    let mut probed = match symphonia::default::get_probe().format(
+    let probed = match symphonia::default::get_probe().format(
         &Default::default(),
         hint,
         &fmt_opts,

@@ -24,7 +24,7 @@ fn try_format(dev: &Device, bits: usize, valid_bits: usize, st: SampleType, rate
         }
     }
 
-    let (def_hns, min_hns) = client.get_device_period().unwrap();
+    let (_def_hns, min_hns) = client.get_device_period().unwrap();
     let mode = StreamMode::EventsExclusive { period_hns: min_hns };
     if let Err(e) = client.initialize_client(&fmt, Direction::Render, mode, None) {
         println!("  {label}: init failed {e}");
@@ -83,6 +83,23 @@ fn try_format(dev: &Device, bits: usize, valid_bits: usize, st: SampleType, rate
     );
 }
 
+
+/// Device names are matched by substring. Print what exists when nothing matches,
+/// so a wrong name is an actionable error instead of a bare panic.
+fn device_names(en: &DeviceEnumerator) -> String {
+    let mut names = Vec::new();
+    if let Ok(coll) = en.get_device_collection(Direction::Render) {
+        for d in &coll {
+            if let Ok(d) = d {
+                if let Ok(n) = d.get_friendlyname() {
+                    names.push(n);
+                }
+            }
+        }
+    }
+    names.join(" | ")
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let filter: Option<&str> = args.get(1).map(|s| s.as_str()).filter(|s| *s != "-");
@@ -103,11 +120,16 @@ fn main() {
                     break;
                 }
             }
-            found.expect("no matching device")
+            found.unwrap_or_else(|| {
+                panic!(
+                    "no render device matching {f:?}. Available: {}",
+                    device_names(&en)
+                )
+            })
         }
     };
     println!("device: {:?}", dev.get_friendlyname().unwrap());
-    let mut c = dev.get_iaudioclient().unwrap();
+    let c = dev.get_iaudioclient().unwrap();
     let mix = c.get_mixformat().unwrap();
     println!(
         "mix: {}Hz {}ch {}bit",

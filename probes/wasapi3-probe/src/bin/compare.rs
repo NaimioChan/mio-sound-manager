@@ -64,7 +64,12 @@ fn pick(filter: Option<&str>) -> Device {
                     break;
                 }
             }
-            found.expect("no matching device")
+            found.unwrap_or_else(|| {
+                panic!(
+                    "no render device matching {f:?}. Available: {}",
+                    device_names(&en)
+                )
+            })
         }
     }
 }
@@ -225,6 +230,23 @@ fn exclusive(dev: &Device, bits: usize, valid: usize, st: SampleType, rate: usiz
     let _ = client.stop_stream();
     report(&format!("[exclusive {tag}] publish->DAC"), total);
     report(&format!("[exclusive {tag}]   queued ahead"), queue);
+}
+
+
+/// Device names are matched by substring. Print what exists when nothing matches,
+/// so a wrong name is an actionable error instead of a bare panic.
+fn device_names(en: &DeviceEnumerator) -> String {
+    let mut names = Vec::new();
+    if let Ok(coll) = en.get_device_collection(Direction::Render) {
+        for d in &coll {
+            if let Ok(d) = d {
+                if let Ok(n) = d.get_friendlyname() {
+                    names.push(n);
+                }
+            }
+        }
+    }
+    names.join(" | ")
 }
 
 fn main() {

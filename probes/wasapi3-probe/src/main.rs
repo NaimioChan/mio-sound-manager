@@ -277,7 +277,7 @@ fn main() {
 
     match cmd {
         "periods" => {
-            let mut client = dev.get_iaudioclient().unwrap();
+            let client = dev.get_iaudioclient().unwrap();
             let mix = client.get_mixformat().unwrap();
             println!(
                 "mix format: {}Hz {}ch {}bit {:?}",
@@ -314,7 +314,7 @@ fn main() {
             println!("== shared, engine default period ==");
             run_shared(&dev, None, Duration::from_secs(3), "default");
             println!("== shared, engine minimum period ==");
-            let mut client = dev.get_iaudioclient().unwrap();
+            let client = dev.get_iaudioclient().unwrap();
             let mix = client.get_mixformat().unwrap();
             let p = client.get_shared_mode_engine_period(&mix).unwrap();
             for (frames, tag) in [

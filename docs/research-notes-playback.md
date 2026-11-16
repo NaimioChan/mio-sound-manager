@@ -1,11 +1,17 @@
 # 调研笔记：播放路径实测（参考机）
 
-记录日期 2026-11-16。这些数字用于给 ReSlip 定立延迟目标，**不是**最终结论：参考机的默认输出设备是虚拟声卡（FxSound Audio Enhancer），真实 ASIO 声卡（TOPPING Pro USB Audio Device）的数据尚未采到。
+记录日期 2026-11-16，分两轮。
+
+- **第 1–5 节：第一轮**，用 cpal 抽象层测。数字大部分仍有效，但**第 2 节的延迟口径有误**（见该节警告）。
+- **第 6 节：第二轮**，用 `wasapi` crate 直接对接，把设备缓冲的排队量单独量出来。**后端选型以第 6 节为准。**
+
+两轮之间参考机的设备状态不同：第一轮 TOPPING Pro 接着（可测 ASIO），第二轮只接着 E2x2（测 WASAPI）。所以 ASIO 与 WASAPI 的对比数据跨了两轮，口径不完全可比，文中已分别标注。
 
 ## 参考机
 
-- Windows 11，Rust 1.99，cpal 0.15.3，symphonia 0.5.5
-- 默认输出设备：`扬声器 (FxSound Audio Enhancer)`，F32 / 2ch / 44100Hz
+- Windows 11，Rust 1.99
+- 第一轮：cpal 0.15.3，symphonia 0.5.5；默认输出设备 `扬声器 (FxSound Audio Enhancer)`，F32 / 2ch / 44100Hz
+- 第二轮：`wasapi` 0.27，symphonia 0.5.5；测的是 `Playback 1/2 (2- E2x2)`（真实 USB 声卡）
 - 已安装 ASIO 驱动：`HKLM\SOFTWARE\ASIO\TOPPING Pro USB Audio Device`（CLSID `{5AF0A297-63D3-43D5-BCAD-838C1494D3B7}`）
 
 ## 1. 解码（symphonia，release，整文件）
@@ -19,9 +25,13 @@
 | WAV 44.1k | 5.3MB | 30s | 17ms |
 | WAV 96k/24bit | 104MB | 3min | 209ms |
 
-含义：对采样管理器常见的 1–10 秒素材，**解码不是瓶颈**（1–6ms）。只有超大文件（分多分钟的现场录音、长循环）才需要流式/分块策略。这决定了后端可以有条件地"整文件解码进缓存"，而不是一律流式。
+含义：对采样管理器常见的 1–10 秒素材，**整文件解码**只要 1–6ms。只有超大文件（分多分钟的现场录音、长循环）才需要流式/分块策略。
+
+> 第二轮补测的是**另一个指标**：从打开文件到拿到**第一个包**（不是整文件），7 种格式全部 < 0.4ms，见 3.1 节。冷启动关心的是这个数，不是整文件解码时间。两个数不冲突，是不同场景。
 
 ## 2. WASAPI 共享模式输出
+
+> **⚠️ 本节的数字口径有误，已被第 6 节取代。** 这里测的是「发布 → 回调第一次取到它」，没有计入设备缓冲里已排队的音频。真实点击到出声是 **17.5ms**（第 6.2 节）。保留本节是为了说明当时的误判过程，不要引用这里的 8.33ms。
 
 常驻流，测"发布新片段 → 回调第一次取到它"：
 
@@ -57,7 +67,9 @@ request=32   -> 446 frames (10.12 ms)
 
 含义：换 Tauri 不改变 webview 内播放延迟；同时说明"预载好 → play()"能把延迟压到测量噪声以下，这是 webview 路径的最强项。
 
-## 4. ASIO 实测（本轮最重要数据）
+## 4. ASIO 实测（第一轮，口径与第 6 节不同）
+
+> **⚠️ 本节的「发布→出声」列与第 6 节不可比。** 它计到「回调把数据交给驱动」，不含驱动/设备内部缓冲。第 6 节用 `get_current_padding()` 把排队量算进去了。两个数字不能直接相减或相比。
 
 `TOPPING Pro USB Audio Device` 驱动报告的 buffer 范围是 **8–2048 帧**，cpal 接受 `Fixed()`，回调块精确无抖动（64/64、128/128、256/256）。配置被自动协商到 `I32, 1 ch, 44100 Hz`（cpal 的 ASIO 默认取第一组可用配置）。
 
@@ -68,7 +80,7 @@ request=32   -> 446 frames (10.12 ms)
 | **ASIO** | **128 帧** | **2.90 ms** | **0.61 ms** | 0.36 | 2.14 | 2.42 |
 | ASIO | 256 帧 | 5.80 ms | 3.68 ms | 0.01 | 3.98 | 4.53 |
 
-**ASIO 64 帧比 WASAPI 共享快约 12 倍**（0.68ms vs 8.33ms），且完全可预测：回调率 687/s，块大小稳定 64 帧。
+**ASIO 64 帧比 WASAPI 共享快约 12 倍**（0.68ms vs 8.33ms），且完全可预测：回调率 687/s，块大小稳定 64 帧。（两个数字同口径，这个倍数成立；但它们都不等于真实出声延迟。）
 
 ### ASIO 不是独占的（决定性发现）
 
@@ -87,18 +99,23 @@ ASIO 构建的两个坑（已踩过，写下来免得重踩）：
 2. 之后 `bindgen` 需要 `libclang.dll`。**不必装整套 LLVM**：`pip install libclang` 会附带一个 `libclang.dll`（本机在 `.../site-packages/clang/native/`，约 60MB），把它设进 `LIBCLANG_PATH` 即可。
 3. ASIO 的 `default_output_config()` 常常不可用；要遍历 `supported_output_configs()` 逐个试建流，并按 `sample_format()` 分派不同的闭包类型（f32/i16/i32/u16 各一份）。
 
-## 5. 尚未采到的数据（下一个对话要补）
+## 5. 尚未采到的数据
 
-- **ASIO 立体声配置**：本轮只跑到 1 声道，需要确认 2ch 是否可用及是否影响延迟。
-- **ASIO 设备独占时 DAW 的行为**：这是 Q3 的关键取舍，未测。需要开着 DAW 再跑探针，看 ASIO 是否被抢走。
-- **WASAPI 独占模式**：cpal 0.15 的 Windows 后端默认走共享模式，独占需要 `IAudioClient3` 或额外实现，未测。
-- **设备端真实输出延迟**：`IAudioClient::GetStreamLatency` / `IAudioClock` 的值未取；上面的数字只到"进设备缓冲"，不含 DAC 前的一段。ASIO 同理（`ASIOGetLatency`）。
-- **冷启动首次 open 的开销**：`build_output_stream` 15–34ms 是进程刚起时的一次性成本；常驻流的稳态才是目标形态（ASIO 的 `play()` 几乎瞬时，0–13us）。
+> 本节是**第一轮**的遗留清单。第 6 节已经补掉了「WASAPI 独占模式」「设备端排队」两项，并新增了设备冲突结论。仍然缺的是：ASIO 立体声配置、ASIO 真实出声延迟、真实 DAW 占用场景。
+
+- ~~**WASAPI 独占模式**~~ → 已测，见 6.4。3ms 周期、4.5ms 出声，但会抢设备
+- ~~**设备端真实输出延迟**~~ → 已测排队量，见 6.2。共享模式恒定 12ms
+- **ASIO 立体声配置**：第一轮只跑到 1 声道，需要确认 2ch 是否可用及是否影响延迟。
+- **ASIO 真实出声延迟**：需要用 `get_current_padding()` 同口径复测（本轮 TOPPING 未接）。
+- **ASIO 设备独占时 DAW 的行为**：需要开着真实 DAW 再跑探针。
+- **冷启动首次 open 的开销**：`build_output_stream` 15–34ms 是进程刚起时的一次性成本；常驻流的稳态才是目标形态。
 
 ## 复现
 
+第一轮（已过时，仅存档）：
+
 ```bash
-# 解码 + WASAPI 常驻流（本轮数据来源）
+# 解码 + WASAPI 常驻流（第一轮数据来源）
 cd <临时目录>/rust-audio-probe
 cargo run --release            # 常驻流 swap 延迟
 cargo run --release --bin geometry     # 回调几何
@@ -109,7 +126,9 @@ cd <临时目录>/asio-probe
 cargo build --release && ./target/release/asio-probe.exe 20
 ```
 
-探针项目都是临时的，未进仓库。重建依赖：`cpal = { version = "0.15", features = ["asio"] }`、`symphonia = "0.5"`、`hound = "3.5"`。
+第二轮（第 6 节数据来源）见 6.7，探针已收进仓库 `probes/`。
+
+第一轮的探针项目在 `%TEMP%\rust-audio-probe` 与 `%TEMP%\asio-probe`，未进仓库（ASIO 那个需要 SDK + libclang）。重建依赖：`cpal = { version = "0.15", features = ["asio"] }`、`symphonia = "0.5"`、`hound = "3.5"`。
 
 ASIO 构建的两个坑（已踩过，写下来免得重踩）：
 

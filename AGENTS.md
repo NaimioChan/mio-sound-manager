@@ -28,6 +28,9 @@ Status: **设计阶段。架构已定，未开始实现。** 决策与依据见 
 
 | Area | Path |
 | --- | --- |
-| Research backlog and open decisions | `docs/TODO-low-latency-audio.md` |
-| Measurements captured so far | `docs/research-notes-playback.md` |
+| 架构决策（后端选型、线程模型、技术栈、实施顺序） | `docs/architecture.md` |
+| 调研结论（Q1–Q6 逐条答复） | `docs/TODO-low-latency-audio.md` |
+| 实测数据（延迟、索引、格式探测） | `docs/research-notes-playback.md` |
+| 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
+| 开工提示词（复制到新对话） | `docs/prompt-for-implementation.md` |
 | Handoff log | `docs/agent-log.md` |
