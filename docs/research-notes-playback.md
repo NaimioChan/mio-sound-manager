@@ -57,12 +57,43 @@ request=32   -> 446 frames (10.12 ms)
 
 含义：换 Tauri 不改变 webview 内播放延迟；同时说明"预载好 → play()"能把延迟压到测量噪声以下，这是 webview 路径的最强项。
 
-## 4. 尚未采到的数据（下一个对话要补）
+## 4. ASIO 实测（本轮最重要数据）
 
-- **ASIO 实际周期**：本机有 TOPPING 驱动，但 `asio-sys` 构建需要 LLVM/libclang（bindgen），参考机未安装。补测办法见 TODO 文档 Q3。
-- **WASAPI 独占模式**：cpal 0.15 的 Windows 后端默认走共享模式，独占需要 `IAudioClient3` 或 WASAPI exclusive 的额外实现。未测。
-- **设备端真实输出延迟**：`IAudioClient::GetStreamLatency` / `IAudioClock` 的值未取，上面的数字只到"进设备缓冲"，不含 DAC 前的一段。
-- **冷启动首次 open 的开销**：探针里 `build_output_stream` 15–34ms，但那是进程刚起、设备刚被独占时的一次性成本；常驻流的稳态才是本项目的目标形态。
+`TOPPING Pro USB Audio Device` 驱动报告的 buffer 范围是 **8–2048 帧**，cpal 接受 `Fixed()`，回调块精确无抖动（64/64、128/128、256/256）。配置被自动协商到 `I32, 1 ch, 44100 Hz`（cpal 的 ASIO 默认取第一组可用配置）。
+
+| 后端 | 请求 buffer | 实际回调周期 | 发布→出声 中位 | min | p90 | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| WASAPI 共享 | 默认（450 帧） | 10.20 ms | 8.33 ms | 0.05 | 10.05 | 10.32 |
+| **ASIO** | **64 帧** | **1.45 ms** | **0.68 ms** | 0.17 | 1.16 | 1.47 |
+| **ASIO** | **128 帧** | **2.90 ms** | **0.61 ms** | 0.36 | 2.14 | 2.42 |
+| ASIO | 256 帧 | 5.80 ms | 3.68 ms | 0.01 | 3.98 | 4.53 |
+
+**ASIO 64 帧比 WASAPI 共享快约 12 倍**（0.68ms vs 8.33ms），且完全可预测：回调率 687/s，块大小稳定 64 帧。
+
+### ASIO 不是独占的（决定性发现）
+
+用两个进程同时开 ASIO 流（模拟"DAW 已占用设备"）：两个实例都正常出声，第二个实例的回调率 **690/s**、块大小仍稳定 64 帧、发布→出声中位 **0.69ms**，与单实例（0.68ms）无差异。
+
+含义：**ASIO 在 cpal 这条路径上允许多客户端共享**（TOPPING 驱动实现了多 client 支持）。"开着 DAW 时采样器变哑"这个最担心的失败模式在本机不成立。这大幅降低了选 ASIO 的风险——但仍需在真实 DAW（Ableton/Reaper 用 ASIO 独占缓冲）下复验，因为 cpal 的两个实例和"DAW + 采样器"不是完全等价的场景。
+
+含义（续）：
+- **设备周期不再是瓶颈**。剩下的下限由解码首段 + 进程内调度决定，这两项都在可控范围内（短文件解码 1–6ms）。
+- 这直接把 Q1 的 `< 15ms` 目标从"紧张"变成"宽裕"——即使算上 6ms 解码，总预算也只用了约 7ms 的一半。
+- 代价是 1 声道（cpal 选到的配置）。实际产品需要显式协商 2 声道配置，这件事要在 Q3 里确认 `TOPPING` 是否支持（它报告 6 声道能力，但 cpal 的候选列表里只挑到了 1ch）。
+
+ASIO 构建的两个坑（已踩过，写下来免得重踩）：
+
+1. `asio-sys` 的 build.rs 会下载 Steinberg ASIO SDK 到系统临时目录再 `rename` 成 `asio_sdk`，在 Windows 上常因目录被占用失败。绕过办法：手动把 SDK 解压到 `%TEMP%\asio_sdk`（顶层目录名必须是 `asio_sdk`，里面要有 `host`、`common`、`host/pc`），build.rs 检测到它就跳过下载。
+2. 之后 `bindgen` 需要 `libclang.dll`。**不必装整套 LLVM**：`pip install libclang` 会附带一个 `libclang.dll`（本机在 `.../site-packages/clang/native/`，约 60MB），把它设进 `LIBCLANG_PATH` 即可。
+3. ASIO 的 `default_output_config()` 常常不可用；要遍历 `supported_output_configs()` 逐个试建流，并按 `sample_format()` 分派不同的闭包类型（f32/i16/i32/u16 各一份）。
+
+## 5. 尚未采到的数据（下一个对话要补）
+
+- **ASIO 立体声配置**：本轮只跑到 1 声道，需要确认 2ch 是否可用及是否影响延迟。
+- **ASIO 设备独占时 DAW 的行为**：这是 Q3 的关键取舍，未测。需要开着 DAW 再跑探针，看 ASIO 是否被抢走。
+- **WASAPI 独占模式**：cpal 0.15 的 Windows 后端默认走共享模式，独占需要 `IAudioClient3` 或额外实现，未测。
+- **设备端真实输出延迟**：`IAudioClient::GetStreamLatency` / `IAudioClock` 的值未取；上面的数字只到"进设备缓冲"，不含 DAC 前的一段。ASIO 同理（`ASIOGetLatency`）。
+- **冷启动首次 open 的开销**：`build_output_stream` 15–34ms 是进程刚起时的一次性成本；常驻流的稳态才是目标形态（ASIO 的 `play()` 几乎瞬时，0–13us）。
 
 ## 复现
 
@@ -83,4 +114,5 @@ cargo build --release && ./target/release/asio-probe.exe 20
 ASIO 构建的两个坑（已踩过，写下来免得重踩）：
 
 1. `asio-sys` 的 build.rs 会下载 Steinberg ASIO SDK 到系统临时目录再 `rename` 成 `asio_sdk`，在 Windows 上常因目录被占用失败。绕过办法：手动把 SDK 解压到 `%TEMP%\asio_sdk`（顶层目录名必须是 `asio_sdk`，里面要有 `host`、`common`、`host/pc`），build.rs 检测到它就跳过下载。
-2. 之后 `bindgen` 需要 `libclang.dll`。装 LLVM 或单独提供 libclang 并设 `LIBCLANG_PATH`。
+2. 之后 `bindgen` 需要 `libclang.dll`。装 LLVM 或单独提供 libclang 并设 `LIBCLANG_PATH`。**最省的办法是 `pip install libclang`**，它带的 DLL 就够用（约 60MB，本机路径 `.../site-packages/clang/native/`），不用装整套 LLVM。
+3. cpal 的 ASIO host 常常拒绝 `default_output_config()`。必须遍历 `supported_output_configs()` 逐个试，并按 `sample_format()` 分派不同的闭包类型（f32/i16/i32/u16 各一份）。

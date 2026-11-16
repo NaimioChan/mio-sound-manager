@@ -31,9 +31,9 @@
 ## 环境现状（省得你踩坑）
 
 - Windows 11，Rust 1.99，cargo 可用
-- 参考机**没有装 LLVM/libclang**，而 `asio-sys` 的 build.rs 需要它（bindgen）。这是 Q3 的第一个阻塞，需要先解决：装 LLVM，或者找绕过 bindgen 的办法。ASIO SDK 我已经手动解压到 `%TEMP%\asio_sdk`（绕过了 asio-sys 在 Windows 上 rename 失败的问题），顶层目录名必须是 `asio_sdk`，里面要有 `host`、`common`、`host/pc`。
-- 之前实测用的临时探针项目在 `%TEMP%\rust-audio-probe`（cpal/symphonia 解码与 WASAPI 常驻流）和 `%TEMP%\asio-probe`（ASIO，未编译成功）。可以直接复用或重建。
-- 默认输出设备是 `扬声器 (FxSound Audio Enhancer)`，这是个**虚拟声卡**，测出来的数字不代表直连 USB 声卡。测真实延迟时请确认走的是 TOPPING 或 WASAPI 独占路径，别被虚拟设备误导。
+- **ASIO 构建已打通**（`pip install libclang` 提供 DLL，ASIO SDK 已解压到 `%TEMP%\asio_sdk`）。ASIO 实测数据见 `docs/research-notes-playback.md` 第 4 节：`TOPPING Pro` 在 `Fixed(64)` 下发布→出声中位 **0.68ms**。
+- 之前实测用的探针项目在 `%TEMP%\rust-audio-probe`（cpal/symphonia 解码与 WASAPI 常驻流）和 `%TEMP%\asio-probe`（ASIO，已编译成功，可直接跑）。
+- **注意**：WASAPI 的默认输出设备是 `扬声器 (FxSound Audio Enhancer)`，这是个虚拟声卡，测出来的数字不代表直连 USB 声卡。ASIO 走的是真正的 `TOPPING Pro`。对比延迟时别把两者混在一起。
 
 ## 汇报方式
 
@@ -56,6 +56,7 @@
 ```
 读 C:\Users\Naimio\projects\reslip 下的 AGENTS.md、docs/research-notes-playback.md、
 docs/TODO-low-latency-audio.md，然后按 TODO 做调研，重点 Q1 和 Q3。
-不要写实现，允许写一次性验证原型。ASIO 需要先解决 libclang 缺失。
-测延迟时确认走真实声卡而不是 FxSound 虚拟设备。
+不要写实现，允许写一次性验证原型。
+ASIO 已打通并实测（64 帧 0.68ms），Q3 剩下的是：ASIO 被 DAW 占用时的行为、
+立体声配置、WASAPI 独占对比。测延迟时注意 WASAPI 默认设备是 FxSound 虚拟声卡。
 ```

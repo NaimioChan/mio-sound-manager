@@ -35,12 +35,24 @@
 
 ### Q3：输出后端选谁——ASIO / WASAPI 独占 / WASAPI 共享？
 
-参考机数据：WASAPI 共享 10.1ms 固定周期，请求小 buffer 无效。需要补测：
+**初步倾向：ASIO 为主，WASAPI 共享为回退。** 依据见下（已实测部分）。
 
-- **ASIO**：用 cpal 的 `asio` feature 打通（构建坑见调研笔记），测 TOPPING Pro 上的 buffer size / 周期 / 稳定性。ASIO 通常能到 2–5ms。
+> **部分已答（2026-11-16，参考机）**：ASIO 打通了，`TOPPING Pro USB Audio Device` 支持 8–2048 帧的 buffer，`Fixed(64)` 下回调周期 1.45ms、发布→出声中位 **0.68ms**、最差 1.47ms。比 WASAPI 共享（8.33ms）快约 12 倍，且块大小精确无抖动。**设备周期不再是瓶颈。**
+>
+> **ASIO 多客户端可用**：两个进程同时开 ASIO 流，第二个实例仍 690 callbacks/s、0.69ms，性能无衰减。"开着 DAW 变哑"的担忧在本机不成立（但需在真实 DAW 下复验）。
+>
+> 仍需回答：
+> - 真实 DAW（Ableton/Reaper）占用 ASIO 时 ReSlip 的行为——cpal 双实例不等于 DAW 场景
+> - 立体声配置：本轮只协商到 1ch，需确认 2ch 可用性
+> - WASAPI 独占模式的对比数据
+> - "默认共享、可选 ASIO"的双轨设计是否可行，切换是否要重启流
+> - ASIO SDK 的许可证与分发方式（见 Q5）
+
+原计划要测的：
+- ~~**ASIO**：用 cpal 的 `asio` feature 打通，测 TOPPING Pro 上的 buffer size / 周期 / 稳定性~~ ✅ 已测，见 `docs/research-notes-playback.md` 第 4 节
 - **WASAPI 独占**：`IAudioClient3` + `InitializeSharedAudioStream` 或 exclusive mode，测实际可达周期。
-- 对比维度不只是延迟：还有**设备被占用时的行为**（用户开着 DAW，采样管理器还能不能出声？ASIO 通常是独占的，这可能是致命伤）、切换设备的鲁棒性、多设备并存、蓝牙/USB 热插拔。
-- **必须回答**：如果 ASIO 独占会让"DAW 开着时 Slip Sound 变哑"，这个方案能不能接受？有没有"默认共享、可选 ASIO"的双轨设计？切换是否需要重启流？
+- 对比维度不只是延迟：还有**设备被占用时的行为**（用户开着 DAW，采样管理器还能不能出声？）、切换设备的鲁棒性、多设备并存、蓝牙/USB 热插拔。
+- **必须回答**：如果 ASIO 独占会让"DAW 开着时 ReSlip 变哑"，这个方案能不能接受？双轨设计怎么落？
 
 ### Q4：索引流程如何做到足够快？
 
@@ -84,7 +96,8 @@
 
 ## 已知的坑
 
-- `asio-sys` 构建：SDK 下载后 `rename` 在 Windows 常失败；手动解压到 `%TEMP%\asio_sdk`。之后还需 `libclang.dll`（`LIBCLANG_PATH`）。参考机没有 LLVM，这是 Q3 的第一个待解阻塞。
+- `asio-sys` 构建：SDK 下载后 `rename` 在 Windows 常失败；手动解压到 `%TEMP%\asio_sdk`。之后还需 `libclang.dll`——**`pip install libclang` 就够**，不用装整套 LLVM（已解决，见调研笔记）。
+- cpal 的 ASIO host 常拒绝 `default_output_config()`；要遍历 `supported_output_configs()` 并按 `sample_format()` 分派闭包类型。
 - cpal 0.15 在 Windows 上默认走 WASAPI 共享模式，拿不到独占。
-- 用虚拟声卡（FxSound 之类）测出的数字不代表直连 USB 声卡；务必确认测的是真实 ASIO/WASAPI 设备路径。
+- 用虚拟声卡（FxSound / ToDesk / Oculus 之类）测出的数字不代表直连 USB 声卡；参考机的 WASAPI 默认设备是 FxSound，ASIO 才是真正的 TOPPING。务必确认测的是哪条路径。
 - Tauri 的 webview 音频与 Electron 同内核同延迟，别在这上面花时间（已实测，见调研笔记第 3 节）。
