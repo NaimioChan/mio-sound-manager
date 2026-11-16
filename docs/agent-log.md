@@ -33,7 +33,8 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 `playwright-core` 不在本仓库，验收脚本用 `createRequire` 指向 `slip-sound/package.json`，因此可以从任意目录运行（P3 时要求先 `cd slip-sound/`）。
 
 - 验证: `cargo test --release --workspace` 83 个通过；`ui/` 的 `tsc --noEmit` 与 `vite build` 通过（43.4KB JS）；真实 28 万库上 40 项 CDP 断言全绿；布局几何断言无重叠无裁切
-- 遗留: ① 想改 `AGENTS.md` 的状态行（加 P4）被保护机制拦下（审批超时），**现状是没改**——`AGENTS.md` 顶部仍写着"P0–P3 已通过"；② 无限滚动未做，一页 500 行，参考实现有滚动加载；③ 撤销/重做未做，收藏与分类写入后不可撤回；④ 分类侧栏的折叠状态不持久（侧栏模式是持久的）；⑤ 拖拽悬停光标样式不变（P0 用户指出过）
+- 补记: 收工时改 `AGENTS.md` 被保护机制拦下（审批超时），用户回来后重试通过——状态行、测试总数（79→83）、CDP 脚本清单都已更新，`docs/engine.md` 补了 `pause`/`resume` 一节，`docs/index.md` 补了批量编辑事务
+- 遗留: ① 无限滚动未做，一页 500 行，参考实现有滚动加载；② 撤销/重做未做，收藏与分类写入后不可撤回；③ 分类侧栏的折叠状态不持久（侧栏模式是持久的）；④ 拖拽悬停光标样式不变（P0 用户指出过）
 - 下一步: P5 工具功能（Slicer / Effects / Seamless Loop / Export），逐项对照 Slip Sound 行为；这些是 ffmpeg 外部进程的活儿，播放路径仍不经过 ffmpeg
 
 ## 2026-11-16 15:10 · hermes · P3 Tauri 外壳 + IPC 落地

@@ -60,6 +60,14 @@ src/
 
 **prune 用 `NOT EXISTS` 而不是 `NOT IN (SELECT ...)`。** 后者在 SQLite 上退化成相关扫描，28 万行实测 36s；前者命中主键，3s。
 
+### 用户编辑走批量事务（P4 加的）
+
+收藏、设分类、清分类各有两种形式：单行（`set_favorite` / `set_category` / `clear_category`）与批量（`*_many`）。表上可以 Ctrl+A 选 28 万行再点星标，逐行提交等于 28 万次 WAL fsync；批量形式把整个选区放进一个事务。
+
+**批量写入仍然触发 FTS 触发器，只是每行一次而不是每事务一次。** 这是对的：`category` 与 `subcategory` 在 `sounds_fts` 里，改了分类必须让搜索跟上。批量装载才需要 `begin_bulk` 那种「先卸掉再重建」的做法，用户编辑的量级用不上。
+
+**`summary()` 一次查两个数。** 侧栏同时显示收藏数与总数，分两条 SQL 会在星标点击后的那一帧里让两个数字互相矛盾。`SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds` 是一趟全表扫描，28 万行实测可接受（它只在编辑后调用，不在滚动路径上）。
+
 ## folders
 
 两条来自参考实现、值得原样保留的做法：

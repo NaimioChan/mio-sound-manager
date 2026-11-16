@@ -2,7 +2,7 @@
 
 ReSlip: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；调研结论见 `docs/TODO-low-latency-audio.md`；实测数据见 `docs/research-notes-playback.md`；进度与遗留见 `docs/agent-log.md`。
+Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；调研结论见 `docs/TODO-low-latency-audio.md`；实测数据见 `docs/research-notes-playback.md`；进度与遗留见 `docs/agent-log.md`。
 
 ## Stack (decided)
 
@@ -29,7 +29,7 @@ Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + s
 
 ```bash
 cargo build --release          # workspace, release profile (engine + index + cli)
-cargo test --release           # all unit + integration tests (79 total)
+cargo test --release           # all unit + integration tests (83 total)
 cargo run --release -p reslip-cli -- devices
 cargo run --release -p reslip-cli -- play <file> --device E2x2
 cargo run --release -p reslip-cli -- switch <f1> <f2> ... --device E2x2 --interval 25 --rounds 5
@@ -53,7 +53,16 @@ cargo build -p reslip-app --release
 
 The shell is not a default workspace member: `cargo build`/`cargo test` at the root must keep working without an npm step. Build it with `-p reslip-app` after bundling `ui/`.
 
-**The shell is verified over CDP, not by looking at it.** `tools/run-app.sh` sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` before the webview exists; `tools/inspect-app.mjs`, `drive-app.mjs`, `check-interactions.mjs` then screenshot it and assert on the real DOM. Those scripts run from `slip-sound/` because `playwright-core` is installed there and ESM resolves `node_modules` from the script's own directory. See `docs/app.md`.
+**The shell is verified over CDP, not by looking at it.** `tools/run-app.sh` sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` before the webview exists; the scripts under `tools/` then drive the window and assert on the real DOM:
+
+```bash
+node tools/check-browsing.mjs <library-folder>   # 40 interaction assertions (P4)
+node tools/check-layout.mjs                      # DOM geometry: no overlap, no clipping
+node tools/check-interactions.mjs                # playhead / seek / stop (P3)
+node tools/drive-big-library.mjs <library-folder>  # timings on a real library
+```
+
+They resolve `playwright-core` from `slip-sound/package.json` through `createRequire`, so they run from any directory — that module is not a dependency of this repo. See `docs/app.md`.
 
 ## Where things live
 

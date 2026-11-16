@@ -54,13 +54,33 @@ Engine::publish() →  存槽、打时间戳、翻 active
 
 **设备格式限制。** 只支持 f32/32bit 与 i16/16bit。共享模式设备实际只发这两种；其它情况报 `Unsupported` 而不是猜字节布局。
 
-## 给 UI 的三个入口（P3 加的）
+## 给 UI 的入口（P3 加播放，P4 加暂停）
 
-`publish` / `publish_from` / `stop` 都取 `&self`：它们只写原子量与 `arc-swap`，不需要独占引用。IPC 的命令线程因此可以直接发布，不必再搭一个控制线程把调用排队。
+`publish` / `publish_from` / `stop` / `pause` / `resume` 都取 `&self`：它们只写原子量与 `arc-swap`，不需要独占引用。IPC 的命令线程因此可以直接发布，不必再搭一个控制线程把调用排队。
 
 - `publish_from(clip, offset_frames)` 是 IPC `start_at` 的落点。seek 不重新解码，只是在不可变缓冲上换一个起始位置，代价与普通播放相同的一次原子写。
 - `stop()` 清空两个槽并把 `finished` 置位。它不碰流，所以下一次 `publish` 仍是一次原子写。共享模式排不掉已进 endpoint 的音频，停会有一小段尾巴，这是设备行为不是实现缺陷。
 - `monitor()` 返回 `PlaybackMonitor`：`snapshot()` 与 `drain_reports()` 都是原子读 / 无锁队列读。播放头每秒被问 60 次，不能取 `arc-swap` guard（会跟音频线程自身的 guard 抢），所以开播时把 clip 总帧数一并存进 `active_frames`，`snapshot` 不碰槽位。
+
+### pause / resume：冻结而不是清空
+
+`stop` 与 `pause` 解决的是两件不同的事，混用会让空格键的行为错掉：
+
+| 命令 | 槽位 | `pos_frames` | `finished` | 听感 |
+| --- | --- | --- | --- | --- |
+| `stop` | 两个都清 | 归零 | 置位 | 一小段尾巴后静音 |
+| `pause` | 保留 | 原地不动 | 不动 | 一个引擎周期内静音 |
+| `resume` | 保留 | 原地不动 | 不动 | 从停下的那一帧继续 |
+
+`pause` 只翻一个 `AtomicBool`。渲染回调看到它就写静音、**不更新** `pos_frames`，所以播放头冻结在听众听到的那一帧，而不是回调已经写到的地方——这两者在共享模式下差 12ms 的排队量。`resume` 把标志翻回去，clip 还在槽里，因此不重新解码、不重新 seek、不重新发布。
+
+三个配套决定：
+
+- **`publish` 会清掉 `paused`。** 留着它会让新发布的音频静音播放，那是唯一看起来像引擎坏掉的状态。
+- **暂停期间不计下溢。** 下溢的判据是「有 clip 要播但 endpoint 空了」，暂停时写静音是正确行为，不该被记成 glitch。
+- **`resume` 在没有 clip 时是 no-op。** 空 dock 上误按空格不该伪造出状态。
+
+`PlaybackSnapshot` 因此多了 `paused` 字段，`playing` 与它是互斥的：`playing = frames > 0 && !finished && !paused`。UI 靠这两个字段决定空格键是「暂停」还是「继续」，而不是自己记状态。
 
 ## 延迟测量口径
 
