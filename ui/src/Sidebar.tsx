@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from 'solid-js'
+import { For, Show, createEffect, createMemo, createSignal } from 'solid-js'
 import type { Facet, FolderNode, LibraryStatus } from './ipc'
 
 /**
@@ -18,6 +18,29 @@ import type { Facet, FolderNode, LibraryStatus } from './ipc'
 type Mode = 'categories' | 'folders'
 
 const MODE_KEY = 'reslip:sidebar-mode'
+/** Expanded folders, remembered per library root. */
+const EXPANDED_PREFIX = 'reslip:folders-expanded:'
+
+function loadExpanded(root: string | null): Set<string> {
+  if (!root) return new Set()
+  try {
+    const raw = localStorage.getItem(EXPANDED_PREFIX + root)
+    const parsed = raw ? JSON.parse(raw) : null
+    if (Array.isArray(parsed)) return new Set(parsed.filter((p) => typeof p === 'string'))
+  } catch {
+    // A corrupt entry costs one collapsed tree, not a broken rail.
+  }
+  return new Set()
+}
+
+function saveExpanded(root: string | null, expanded: Set<string>): void {
+  if (!root) return
+  try {
+    localStorage.setItem(EXPANDED_PREFIX + root, JSON.stringify([...expanded]))
+  } catch {
+    // Quota or a locked profile: the tree still works this session.
+  }
+}
 
 interface Props {
   libraries: LibraryStatus[]
@@ -54,6 +77,36 @@ export function Sidebar(props: Props) {
    * own contents.
    */
   const [collapsedLibs, setCollapsedLibs] = createSignal<Set<string>>(new Set())
+  /**
+   * Folders whose children are open, by path.
+   *
+   * The tree is rebuilt from the index on every library switch, so this is keyed
+   * by path and reloaded from `localStorage` per root. Without it, a deep pack
+   * re-collapses every time the rail re-renders, and a 200GB library cannot be
+   * browsed at all: every click on a child folder would be one level deep.
+   */
+  const activeRoot = createMemo(() => props.libraries.find((l) => l.active)?.root ?? null)
+  const [expandedFolders, setExpandedFolders] = createSignal<Set<string>>(
+    loadExpanded(props.libraries.find((l) => l.active)?.root ?? null)
+  )
+
+  // Switching libraries swaps the tree, so the open set has to swap with it.
+  let loadedFor: string | null = props.libraries.find((l) => l.active)?.root ?? null
+  createEffect(() => {
+    const root = activeRoot()
+    if (root === loadedFor) return
+    loadedFor = root
+    setExpandedFolders(loadExpanded(root))
+  })
+
+  const toggleFolder = (path: string) => {
+    const next = new Set(expandedFolders())
+    if (next.has(path)) next.delete(path)
+    else next.add(path)
+    setExpandedFolders(next)
+    saveExpanded(activeRoot(), next)
+  }
+
 
   const changeMode = (next: Mode) => {
     setMode(next)
@@ -122,22 +175,45 @@ export function Sidebar(props: Props) {
     }
   }
 
-  const renderFolder = (node: FolderNode, depth: number) => (
-    <div class="folder-node">
-      <button
-        class={props.folder === node.path ? 'folder selected' : 'folder'}
-        style={{ 'padding-left': `${10 + depth * 12}px` }}
-        onClick={() => props.onFolder(node.path)}
-        title={node.path}
-      >
-        <span class="folder-name">{node.name}</span>
-        <span class="count">{node.count.toLocaleString()}</span>
-      </button>
-      <Show when={node.children.length > 0 && depth < 3}>
-        <For each={node.children}>{(child) => renderFolder(child, depth + 1)}</For>
-      </Show>
-    </div>
-  )
+  const renderFolder = (node: FolderNode, depth: number) => {
+    const hasChildren = () => node.children.length > 0
+    const isOpen = () => expandedFolders().has(node.path)
+    return (
+      <div class="folder-node">
+        <div
+          class={props.folder === node.path ? 'folder selected' : 'folder'}
+          style={{ 'padding-left': `${4 + depth * 12}px` }}
+          title={node.path}
+          onClick={() => props.onFolder(props.folder === node.path ? null : node.path)}
+          // Double-click toggles, the way the reference implementation does it;
+          // the twisty is the discoverable affordance, this is the fast one.
+          onDblClick={() => hasChildren() && toggleFolder(node.path)}
+        >
+          <span
+            class={hasChildren() ? 'twisty' : 'twisty spacer'}
+            onClick={(e) => {
+              // The row's click selects the folder; the twisty must not also do it.
+              e.stopPropagation()
+              if (hasChildren()) toggleFolder(node.path)
+            }}
+            title={hasChildren() ? (isOpen() ? 'Collapse' : 'Expand') : undefined}
+          >
+            {hasChildren() ? (isOpen() ? '▾' : '▸') : ''}
+          </span>
+          <span class="folder-name">{node.name}</span>
+          <span class="count">{node.count.toLocaleString()}</span>
+        </div>
+        {/*
+          Children are mounted only while the folder is open. Rendering the whole
+          tree and hiding it with CSS would build thousands of nodes for a real
+          sample library (271k files) on every rail re-render.
+        */}
+        <Show when={isOpen() && hasChildren()}>
+          <For each={node.children}>{(child) => renderFolder(child, depth + 1)}</For>
+        </Show>
+      </div>
+    )
+  }
 
   return (
     <aside class="sidebar">
@@ -268,11 +344,17 @@ export function Sidebar(props: Props) {
                     </Show>
 
                     <Show when={mode() === 'folders'}>
+                      {/* The empty twisty slot keeps this row's name on the same
+                          left edge as the folder rows below it. Without it the
+                          root sits 16px to the left of every child, which reads
+                          as a different kind of thing rather than the top of the
+                          same tree. */}
                       <button
                         class={props.folder === null ? 'folder selected' : 'folder'}
-                        style={{ 'padding-left': '10px' }}
+                        style={{ 'padding-left': '4px' }}
                         onClick={() => props.onFolder(null)}
                       >
+                        <span class="twisty spacer" />
                         <span class="folder-name">All folders</span>
                         <span class="count">{library.count.toLocaleString()}</span>
                       </button>

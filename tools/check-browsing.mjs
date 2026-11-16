@@ -38,6 +38,31 @@ function check(ok, label, detail = '') {
   if (!ok) failures++
 }
 
+/**
+ * Wait until no first-page query is in flight.
+ *
+ * Every filter or sort change re-queries and then replaces the row nodes. Until
+ * that lands, the rows on screen are the previous result: a click sent now is
+ * applied to a node that is about to be detached, and the selection dies with it.
+ * The table exposes `data-querying` for exactly this, so the wait is on real state
+ * rather than a guessed sleep.
+ */
+async function settleList(timeout = 60_000) {
+  await page
+    .waitForFunction(
+      () => {
+        const table = document.querySelector('.table')
+        if (!table) return false
+        if (table.getAttribute('data-querying') === 'true') return false
+        return !document.querySelector('.index-overlay')
+      },
+      { timeout, polling: 100 }
+    )
+    .catch(() => {})
+  // One more frame so the swap's re-render has been applied before the next click.
+  await page.waitForTimeout(150)
+}
+
 // ---------------------------------------------------------------- open a library
 // The native folder picker cannot be driven from the page: it is a Win32 dialog.
 // So the library is opened through the same command the picker feeds, which is
@@ -94,7 +119,7 @@ const firstFacet = page.locator('.facet').nth(2)
 const facetName = (await firstFacet.locator('.facet-name').textContent())?.trim()
 const facetTotal = Number((await firstFacet.locator('.count').textContent())?.replace(/,/g, ''))
 await firstFacet.click()
-await page.waitForTimeout(600)
+await settleList()
 const filtered = await page.locator('.row').count()
 const chipVisible = await page.locator('.chip').count()
 check(chipVisible > 0, 'a filter chip appears for the chosen category', `${chipVisible} chips`)
@@ -113,9 +138,10 @@ check(
   `${filtered} <= ${facetTotal}`
 )
 
-// Clear the filter.
+// Clear the filter, then wait for the re-query to land before touching a row: see
+// `settleList`.
 await page.locator('.chip').first().click()
-await page.waitForTimeout(300)
+await settleList()
 check((await page.locator('.chip').count()) === 0, 'clearing the chip restores the list')
 
 // ---------------------------------------------------------------- keyboard
@@ -244,11 +270,64 @@ await page.waitForTimeout(400)
 const arrow = await page.locator('.head-cell .sort-arrow').first().textContent()
 check(arrow === '▲' || arrow === '▼', 'clicking a header shows a sort arrow', `${arrow}`)
 
+/**
+ * Numeric columns go through a different wire name than the row field they sort
+ * by (`durationS` → `duration`, `sampleRate` → `sample_rate`). Sending the row
+ * field name made every search fail with `unknown sort column`, and because the
+ * sort stayed broken the rail's category and folder filters silently stopped
+ * working too. Both halves of that are checked here.
+ */
+async function checkSortColumn(label) {
+  const header = page.locator('.head-cell', { hasText: label }).first()
+  await header.click()
+  await page.waitForTimeout(500)
+
+  const active = await page.locator('.head-cell .sort-arrow').count()
+  check(active === 1, `${label} is the active sort column`)
+
+  // The list must still answer: a failing search leaves the rows untouched and
+  // puts the backend's error in the notice slot.
+  const rowsAfter = await page.locator('.row').count()
+  const notice = (await page.locator('.notice').textContent().catch(() => null)) ?? ''
+  check(
+    rowsAfter > 0 && !notice.includes('unknown sort column'),
+    `sorting by ${label} returns rows`,
+    `${rowsAfter} rows${notice ? `, notice: ${notice.trim()}` : ''}`
+  )
+
+  // The rail still filters. This is the part that broke: a failed search kept the
+  // query but the sort short-circuited every later request.
+  const facet = page.locator('.facet').nth(2)
+  if ((await facet.count()) > 0) {
+    await page.locator('.side-mode', { hasText: 'Categories' }).click()
+    await page.waitForTimeout(200)
+    await page.locator('.facet').nth(2).click()
+    await settleList()
+    const filtered = await page.locator('.row').count()
+    const chips = await page.locator('.chip').count()
+    check(
+      filtered > 0 && chips > 0,
+      `category filtering still works while sorted by ${label}`,
+      `${filtered} rows, ${chips} chips`
+    )
+    await page.locator('.chip').first().click()
+    await settleList()
+  }
+}
+
+await checkSortColumn('Length')
+await checkSortColumn('Rate')
+await checkSortColumn('Size')
+
+// Back to name, ascending, so the checks below see a predictable order.
+await headerName.click()
+await page.waitForTimeout(400)
+
 // ---------------------------------------------------------------- playback
 // A long file on purpose: the pause check below needs a clip that is still
 // playing when it runs, and most samples in a real library are under a second.
 await page.locator('input.search').fill('rain')
-await page.waitForTimeout(600)
+await settleList()
 await page.locator('.row').first().click()
 await page.waitForTimeout(200)
 // Walk down the rows until one is long enough to pause inside.
@@ -306,52 +385,51 @@ check(
   `${pausedA.positionS.toFixed(2)}s → ${resumed.positionS.toFixed(2)}s`
 )
 
-// The dock's button mirrors the state: Resume while paused, Pause while playing.
-const dockLabel = await page.locator('.dock-head button.ghost').first().textContent()
-check(dockLabel === 'Pause' || dockLabel === 'Resume', 'the dock offers a pause control', `${dockLabel}`)
+// The dock's transport is icon-only, so the state is read from `aria-label`
+// rather than from the button's text: there is no text left to read.
+const dockToggleLabel = await page
+  .locator('.dock-head button.ghost[aria-label="Pause"], .dock-head button.ghost[aria-label="Resume"]')
+  .first()
+  .getAttribute('aria-label')
+check(
+  dockToggleLabel === 'Pause' || dockToggleLabel === 'Resume',
+  'the dock offers a pause control',
+  `${dockToggleLabel}`
+)
 
-await page.locator('.dock-head button.ghost', { hasText: 'Stop' }).click()
+await page.locator('.dock-head button.ghost[aria-label="Stop"]').click()
 await page.waitForTimeout(400)
 const stopped = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('get_playback_position'))
 check(stopped.positionS === 0 && !stopped.paused, 'Stop clears the playhead')
 
-// ---------------------------------------------------------------- drag export
-// A native OLE drag cannot be synthesised from CDP, so what is checked here is
-// that the app's own drag path reaches the plugin and that the plugin accepts the
-// payload. The actual drop into a DAW is the P0 acceptance, already recorded.
-//
-// The call goes through the bundle's exported helper rather than a hand-built
-// payload: `onEvent` has to be a real `Channel` (it serialises to `__CHANNEL__:id`),
-// and a hand-rolled object is rejected by the command's argument parser — which is
-// exactly the failure this check caught the first time.
-const dragResult = await page.evaluate(async () => {
-  const path = document.querySelector('.row')?.getAttribute('data-path')
-  if (!path) return 'no row'
-  const invoke = window.__TAURI_INTERNALS__.invoke
-
-  // `transformCallback` is how the real `Channel` class gets its id. Using it
-  // keeps this equivalent to what the app sends.
-  const channelId = window.__TAURI_INTERNALS__.transformCallback(() => {})
-
-  try {
-    await invoke('plugin:drag|start_drag', {
-      item: [path],
-      image:
-        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
-      options: { mode: 'copy' },
-      onEvent: `__CHANNEL__:${channelId}`
-    })
-    return 'returned'
-  } catch (e) {
-    return `error: ${e}`
-  }
-})
-console.log(`drag start: ${dragResult}`)
-check(
-  !dragResult.startsWith('error'),
-  'drag start reaches the plugin without a protocol error',
-  dragResult
+// The auto-play toggle sits to the left of Pause and Stop, and its pressed state
+// is the source of truth for whether a click auditions a row.
+const dockButtons = await page.evaluate(() =>
+  [...document.querySelectorAll('.dock-head button.ghost')].map((el) => ({
+    label: el.getAttribute('aria-label'),
+    pressed: el.getAttribute('aria-pressed'),
+    left: el.getBoundingClientRect().left
+  }))
 )
+const autoIdx = dockButtons.findIndex((b) => (b.label ?? '').startsWith('Auto-play'))
+const pauseIdx = dockButtons.findIndex((b) => b.label === 'Pause' || b.label === 'Resume')
+const stopIdx = dockButtons.findIndex((b) => b.label === 'Stop')
+check(autoIdx >= 0, 'the dock has an auto-play toggle')
+check(
+  autoIdx >= 0 && autoIdx < pauseIdx && pauseIdx < stopIdx,
+  'auto-play sits left of Pause, which sits left of Stop',
+  dockButtons.map((b) => b.label).join(' | ')
+)
+check(dockButtons[autoIdx]?.pressed === 'true' || dockButtons[autoIdx]?.pressed === 'false',
+  'the auto-play toggle reports its state', `${dockButtons[autoIdx]?.pressed}`)
+
+// The top bar no longer carries the auto-play text button; Settings is there as
+// an icon and still opens the dialog.
+const topbarSettings = page.locator('.topbar button[aria-label="Settings"]')
+check((await topbarSettings.count()) === 1, 'Settings is an icon button in the top bar')
+const topbarText = (await page.locator('.topbar').textContent()) ?? ''
+check(!topbarText.includes('Auto-play'), 'Auto-play is no longer a top-bar text button')
+
 
 // ---------------------------------------------------------------- folder mode
 await page.locator('.side-mode', { hasText: 'Folders' }).click()
@@ -359,6 +437,85 @@ await page.waitForTimeout(400)
 const folderRows = await page.locator('.folder').count()
 check(folderRows > 0, 'folder mode lists the tree', `${folderRows} nodes`)
 await page.screenshot({ path: `${shotDir}/reslip-p4-folders.png` })
+
+// The tree has to fold. Open state is persisted per library root, so the check
+// asserts the *flip* rather than a fixed starting state: a run after a previous
+// run left a folder open must not fail because the tree remembered it.
+const twisties = page.locator('.folder .twisty:not(.spacer)')
+const twistyCount = await twisties.count()
+check(twistyCount > 0, 'folders with children offer a twisty', `${twistyCount} expandable`)
+
+/** How many rows in the tree are currently drawn as expanded. */
+const openCount = () => page.locator('.folder .twisty', { hasText: '▾' }).count()
+/** How many child rows sit under the tree root, i.e. how deep the tree goes. */
+const treeRows = () => page.locator('.folder').count()
+
+if (twistyCount > 0) {
+  // Normalise to closed first: whatever the previous run left persisted, one
+  // click per open folder puts every one of them back to `▸`.
+  const initialOpen = await openCount()
+  const firstTwisty = twisties.first()
+  const folderPath = await firstTwisty.locator('..').getAttribute('title')
+
+  if (initialOpen > 0) {
+    // Collapse from the deepest end: an outer folder's children are unmounted
+    // when it closes, so driving every visible open twisty once is enough.
+    for (let i = 0; i < initialOpen; i++) {
+      const open = page.locator('.folder .twisty', { hasText: '▾' }).first()
+      if ((await open.count()) === 0) break
+      await open.click()
+      await page.waitForTimeout(150)
+    }
+  }
+  check((await openCount()) === 0, 'every folder can be collapsed')
+
+  const rowsClosed = await treeRows()
+  const chipBefore = await page.locator('.chip').count()
+
+  await firstTwisty.click()
+  await page.waitForTimeout(300)
+  check((await openCount()) > 0, 'clicking a twisty expands the folder', `${await openCount()} open`)
+  check(
+    (await treeRows()) > rowsClosed,
+    'expanding reveals child rows',
+    `${rowsClosed} → ${await treeRows()} rows`
+  )
+  check(
+    (await page.locator('.chip').count()) === chipBefore,
+    'expanding does not touch the filter',
+    folderPath ?? ''
+  )
+
+  await firstTwisty.click()
+  await page.waitForTimeout(300)
+  check((await openCount()) === 0, 'clicking it again collapses the folder')
+  check(
+    (await treeRows()) === rowsClosed,
+    'collapsing unmounts the children',
+    `${await treeRows()} rows`
+  )
+  check(
+    (await page.locator('.chip').count()) === chipBefore,
+    'folding a folder does not touch the filter',
+    folderPath ?? ''
+  )
+
+  // The state survives a mode switch, which is what makes a deep library usable.
+  await firstTwisty.click()
+  await page.waitForTimeout(200)
+  await page.locator('.side-mode', { hasText: 'Categories' }).click()
+  await page.waitForTimeout(200)
+  await page.locator('.side-mode', { hasText: 'Folders' }).click()
+  await page.waitForTimeout(300)
+  check((await openCount()) > 0, 'the open folders survive a mode switch', `${await openCount()} still open`)
+
+  // And it survives a reload, which is the whole point of persisting it.
+  await page.reload()
+  await page.waitForSelector('.row', { timeout: 120_000 })
+  await page.locator('.side-mode', { hasText: 'Folders' }).click()
+  await page.waitForTimeout(400)
+  check((await openCount()) > 0, 'the open folders survive a reload', `${await openCount()} still open`)
+}
 
 // ---------------------------------------------------------------- picker wiring
 // The native dialog cannot be opened from a test without blocking on a Win32
@@ -375,6 +532,52 @@ const pickerPresent = await page.evaluate(() => {
   )
 })
 check(pickerPresent === 'bridge ok', 'the IPC bridge answers after the plugin changes')
+
+
+// ------------------------------------------------- drag export (keep last)
+// This one is last on purpose: `start_drag` enters a native OLE drag loop and the
+// command does not resolve until the drag ends, so every IPC call issued after it
+// can time out. Nothing that needs the backend runs below this point.
+//
+// A native OLE drag cannot be synthesised from CDP, so what is checked here is
+// that the app's own drag path reaches the plugin and that the plugin accepts the
+// payload. The actual drop into a DAW is the P0 acceptance, already recorded.
+//
+// The call goes through the bundle's exported helper rather than a hand-built
+// payload: `onEvent` has to be a real `Channel` (it serialises to `__CHANNEL__:id`),
+// and a hand-rolled object is rejected by the command's argument parser — which is
+// exactly the failure this check caught the first time.
+//
+// The call is raced against a timeout: a promise still pending after 3s means the
+// drag loop is running, which is the success case, not a hang to report.
+const dragResult = await page.evaluate(async () => {
+  const path = document.querySelector('.row')?.getAttribute('data-path')
+  if (!path) return 'no row'
+  const invoke = window.__TAURI_INTERNALS__.invoke
+
+  // `transformCallback` is how the real `Channel` class gets its id. Using it
+  // keeps this equivalent to what the app sends.
+  const channelId = window.__TAURI_INTERNALS__.transformCallback(() => {})
+
+  const call = invoke('plugin:drag|start_drag', {
+    item: [path],
+    image:
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+    options: { mode: 'copy' },
+    onEvent: `__CHANNEL__:${channelId}`
+  }).then(
+    () => 'returned',
+    (e) => `error: ${e}`
+  )
+  const timer = new Promise((resolve) => setTimeout(() => resolve('drag loop running'), 3000))
+  return Promise.race([call, timer])
+})
+console.log(`drag start: ${dragResult}`)
+check(
+  !dragResult.startsWith('error'),
+  'drag start reaches the plugin without a protocol error',
+  dragResult
+)
 
 if (errors.length) {
   console.log('--- page errors ---')

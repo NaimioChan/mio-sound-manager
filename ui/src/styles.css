@@ -151,6 +151,24 @@ input:focus {
   cursor: default;
 }
 
+/* Icon-only buttons: square, so a row of them reads as one cluster instead of
+   three buttons of different widths. The glyph is centred by the flex layout,
+   which also keeps the SVG vertically centred on the text baseline of whatever
+   sits next to it. */
+.ghost.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  flex: none;
+}
+
+.ghost.icon svg {
+  display: block;
+}
+
 .primary {
   padding: 7px 14px;
   border-radius: 4px;
@@ -386,6 +404,7 @@ input:focus {
   color: var(--fg-dim);
   font-size: 12px;
   text-align: left;
+  cursor: pointer;
 }
 
 .folder:hover {
@@ -398,11 +417,29 @@ input:focus {
   color: var(--fg);
 }
 
+/* The twisty is a click target of its own, so it needs to be bigger than the
+   glyph it draws: 12px of text is a 3px-wide triangle, which is not clickable. */
 .twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 12px;
+  height: 100%;
   flex: none;
   color: var(--fg-faint);
   text-align: center;
+  cursor: pointer;
+}
+
+.twisty:hover {
+  color: var(--fg);
+}
+
+/* A leaf has no children to open; the slot stays so the names line up.
+   Deliberately not `.twisty.empty`: `.empty` is the app's full-window empty
+   state (80px padding, 100% height) and it also matches this span. */
+.twisty.spacer {
+  cursor: default;
 }
 
 .twisty-spacer {
@@ -908,6 +945,12 @@ input:focus {
   border-top: 1px solid var(--border);
   font-size: 11px;
   background: var(--bg-raised);
+}
+
+/* A first-page query is in flight. The old rows stay on screen and stay usable,
+   so the only hint that they are about to change is this word. */
+.foot-querying {
+  color: var(--accent);
 }
 
 /* --------------------------------------------------------------- settings */

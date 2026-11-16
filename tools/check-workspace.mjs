@@ -169,7 +169,8 @@ await page.keyboard.press('Control+z')
 await page.waitForTimeout(600)
 
 // ---------------------------------------------------------------- settings
-await page.locator('.topbar button', { hasText: 'Settings' }).click()
+// The top-bar Settings button is icon-only now, located by its accessible name.
+await page.locator('.topbar button[aria-label="Settings"]').click()
 await page.waitForTimeout(400)
 check((await page.locator('.modal.settings').count()) === 1, 'Settings opens from the top bar')
 const settingsSections = await page.locator('.settings-section h3').allTextContents()

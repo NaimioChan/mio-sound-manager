@@ -1,18 +1,22 @@
 import { Show, createEffect, createSignal, onCleanup } from 'solid-js'
 import { api, type SoundRow } from './ipc'
+import { BoltIcon, PauseIcon, PlayIcon, StopIcon } from './icons'
 
 interface Props {
   row: SoundRow | null
   positionS: number
   durationS: number
   playing: boolean
-  /** Loaded but frozen: the Stop button becomes Resume and the playhead holds. */
+  /** Loaded but frozen: the Pause button becomes Resume and the playhead holds. */
   paused: boolean
   decodeMs: number | null
   /** How many rows the selection covers, for the dock's header line. */
   selectionCount: number
+  /** Auto-play on select: whether clicking a row auditions it. */
+  autoPlay: boolean
   onStop: () => void
   onToggle: () => void
+  onToggleAutoPlay: () => void
   onSeek: (seconds: number) => void
   onDecoded: (ms: number) => void
 }
@@ -210,21 +214,43 @@ export function WaveformDock(props: Props) {
           {(ms) => <span class="dim">waveform {ms().toFixed(1)} ms</span>}
         </Show>
 
+        {/*
+          Icon-only transport. The auto-play toggle leads, then Pause/Resume and
+          Stop, so the three controls that decide whether a click makes sound sit
+          in one cluster instead of being split between the top bar and the dock.
+          Each one carries its label in `title` and `aria-label`: with no text on
+          screen, those are the only names a screen reader or a tooltip has.
+        */}
         <button
-          class="ghost"
+          class={props.autoPlay ? 'ghost icon on' : 'ghost icon'}
+          onClick={props.onToggleAutoPlay}
+          title={`Auto-play ${props.autoPlay ? 'on' : 'off'} — clicking a row auditions it (Alt+A)`}
+          aria-label={`Auto-play ${props.autoPlay ? 'on' : 'off'}`}
+          aria-pressed={props.autoPlay}
+        >
+          <BoltIcon />
+        </button>
+
+        <button
+          class="ghost icon"
           onClick={props.onToggle}
           disabled={!props.playing && !props.paused}
           title={props.paused ? 'Resume (Space)' : 'Pause (Space)'}
+          aria-label={props.paused ? 'Resume' : 'Pause'}
         >
-          {props.paused ? 'Resume' : 'Pause'}
+          <Show when={props.paused} fallback={<PauseIcon />}>
+            <PlayIcon />
+          </Show>
         </button>
+
         <button
-          class="ghost"
+          class="ghost icon"
           onClick={props.onStop}
           disabled={!props.playing && !props.paused}
           title="Stop and clear the playhead"
+          aria-label="Stop"
         >
-          Stop
+          <StopIcon />
         </button>
       </div>
 

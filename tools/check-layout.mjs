@@ -16,9 +16,17 @@ if (!page) {
 const report = await page.evaluate(() => {
   const out = { problems: [], facts: {} }
 
-  /** Does this element's text overflow the box it was given? */
+  /**
+   * Does this element's text overflow the box it was given?
+   *
+   * `text-overflow: ellipsis` makes overflow *intentional*: a long filename in a
+   * narrow column is supposed to end in `…`, and reporting it would mean the check
+   * only passes at one particular rail width. What this is looking for is text cut
+   * off with no ellipsis, which is the shape a column-track mismatch takes.
+   */
   const clipped = (el, label) => {
-    if (el.scrollWidth > el.clientWidth + 1) {
+    const overflows = el.scrollWidth > el.clientWidth + 1
+    if (overflows && getComputedStyle(el).textOverflow !== 'ellipsis') {
       out.problems.push(`${label}: text clipped (${el.scrollWidth} > ${el.clientWidth})`)
     }
     if (el.scrollHeight > el.clientHeight + 1 && el.clientHeight > 0) {

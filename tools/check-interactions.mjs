@@ -2,7 +2,13 @@
 // the waveform seeks, and the playhead keeps moving afterwards.
 //
 //   node check-interactions.mjs [port]
-import { chromium } from 'playwright-core'
+//
+// `playwright-core` is not a dependency of this repo: it is resolved out of the
+// reference project's `node_modules`, which lets the script run from anywhere.
+import { createRequire } from 'node:module'
+
+const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
+const { chromium } = require('playwright-core')
 
 const port = process.argv[2] ?? '9223'
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
@@ -72,8 +78,9 @@ if (seeked.position < target - 0.5) {
   process.exitCode = 1
 }
 
-// Stop must park the playhead and leave it parked.
-await page.locator('button.ghost', { hasText: 'Stop' }).click()
+// Stop must park the playhead and leave it parked. The button is icon-only, so
+// it is found by its accessible name rather than by its text.
+await page.locator('button.ghost[aria-label="Stop"]').click()
 await page.waitForTimeout(500)
 const stoppedA = await readTimes()
 await page.waitForTimeout(600)

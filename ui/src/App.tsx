@@ -8,13 +8,14 @@ import {
   type LibraryStatus,
   type SoundRow
 } from './ipc'
-import { SoundTable, DEFAULT_DIR, type RowMenuRequest, type SortKey } from './SoundTable'
+import { SoundTable, DEFAULT_DIR, SORT_WIRE, type RowMenuRequest, type SortKey } from './SoundTable'
 import { WaveformDock } from './WaveformDock'
 import { Sidebar } from './Sidebar'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
 import { SettingsDialog, loadSettings, saveSettings, type Settings } from './SettingsDialog'
 import { IndexOverlay } from './IndexOverlay'
+import { GearIcon } from './icons'
 
 /**
  * Playhead polling, per `docs/architecture.md` 7.3: read position from
@@ -111,6 +112,16 @@ export function App() {
   )
   /** Guards against a second `onLoadMore` while one is in flight. */
   const [loadingMore, setLoadingMore] = createSignal(false)
+  /**
+   * A first-page query is in flight.
+   *
+   * Every filter or sort change re-queries and then swaps the row set. Nothing is
+   * blocked while that happens — the old rows stay clickable — but the swap
+   * detaches them, and a click that lands in the gap is applied to a row that is
+   * about to disappear. Publishing the flag gives the UI (and `tools/` CDP
+   * checks) a deterministic signal instead of a guessed sleep.
+   */
+  const [querying, setQuerying] = createSignal(false)
 
   const [sidebarW, setSidebarW] = createSignal(
     Math.min(
@@ -127,6 +138,10 @@ export function App() {
   /**
    * The search request, derived once so the search call, "select all" and the
    * next page cannot drift apart.
+   *
+   * `sortBy` is the index's wire name, not the table's field name: see
+   * `SORT_WIRE`. Sending `durationS` there is what made every search after a
+   * Length click fail.
    */
   const request = createMemo(() => ({
     query: query(),
@@ -134,7 +149,7 @@ export function App() {
     subcategory: subcategory() ?? undefined,
     folder: folder() ?? undefined,
     favoriteOnly: favoritesOnly() ? true : undefined,
-    sortBy: sortKey(),
+    sortBy: SORT_WIRE[sortKey()],
     sortDir: (sortAsc() ? 'asc' : 'desc') as 'asc' | 'desc'
   }))
 
@@ -143,15 +158,19 @@ export function App() {
     if (libraries().length === 0) {
       setRows([])
       setMatching(0)
+      setQuerying(false)
       return
     }
     const req = { ...request(), limit: settings().pageSize, offset: 0 }
+    setQuerying(true)
     try {
       const [page, count] = await Promise.all([api.search(req), api.countMatching(request())])
       setRows(page)
       setMatching(count)
     } catch (e) {
       setNotice(String(e))
+    } finally {
+      setQuerying(false)
     }
   }
 
@@ -193,6 +212,9 @@ export function App() {
   let searchTimer = 0
   const scheduleSearch = () => {
     clearTimeout(searchTimer)
+    // Raised here, not only inside `runSearch`, so the debounce window is not a
+    // gap where the table looks settled while a query is already queued.
+    setQuerying(true)
     searchTimer = window.setTimeout(() => void runSearch(), 80)
   }
 
@@ -691,15 +713,12 @@ export function App() {
         </Show>
 
         <button
-          class={settings().autoPlay ? 'ghost on' : 'ghost'}
-          onClick={toggleAutoPlay}
-          title="Play the row you click (Alt+A)"
+          class="ghost icon"
+          onClick={() => setSettingsOpen(true)}
+          title="Settings (Ctrl+,)"
+          aria-label="Settings"
         >
-          Auto-play {settings().autoPlay ? 'on' : 'off'}
-        </button>
-
-        <button class="ghost" onClick={() => setSettingsOpen(true)} title="Settings (Ctrl+,)">
-          ⚙ Settings
+          <GearIcon />
         </button>
       </header>
 
@@ -797,6 +816,7 @@ export function App() {
               showCategory={settings().showCategory}
               matching={matching()}
               hasMore={hasMore() && settings().infiniteScroll}
+              querying={querying()}
               onSort={changeSort}
               onSelectionChange={changeSelection}
               onActivate={activate}
@@ -814,8 +834,10 @@ export function App() {
             playing={playhead.playing()}
             paused={playhead.paused()}
             selectionCount={selection().length}
+            autoPlay={settings().autoPlay}
             onStop={() => void stop()}
             onToggle={() => void togglePlayback()}
+            onToggleAutoPlay={toggleAutoPlay}
             onSeek={(seconds) => {
               const row = active()
               if (row) void play(row, seconds)

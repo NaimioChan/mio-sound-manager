@@ -27,8 +27,9 @@ if (libraries.length === 0) {
   process.exit(1)
 }
 
-// Trigger the reindex the way a user does: Settings → Reindex.
-await page.locator('.topbar button', { hasText: 'Settings' }).click()
+// Trigger the reindex the way a user does: Settings → Reindex. The top-bar
+// button is icon-only, so it is located by its accessible name.
+await page.locator('.topbar button[aria-label="Settings"]').click()
 await page.waitForTimeout(300)
 const reindex = page.locator('.settings-actions button', { hasText: 'Reindex' }).first()
 await reindex.click()

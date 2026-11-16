@@ -26,6 +26,28 @@ export type SortKey =
   | 'sampleRate'
   | 'filesize'
 
+/**
+ * Wire name per sort key.
+ *
+ * The renderer's keys are the row fields it sorts by in memory (`durationS`,
+ * `sampleRate`), but the index whitelists its own column names (`duration`,
+ * `sample_rate`). Sending the row field names straight through made `search` fail
+ * with `unknown sort column durationS` — and because the failing request kept the
+ * same sort in every later call, one click on Length broke category and folder
+ * filtering too, until the user happened to sort by something else.
+ *
+ * `SORT_WIRE` is the single place that translation happens.
+ */
+export const SORT_WIRE: Record<SortKey, string> = {
+  favorite: 'favorite',
+  filename: 'filename',
+  category: 'category',
+  durationS: 'duration',
+  channels: 'channels',
+  sampleRate: 'sample_rate',
+  filesize: 'filesize'
+}
+
 interface Column {
   key: SortKey
   label: string
@@ -90,6 +112,13 @@ interface Props {
   matching: number
   /** Whether another page can still be fetched. */
   hasMore: boolean
+  /**
+   * A first-page query is in flight: the rows on screen are the previous result
+   * and are about to be replaced. Exposed to the DOM as `data-querying` so the
+   * CDP checks wait on a real signal instead of guessing sleeps, and shown in the
+   * footer so it is not an invisible state.
+   */
+  querying: boolean
   onSort: (key: SortKey) => void
   onSelectionChange: (paths: string[], active: SoundRow | null) => void
   /** Clicking a row plays it when auto-play is on. */
@@ -271,7 +300,7 @@ export function SoundTable(props: Props) {
   }
 
   return (
-    <div class="table">
+    <div class="table" data-querying={props.querying ? 'true' : 'false'}>
       <div
         class="table-head"
         style={{
@@ -404,9 +433,15 @@ export function SoundTable(props: Props) {
       */}
       <Show when={props.rows.length > 0}>
         <div class="table-foot dim">
-          {props.rows.length.toLocaleString()} of {props.matching.toLocaleString()}
-          <Show when={props.hasMore}>
-            <span> · scroll for more</span>
+          <Show when={props.querying} fallback={
+            <>
+              {props.rows.length.toLocaleString()} of {props.matching.toLocaleString()}
+              <Show when={props.hasMore}>
+                <span> · scroll for more</span>
+              </Show>
+            </>
+          }>
+            <span class="foot-querying">searching…</span>
           </Show>
         </div>
       </Show>

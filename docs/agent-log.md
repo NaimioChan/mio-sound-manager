@@ -2,6 +2,27 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-16 19:40 · hermes · 试用反馈三项修复（排序 / 文件夹折叠 / 图标化播放控件）
+
+- 改: `ui/src/SoundTable.tsx`（新增 `SORT_WIRE` 翻译表、`querying` prop、表尾 `searching…`、`.table` 上加 `data-querying`）、`ui/src/App.tsx`（`request()` 的 `sortBy` 走 `SORT_WIRE`、新增 `querying` 信号、顶栏 auto-play 文字按钮删除、Settings 换图标）、`ui/src/Sidebar.tsx`（文件夹树加 twisty 与按库持久化的展开集合、`All folders` 对齐、双击展开）、`ui/src/WaveformDock.tsx`（三个控件图标化 + auto-play 前置）、新增 `ui/src/icons.tsx`、`ui/src/styles.css`（`.ghost.icon`、`.twisty` 点击区、`.foot-querying`）；`tools/check-browsing.mjs`（新增排序/筛选回归 18 项、文件夹折叠 7 项、dock 图标顺序 5 项、`settleList` 等 `data-querying`、拖拽探测加超时并移到脚本末尾）、`tools/check-interactions.mjs` / `check-workspace.mjs` / `check-index-overlay.mjs`（图标按钮改按 `aria-label` 定位）、`tools/check-layout.mjs`（`text-overflow: ellipsis` 不再算裁切）；`docs/app.md` 补四节设计说明
+
+### 三项反馈的根因
+
+| 反馈 | 根因 |
+| --- | --- |
+| FOLDERS 树不能折叠 | 树是一次性全量渲染到 `depth < 3`，没有 twisty、没有展开状态。现在子节点只在展开时挂载，展开集合按库存 `localStorage` |
+| 点 LENGTH / RATE 报 `unknown sort column`，之后筛选也失效 | 渲染层把行字段名（`durationS` / `sampleRate`）直接当 `sortBy` 发出去，索引白名单是 `duration` / `sample_rate`。失败那次之后排序值没变，后续每次搜索都带同一个坏名字，于是分类与文件夹筛选一起挂——`SORT_WIRE` 是唯一翻译点 |
+| 设置/暂停/停止改纯图标，auto-play 移到暂停左边 | 顶栏的 auto-play 文字按钮删掉，三个控件在 dock 右端成组；每个都带 `title` / `aria-label`，auto-play 另有 `aria-pressed` |
+
+### 顺带修掉的两个非反馈缺陷
+
+1. **点查询中的行会丢选中。** 筛选或排序落地时整批替换行节点，点击落在即将卸载的节点上，选中随之消失——看起来像点击处理器坏了。现在查询期间 `.table` 带 `data-querying="true"`、表尾显示 `searching…`，脚本也等这个信号而不是 sleep。
+2. **`.twisty.empty` 被全局 `.empty` 命中。** `.empty` 是整窗空状态（`padding: 40px`、`height: 100%`），占位 twisty 因此被撑成 80×80 并把行名挤到 88px。改名 `.twisty.spacer`。
+
+- 验证: `cargo test --release --workspace` 97 个通过；`tsc --noEmit` + `vite build` 通过（57KB JS）；CDP 五份脚本全绿——`check-browsing.mjs` 64 项（原 40 + 新 24）、`check-workspace.mjs` 26 项、`check-index-overlay.mjs` 7 项、`check-interactions.mjs` 通过、`check-layout.mjs` 无重叠无裁切；真实 28 万库上点 Length / Rate / Size 均返回 36 行且分类筛选仍生效
+- 遗留: ① `AGENTS.md` 的命令表仍写 `cargo test` 83（实为 97）、CDP 清单缺 `check-workspace` / `check-index-overlay`，本轮没动（受保护文件）；② 分类侧栏折叠状态仍不持久（文件夹树现在持久了）；③ 齿轮图标用 24px 视框描边路径，与其余三个 12px 填充图形的粗细不完全一致；④ 拖拽悬停光标样式不变
+- 下一步: 继续按试用反馈修
+
 ## 2026-11-16 18:40 · hermes · P5 工作区（多库 / 持久化 / undo / 阻塞索引 / 设置）
 
 - 改: 新增 `crates/reslip-app/src/session.rs`（打开过的库 + 活跃库写 `%APPDATA%\com.naimio.reslip\session.json`）、`src/history.rs`（undo/redo 栈）；`state.rs` 从单库改成 `LibrarySet` 多库 + `add_library`（阻塞）/`remove_library`/`set_active_library`/`library_list`/`reindex_active`/`undo`/`redo`/`attach_session`/`persist_session`；`library.rs` 加 `index_blocking_with`（带进度回调）与 `restore_category`；`reslip-index/src/db.rs` 加 `restore_category_many`；`commands.rs` 换 `open_library` 为 `add_library`，新增 `list_libraries`/`remove_library`/`set_active_library`/`reindex_library`/`undo`/`redo`/`get_history`，`LibraryStatus` 加 `name`/`active`；`ui/` 重写 `App.tsx`/`Sidebar.tsx`，`SoundTable.tsx` 加无限滚动与可配列，新增 `SettingsDialog.tsx`/`IndexOverlay.tsx`，`styles.css` 加库分组/设置/遮罩/rail 把手/表尾；新增 `tools/check-workspace.mjs`、`tools/check-index-overlay.mjs`；`docs/app.md` 重写，`docs/architecture.md` 第 8 节把 P5 标通过并写明 P6 不做
