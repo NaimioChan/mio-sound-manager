@@ -57,6 +57,8 @@ interface Props {
   onFolder: (folder: string | null) => void
   onToggleFavorites: () => void
   onOpenSettings: () => void
+  /** Right-click on a library header: the per-library management menu. */
+  onLibraryMenu: (library: LibraryStatus, x: number, y: number) => void
 }
 
 /** One category with its subcategories, aggregated from the flat facet list. */
@@ -251,6 +253,13 @@ export function Sidebar(props: Props) {
                 <button
                   class="lib-head"
                   onClick={() => props.onActivate(library.root)}
+                  onContextMenu={(e) => {
+                    // The management menu belongs to the library, not to the
+                    // window: reindex and close act on one library while several
+                    // are open, which is why they are not in Settings.
+                    e.preventDefault()
+                    props.onLibraryMenu(library, e.clientX, e.clientY)
+                  }}
                   title={library.root}
                 >
                   <span
@@ -374,9 +383,6 @@ export function Sidebar(props: Props) {
                     mean either a second query per library or a number that
                     silently belongs to the active one.
                   */}
-                  <Show when={!library.active}>
-                    <div class="lib-inactive dim">click to switch</div>
-                  </Show>
                 </Show>
               </div>
             )}

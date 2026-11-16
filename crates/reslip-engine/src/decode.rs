@@ -31,12 +31,16 @@ use crate::error::{EngineError, Result};
 pub enum DeviceSample {
     F32,
     I16,
+    /// 32-bit integer, little-endian. ASIO drivers commonly hand out
+    /// `ASIOSTInt32LSB`, which is a full-scale 32-bit sample rather than 24 bits
+    /// in a 32-bit container, so the conversion scales by `i32::MAX`.
+    I32,
 }
 
 impl DeviceSample {
     pub fn bytes(self) -> usize {
         match self {
-            DeviceSample::F32 => 4,
+            DeviceSample::F32 | DeviceSample::I32 => 4,
             DeviceSample::I16 => 2,
         }
     }
@@ -45,6 +49,7 @@ impl DeviceSample {
         match self {
             DeviceSample::F32 => "f32",
             DeviceSample::I16 => "i16",
+            DeviceSample::I32 => "i32",
         }
     }
 }
@@ -444,6 +449,19 @@ fn to_device_bytes(samples: &[f32], format: DeviceSample) -> Vec<u8> {
             for s in samples {
                 let clamped = s.clamp(-1.0, 1.0);
                 let v = (clamped * i16::MAX as f32).round() as i16;
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out
+        }
+        DeviceSample::I32 => {
+            let mut out = Vec::with_capacity(samples.len() * 4);
+            for s in samples {
+                let clamped = s.clamp(-1.0, 1.0);
+                // `i32::MAX as f32` is not exactly representable, so the product
+                // can land one ulp above i32::MAX and saturate on cast. Clamping
+                // the product keeps full-scale input at full-scale output.
+                let scaled = (clamped * i32::MAX as f32).round();
+                let v = scaled.clamp(i32::MIN as f32, i32::MAX as f32) as i32;
                 out.extend_from_slice(&v.to_le_bytes());
             }
             out

@@ -9,7 +9,8 @@ src/
   lib.rs      // 对外导出，模块职责一句话
   error.rs    // EngineError，解码失败带路径（UI 要显示「这个文件播不了」）
   decode.rs   // 文件 → 设备格式 PCM，可在任意线程跑
-  output.rs   // WASAPI 常驻流 + 双槽调度
+  output.rs   // 双槽调度 + WASAPI 常驻流
+  asio.rs     // ASIO 后端（仅 --features asio）
   waveform.rs // 文件 → ~1000 个峰值（UI 画波形用，PCM 不出进程）
 ```
 
@@ -22,7 +23,7 @@ decode 与 output 的契约是 `Arc<DecodedAudio>`：不可变、已转成设备
 1. symphonia 探测 + 解码到交错 f32（用文件自己的采样率与声道数）
 2. 采样率不同则 `rubato` FFT 整段重采样到设备采样率
 3. 声道映射到设备声道数
-4. 转成设备样本格式（f32 或 i16）的字节流
+4. 转成设备样本格式（f32 / i16 / i32）的字节流
 
 **为什么整段解码。** 采样管理器的素材是秒级长度，整段常驻是最简单的「不会因为磁盘慢而欠载」的方案。长文件的流式 decode-ahead 是 P2 之后的事。
 
@@ -42,17 +43,56 @@ Engine::start()  →  渲染线程（创建 IAudioClient、起流、进循环）
 Engine::publish() →  存槽、打时间戳、翻 active
 ```
 
+**两个后端，一套槽。** `output.rs` 里的 `Shared` + `Mixer` 与后端无关：`Mixer::fill()` 从活跃槽拷出交错的设备格式字节，把剩余部分补静音，返回真实音频的字节数。WASAPI 直接把这份 `scratch` 写进 endpoint；ASIO 把它拆成每声道一条 plane 写进驱动的双缓冲（`asio.rs`）。
+
+后端由 `EngineConfig::backend` 选，默认 `Backend::Wasapi`。ASIO 只在 `--features asio` 时编译进来（见下）。
+
 **槽与切换。** `slots: [ArcSwapOption<DecodedAudio>; 2]` + `active: AtomicUsize`。
 
 `publish` 的顺序是：写入非活跃槽 → 重置位置与 finished → 打 `pub_seq` 与 `pub_ns` → 翻 `active`。渲染线程先读 `active` 再读 `pub_seq`，看到新序号就说明槽里的东西已经装好了。
 
 旧 clip 由 `arc-swap` 负责回收：`store()` 内部会等所有 guard 释放才 drop 旧值，所以音频线程永远不会释放自己正在读的内存。**不要**自己写 retire 列表，那是重复实现而且还容易错。
 
-**渲染回调的硬约束。** `scratch` 缓冲在循环外按 endpoint 上限分配一次；回调内只做 `copy_from_slice` 与 `fill(0)`，没有分配、没有锁、没有 IO、没有 `format!`。测量数据通过 `ArrayQueue` 送出，push 失败就丢弃——诊断数据不值得阻塞音频线程。
+**渲染回调的硬约束。** `scratch` 缓冲在循环外按 endpoint 上限分配一次；回调内只做 `copy_from_slice` 与 `fill(0)`，没有分配、没有锁、没有 IO、没有 `format!`。测量数据通过 `ArrayQueue` 送出，push 失败就丢弃——诊断数据不值得阻塞音频线程。ASIO 的每声道拆分同样是预分配指针上的定长循环。
 
 **`IAudioClient` 的生命周期。** 它在渲染线程内创建、使用、销毁。`set_get_eventhandle()` 返回的 `Handle` 与 `AudioClient` 同寿命；提前 drop 会关掉事件，`Start()` 报 `AUDCLNT_E_EVENTHANDLE_NOT_SET`（`0x88890014`）。
 
-**设备格式限制。** 只支持 f32/32bit 与 i16/16bit。共享模式设备实际只发这两种；其它情况报 `Unsupported` 而不是猜字节布局。
+**设备格式限制。** WASAPI 只支持 f32/32bit 与 i16/16bit，共享模式设备实际只发这两种；其它情况报 `Unsupported` 而不是猜字节布局。ASIO 额外支持 i32（`ASIOSTInt32LSB` 及其 16/18/20/24 位对齐变体），并处理大端驱动的字节序。
+
+**周期口径随后端变。** `engine_period_ms()` 在 WASAPI 下是 `endpoint/2`（endpoint 缓冲等于两个引擎周期），在 ASIO 下就是 buffer 本身（一次回调填一个驱动缓冲）。所以同一个字段在 ASIO 128 帧下是 2.67ms，在 WASAPI 共享模式是 11ms，这不是算错。
+
+## ASIO 后端（`--features asio`）
+
+```
+src/asio.rs
+  render_thread()  // STA 初始化 → 加载驱动 → 建缓冲 → start → 睡到停止
+  open_stream()    // 协商采样率/样本类型/声道，注册回调
+  list_devices()   // 枚举 + 逐个探测（通道、首选缓冲、采样率）
+```
+
+**为什么是 feature。** ASIO SDK 是 Steinberg 专有许可，不能随 GPL 二进制分发；`asio-sys` 用 bindgen 构建它，需要 `libclang.dll`。默认构建因此完全不碰它，`tools/build-app.sh --asio` 负责检查 SDK 与 libclang 并打开 feature。
+
+**构建前提。** SDK 解压到 `%TEMP%\asio_sdk`（`CPAL_ASIO_DIR` 可覆盖），`LIBCLANG_PATH` 指向含 `libclang.dll` 的目录（pip 的 `libclang` wheel 就带一个）。
+
+**COM 单元是 STA，不是 MTA。** 这是本项目唯一一个只有实测才能发现的坑。ASIO 驱动对象由 `CoCreateInstance` 创建（SDK 的 `asiolist.cpp` 里的 `asioOpenDriver`），而 TOE 驱动只从单线程套间交出对象。本机实测：
+
+| 线程 | COM 初始化 | 加载结果 |
+| --- | --- | --- |
+| 主线程 | 无（默认 STA） | 成功 |
+| 工作线程 | 无 | `loadDriver` 返回 false |
+| 工作线程 | MTA（`initialize_mta`） | `loadDriver` 返回 false |
+| 工作线程 | STA（`initialize_sta`） | 成功 |
+
+所以 ASIO 的渲染线程是 STA，WASAPI 的渲染线程是 MTA，两者不能共用一个线程。症状是「探针能加载、应用里加载失败」，看起来像权限或驱动问题，其实是套间。
+
+**回调在驱动的线程上跑。** `ASIOStart()` 立刻返回，之后驱动自己调 `bufferSwitch`；渲染线程只是睡到 `running` 变 false。所以 MMCSS 提升要对启动线程做（驱动沿用它的优先级），而不是对某个循环做。
+
+**回调注册是全局的。** `asio-sys` 用进程级注册表，退出顺序必须是 `stop()` → `remove_callback()`，否则下一次启动会拿到指向已释放缓冲的回调。
+
+**只开两个声道。** 驱动有 6 个输出时只开前两个：采样管理器不播环绕，多开只会多付拆 plane 的拷贝。
+
+**枚举会真加载驱动。** `list_devices()` 逐个 `load_driver` 读通道/缓冲/采样率再 drop。拔了线的驱动会在这一步失败，此时条目仍然列出但标 `available: false`——「你的接口没插」比「列表里什么都没有」有用。
+
 
 ## 给 UI 的入口（P3 加播放，P4 加暂停）
 

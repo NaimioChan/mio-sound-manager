@@ -16,6 +16,7 @@
 //! them contain audio code: that lives in `reslip-engine` and is unchanged by
 //! anything the UI does.
 
+mod audio_config;
 mod commands;
 mod error;
 mod history;
@@ -24,8 +25,8 @@ mod session;
 mod state;
 
 pub use commands::{
-    AppStatus, FacetDto, FolderNodeDto, HistoryState, IndexProgress, LibraryStatus,
-    PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
+    AppStatus, AudioDeviceDto, FacetDto, FolderNodeDto, HistoryState, IndexProgress,
+    LibraryStatus, PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
 };
 pub use error::AppError;
 pub use library::Library;
@@ -59,6 +60,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            commands::list_audio_devices,
+            commands::asio_compiled,
+            commands::set_audio_device,
             commands::play,
             commands::stop,
             commands::pause,

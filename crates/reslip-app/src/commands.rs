@@ -29,6 +29,10 @@ pub struct AppStatus {
     /// generic one, so it names the device or format it rejected.
     pub audio_error: Option<String>,
     pub device_name: Option<String>,
+    /// `"WASAPI"` or `"ASIO"`. Shown in the status bar, because the whole reason
+    /// to pick ASIO is the shorter callback period and that number means nothing
+    /// without saying which backend produced it.
+    pub backend: String,
     pub sample_rate: Option<u32>,
     pub channels: Option<usize>,
     pub sample_format: Option<String>,
@@ -37,6 +41,25 @@ pub struct AppStatus {
     /// claim is made — `AGENTS.md`: latency is a measured number, not an adjective.
     pub engine_period_ms: Option<f64>,
     pub library: Option<LibraryStatus>,
+}
+
+/// One entry in the settings dialog's output-device picker.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDeviceDto {
+    /// `"WASAPI"` or `"ASIO"`. The picker groups by this.
+    pub backend: String,
+    /// The value to send back in `set_audio_device`.
+    pub name: String,
+    pub label: String,
+    pub channels: Option<usize>,
+    /// ASIO only: the driver's preferred callback buffer size.
+    pub buffer_frames: Option<u32>,
+    /// Whether this is the OS default endpoint. Only WASAPI has one.
+    pub default: bool,
+    /// False when the device exists but cannot be opened (an ASIO driver whose
+    /// interface is unplugged). The picker still lists it, labelled.
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -267,6 +290,35 @@ pub fn get_status(state: State<'_, AppState>) -> AppResult<AppStatus> {
     state.status()
 }
 
+/// Every output device, WASAPI endpoints and ASIO drivers alike.
+#[tauri::command]
+pub fn list_audio_devices(state: State<'_, AppState>) -> Vec<AudioDeviceDto> {
+    state.list_audio_devices()
+}
+
+/// Whether this binary was built with ASIO support.
+#[tauri::command]
+pub fn asio_compiled(state: State<'_, AppState>) -> bool {
+    state.asio_compiled()
+}
+
+/// Switch the output device and remember the choice.
+///
+/// `backend` is `"wasapi"` or `"asio"`. A device that fails to open is not a
+/// command error: the returned status carries the reason, the same way a missing
+/// device at startup does, so the dialog can show it next to the picker.
+#[tauri::command]
+pub fn set_audio_device(
+    state: State<'_, AppState>,
+    backend: String,
+    device: Option<String>,
+    asio_buffer_frames: Option<u32>,
+) -> AppResult<AppStatus> {
+    let backend = reslip_engine::Backend::parse(&backend)
+        .ok_or_else(|| AppError::internal(format!("unknown audio backend {backend:?}")))?;
+    state.set_audio_device(backend, device, asio_buffer_frames)
+}
+
 /// Start playing `path`, optionally `startAt` seconds in.
 #[tauri::command]
 pub async fn play(state: State<'_, AppState>, path: String, start_at: Option<f64>) -> AppResult<()> {
@@ -375,10 +427,14 @@ pub fn set_active_library(
     state.library_list()
 }
 
-/// Reindex the active library, blocking, with the same progress channel as opening.
+/// Reindex one library, blocking, with the same progress channel as opening.
+///
+/// `root` names the library; `None` means the active one. Naming it explicitly is
+/// what lets the sidebar reindex a background library without switching to it.
 #[tauri::command]
 pub async fn reindex_library(
     app: tauri::AppHandle,
+    root: Option<String>,
     full: Option<bool>,
     on_progress: tauri::ipc::Channel<IndexProgress>,
 ) -> AppResult<LibraryStatus> {
@@ -387,7 +443,7 @@ pub async fn reindex_library(
     let full = full.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        state.reindex_active(full, |done, total| {
+        state.reindex_library(root.as_deref(), full, |done, total| {
             let _ = on_progress.send(IndexProgress { done, total });
         })
     })

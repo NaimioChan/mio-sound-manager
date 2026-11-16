@@ -23,31 +23,112 @@ use std::time::Instant;
 
 use reslip_engine::waveform::DEFAULT_BUCKETS;
 use reslip_engine::{
-    DecodedAudio, Decoder, Engine, EngineConfig, OutputFormat, PlaybackMonitor, PublishSource,
+    Backend, DecodedAudio, Decoder, Engine, EngineConfig, OutputFormat, PlaybackMonitor,
+    PublishSource,
 };
 
+use crate::audio_config::{AudioConfig, AudioStore};
 use crate::commands::{
-    AppStatus, FolderNodeDto, LibraryStatus, PlaybackPosition, SearchRequest, SoundDto,
-    WaveformDto,
+    AppStatus, AudioDeviceDto, FolderNodeDto, LibraryStatus, PlaybackPosition, SearchRequest,
+    SoundDto, WaveformDto,
 };
 use crate::error::{AppError, AppResult};
 use crate::history::History;
 use crate::library::Library;
 use crate::session::{Session, SessionStore};
 
-/// What the app learns about audio at startup and never afterwards.
+/// What the app learns about audio when it opens a device.
 #[derive(Debug, Clone)]
 pub struct EngineInfo {
     pub device_name: String,
+    pub backend: Backend,
     pub format: OutputFormat,
     pub endpoint_frames: u32,
     pub engine_period_ms: f64,
 }
 
 /// A decode request handed to the worker.
+///
+/// The decoder travels with the job rather than living on the worker thread: the
+/// device format can change at runtime (the user switches to an ASIO driver at
+/// 48kHz, say), and a worker holding its own copy would keep resampling to the
+/// format the app started with.
 struct DecodeJob {
     path: String,
+    decoder: Decoder,
     reply: Sender<AppResult<Arc<DecodedAudio>>>,
+}
+
+/// The live audio output, plus what to do when there is none.
+///
+/// Everything behind one mutex because switching devices has to be atomic: a
+/// half-swapped state would hand `publish` the new engine's slots and the old
+/// decoder's format, and every clip would come out at the wrong rate. The audio
+/// callback never touches this — it only reads the atomics inside `Shared`.
+struct AudioSlot {
+    engine: Option<Engine>,
+    monitor: Option<PlaybackMonitor>,
+    error: Option<String>,
+    info: Option<EngineInfo>,
+    /// The device format the decoder converts to. Falls back to 48k/stereo/f32
+    /// when no device opened, so the waveform scanner still has something to
+    /// resample against.
+    format: OutputFormat,
+    backend: Backend,
+    device_filter: Option<String>,
+    asio_frames: Option<u32>,
+}
+
+impl AudioSlot {
+    fn open(backend: Backend, device_filter: Option<String>, asio_frames: Option<u32>) -> Self {
+        let opened = Engine::start(EngineConfig {
+            backend,
+            device_filter: device_filter.clone(),
+            buffer_duration_hns: 0,
+            asio_buffer_frames: asio_frames,
+        });
+
+        match opened {
+            Ok(engine) => {
+                let monitor = engine.monitor();
+                let info = EngineInfo {
+                    device_name: monitor.device_name().to_string(),
+                    backend: monitor.backend(),
+                    format: monitor.format(),
+                    endpoint_frames: monitor.endpoint_frames(),
+                    engine_period_ms: monitor.engine_period_ms(),
+                };
+                Self {
+                    format: info.format,
+                    engine: Some(engine),
+                    monitor: Some(monitor),
+                    error: None,
+                    info: Some(info),
+                    backend,
+                    device_filter,
+                    asio_frames,
+                }
+            }
+            Err(e) => Self {
+                engine: None,
+                monitor: None,
+                error: Some(e.to_string()),
+                info: None,
+                format: OutputFormat {
+                    sample_rate: 48_000,
+                    channels: 2,
+                    sample: reslip_engine::DeviceSample::F32,
+                },
+                backend,
+                device_filter,
+                asio_frames,
+            },
+        }
+    }
+
+    fn decoder(&self) -> Decoder {
+        Decoder::new(self.format)
+    }
 }
 
 /// One-slot mailbox with last-in-wins replacement.
@@ -108,15 +189,10 @@ impl LatestSlot {
 
 /// The whole application state, managed by Tauri.
 pub struct AppState {
-    /// `None` when no render device could be opened. The window still runs; the
-    /// status command reports why playback is unavailable.
-    engine: Option<Engine>,
-    monitor: Option<PlaybackMonitor>,
-    engine_error: Option<String>,
-    info: Option<EngineInfo>,
-    device_filter: Option<String>,
+    /// The render device, the format it needs, and the reason it is not there.
+    /// One mutex because switching device swaps all of it at once.
+    audio: Mutex<AudioSlot>,
 
-    decoder: Decoder,
     jobs: Arc<LatestSlot>,
     worker: Mutex<Option<JoinHandle<()>>>,
 
@@ -143,6 +219,9 @@ pub struct AppState {
     /// Where the open-library list is remembered between runs. `None` in tests,
     /// which must not touch the user's real session file.
     session: Option<SessionStore>,
+
+    /// Where the chosen output device is remembered. Same file, same rules.
+    audio_config: Option<AudioStore>,
 }
 
 /// The open libraries plus which one the window is showing.
@@ -184,44 +263,22 @@ impl AppState {
     /// the system default, which on this machine is a virtual card (FxSound) whose
     /// latency numbers mean nothing — `AGENTS.md` says so for a reason.
     pub fn with_device(device_filter: Option<String>) -> Self {
-        let opened = Engine::start(EngineConfig {
-            device_filter: device_filter.clone(),
-            buffer_duration_hns: 0,
-        });
+        Self::with_audio(Backend::Wasapi, device_filter, None)
+    }
 
-        let (engine, monitor, info, engine_error) = match opened {
-            Ok(engine) => {
-                let monitor = engine.monitor();
-                let info = EngineInfo {
-                    device_name: monitor.device_name().to_string(),
-                    format: monitor.format(),
-                    endpoint_frames: monitor.endpoint_frames(),
-                    engine_period_ms: monitor.engine_period_ms(),
-                };
-                (Some(engine), Some(monitor), Some(info), None)
-            }
-            Err(e) => (None, None, None, Some(e.to_string())),
-        };
-
-        let format = info
-            .as_ref()
-            .map(|i| i.format)
-            .unwrap_or(OutputFormat {
-                sample_rate: 48_000,
-                channels: 2,
-                sample: reslip_engine::DeviceSample::F32,
-            });
+    /// Boot against a specific backend and device.
+    pub fn with_audio(
+        backend: Backend,
+        device_filter: Option<String>,
+        asio_frames: Option<u32>,
+    ) -> Self {
+        let audio = AudioSlot::open(backend, device_filter, asio_frames);
 
         let jobs = Arc::new(LatestSlot::new());
-        let worker = spawn_decoder(Arc::clone(&jobs), Decoder::new(format));
+        let worker = spawn_decoder(Arc::clone(&jobs));
 
         Self {
-            engine,
-            monitor,
-            engine_error,
-            info,
-            device_filter,
-            decoder: Decoder::new(format),
+            audio: Mutex::new(audio),
             jobs,
             worker: Mutex::new(Some(worker)),
             libraries: Mutex::new(LibrarySet::default()),
@@ -230,6 +287,7 @@ impl AppState {
             play_epoch: AtomicU64::new(0),
             history: Mutex::new(crate::history::History::new()),
             session: None,
+            audio_config: None,
         }
     }
 
@@ -243,7 +301,7 @@ impl AppState {
     /// after a long absence would otherwise block the window for a minute before
     /// it could paint; instead the UI asks for a pass and shows its bar.
     pub fn attach_session(&mut self, dir: impl AsRef<Path>) {
-        let store = SessionStore::new(dir);
+        let store = SessionStore::new(&dir);
         let session = store.load();
 
         let mut set = LibrarySet::default();
@@ -266,6 +324,131 @@ impl AppState {
             *slot = set;
         }
         self.session = Some(store);
+
+        // The device choice lives in the same directory. Reading it here rather
+        // than in `boot` keeps one entry point for "restore what the user had",
+        // and it means a test that never calls `attach_session` never reads the
+        // real config.
+        let audio_store = AudioStore::new(dir);
+        let config = audio_store.load();
+        let wanted = (
+            config.backend(),
+            config.device.clone(),
+            config.asio_buffer_frames,
+        );
+        let current = self
+            .audio
+            .lock()
+            .ok()
+            .map(|a| (a.backend, a.device_filter.clone(), a.asio_frames));
+        // Only reopen when the remembered choice differs from what boot opened.
+        // Opening an ASIO driver is a few milliseconds but it takes the device
+        // for a moment, and re-opening the same WASAPI endpoint would drop the
+        // stream for no reason.
+        if current.as_ref() != Some(&wanted) {
+            self.open_audio(wanted.0, wanted.1.clone(), wanted.2);
+        }
+        self.audio_config = Some(audio_store);
+    }
+
+    /// Swap the output device.
+    ///
+    /// Everything that depends on the format has to move with it: the decoder the
+    /// worker uses, the cached clip (which was converted to the old format and
+    /// would play as garbage at the new rate), and the slot the render thread
+    /// reads.
+    ///
+    /// The old engine is dropped **before** the new one is opened, not after. ASIO
+    /// allows one loaded driver per process and the SDK's loader closes whatever is
+    /// open, so opening the replacement while the old engine still lives would
+    /// either fail outright or leave the old callback registered against buffers
+    /// the driver just released.
+    ///
+    /// Returns the error text when the new device could not be opened. The app
+    /// stays usable in that state: playback reports the error, everything else
+    /// keeps working, and the settings dialog can offer another device.
+    pub fn open_audio(
+        &self,
+        backend: Backend,
+        device_filter: Option<String>,
+        asio_frames: Option<u32>,
+    ) -> Option<String> {
+        if let Ok(mut slot) = self.audio.lock() {
+            // Dropping the engine here stops its stream and joins its render
+            // thread, which is what releases the device.
+            slot.engine = None;
+            slot.monitor = None;
+            slot.info = None;
+        }
+
+        let next = AudioSlot::open(backend, device_filter, asio_frames);
+        let error = next.error.clone();
+        if let Ok(mut slot) = self.audio.lock() {
+            *slot = next;
+        }
+        // A clip in the cache is in the old device format; keeping it would make
+        // the next play of that path skip the decode and hand the render thread
+        // bytes it cannot interpret.
+        if let Ok(mut cached) = self.last_clip.lock() {
+            *cached = None;
+        }
+        error
+    }
+
+    /// Switch device and remember the choice. `device` is the name the picker
+    /// showed, which is what `EngineConfig::device_filter` matches.
+    pub fn set_audio_device(
+        &self,
+        backend: Backend,
+        device: Option<String>,
+        asio_frames: Option<u32>,
+    ) -> AppResult<AppStatus> {
+        let error = self.open_audio(backend, device.clone(), asio_frames);
+        if let Some(store) = self.audio_config.as_ref() {
+            let config = AudioConfig {
+                backend: Some(backend.label().to_lowercase()),
+                device,
+                asio_buffer_frames: asio_frames,
+            };
+            if let Err(e) = store.save(&config) {
+                log::warn!("could not write the audio config: {e}");
+            }
+        }
+        // A failed open is not a command failure: the state now describes a
+        // device that is not there, and `status` is how the window finds out.
+        let _ = error;
+        self.status()
+    }
+
+    /// Every output device, both backends, for the settings picker.
+    ///
+    /// ASIO drivers are only probed when nothing is playing on ASIO: the probe
+    /// loads the driver, and the SDK's loader closes whatever driver is already
+    /// open, which would kill the live stream. A plain WASAPI stream is not
+    /// affected, so the channel counts are still filled in then.
+    pub fn list_audio_devices(&self) -> Vec<AudioDeviceDto> {
+        let probing_asio = !matches!(
+            self.audio.lock().map(|a| a.backend),
+            Ok(Backend::Asio)
+        );
+        reslip_engine::output::list_devices(probing_asio)
+            .into_iter()
+            .map(|d| AudioDeviceDto {
+                backend: d.backend.label().to_string(),
+                name: d.name,
+                label: d.label,
+                channels: d.channels,
+                buffer_frames: d.buffer_frames,
+                default: d.default,
+                available: d.available,
+            })
+            .collect()
+    }
+
+    /// Whether this build can open ASIO drivers at all. The dialog uses it to
+    /// explain an empty ASIO section instead of showing nothing.
+    pub fn asio_compiled(&self) -> bool {
+        cfg!(feature = "asio")
     }
 
     /// Write the current open-library list back to the session file.
@@ -290,69 +473,101 @@ impl AppState {
         }
     }
 
-    pub fn engine_info(&self) -> Option<&EngineInfo> {
-        self.info.as_ref()
+    pub fn engine_info(&self) -> Option<EngineInfo> {
+        self.audio.lock().ok().and_then(|a| a.info.clone())
     }
 
-    pub fn engine_error(&self) -> Option<&str> {
-        self.engine_error.as_deref()
+    pub fn engine_error(&self) -> Option<String> {
+        self.audio.lock().ok().and_then(|a| a.error.clone())
     }
 
-    pub fn device_filter(&self) -> Option<&str> {
-        self.device_filter.as_deref()
+    pub fn device_filter(&self) -> Option<String> {
+        self.audio.lock().ok().and_then(|a| a.device_filter.clone())
     }
 
-    pub fn monitor(&self) -> Option<&PlaybackMonitor> {
-        self.monitor.as_ref()
+    pub fn backend(&self) -> Backend {
+        self.audio
+            .lock()
+            .map(|a| a.backend)
+            .unwrap_or(Backend::Wasapi)
     }
 
-    pub fn decoder(&self) -> &Decoder {
-        &self.decoder
+    /// A polling handle for the playhead. `None` when no device opened.
+    pub fn monitor(&self) -> Option<PlaybackMonitor> {
+        self.audio.lock().ok().and_then(|a| a.monitor.clone())
+    }
+
+    /// A decoder configured for the current device format.
+    pub fn decoder(&self) -> Decoder {
+        self.audio
+            .lock()
+            .map(|a| a.decoder())
+            .unwrap_or_else(|_| Decoder::new(OutputFormat {
+                sample_rate: 48_000,
+                channels: 2,
+                sample: reslip_engine::DeviceSample::F32,
+            }))
     }
 
     pub fn output_format(&self) -> OutputFormat {
-        self.decoder.format()
+        self.audio
+            .lock()
+            .map(|a| a.format)
+            .unwrap_or(OutputFormat {
+                sample_rate: 48_000,
+                channels: 2,
+                sample: reslip_engine::DeviceSample::F32,
+            })
     }
 
-    fn engine(&self) -> AppResult<&Engine> {
-        self.engine.as_ref().ok_or_else(|| {
-            AppError::NoAudioDevice(self.engine_error.clone().unwrap_or_default())
-        })
+    /// Run `f` against the live engine, or report why there is none.
+    ///
+    /// Every playback call goes through this rather than holding the audio lock
+    /// itself: the engine's publish path is lock-free, so the lock is only held
+    /// for the duration of the call and never across a decode.
+    fn with_engine<T>(&self, f: impl FnOnce(&Engine) -> T) -> AppResult<T> {
+        let audio = self
+            .audio
+            .lock()
+            .map_err(|_| AppError::internal("audio lock poisoned"))?;
+        match audio.engine.as_ref() {
+            Some(engine) => Ok(f(engine)),
+            None => Err(AppError::NoAudioDevice(
+                audio.error.clone().unwrap_or_default(),
+            )),
+        }
     }
 
     /// Publish a decoded clip and return the publish sequence number.
     pub fn publish(&self, clip: Arc<DecodedAudio>, source: PublishSource) -> AppResult<u64> {
-        Ok(self.engine()?.publish(clip, source))
+        self.with_engine(|engine| engine.publish(clip, source))
     }
 
     /// Publish starting `start_at` seconds in. A seek is a starting offset on an
     /// immutable buffer, so it costs the same atomic store a normal start does.
     pub fn publish_at(&self, clip: Arc<DecodedAudio>, start_at: f64) -> AppResult<u64> {
         let offset = (start_at.max(0.0) * self.output_format().sample_rate as f64) as u64;
-        Ok(self.engine()?.publish_from(clip, offset))
+        self.with_engine(|engine| engine.publish_from(clip, offset))
     }
 
     pub fn stop_playback(&self) -> AppResult<()> {
         self.play_epoch.fetch_add(1, Ordering::AcqRel);
-        self.engine()?.stop();
-        Ok(())
+        self.with_engine(|engine| engine.stop())
     }
 
     /// Freeze the loaded clip. Distinct from stop: the slot stays populated and
     /// the playhead stays where it is, so Space resumes rather than restarts.
     pub fn pause_playback(&self) -> AppResult<()> {
-        self.engine()?.pause();
-        Ok(())
+        self.with_engine(|engine| engine.pause())
     }
 
     pub fn resume_playback(&self) -> AppResult<()> {
-        self.engine()?.resume();
-        Ok(())
+        self.with_engine(|engine| engine.resume())
     }
 
     /// True while a clip is loaded and paused.
     pub fn is_paused(&self) -> bool {
-        self.engine.as_ref().is_some_and(|e| e.paused())
+        self.with_engine(|engine| engine.paused()).unwrap_or(false)
     }
 
     /// Invalidate any decode in flight. Called when playback is stopped or when a
@@ -391,11 +606,22 @@ impl AppState {
     /// The returned receiver yields the clip, or an error. A receiver whose job
     /// was replaced gets `superseded`, which the caller reports as "another play
     /// request arrived first" rather than as a failure.
+    ///
+    /// The decoder is attached to the job, not read off the worker, so a device
+    /// switch mid-session cannot leave a decode converting to the old format.
     pub fn request_decode(&self, path: String) -> AppResult<Receiver<AppResult<Arc<DecodedAudio>>>> {
         let (tx, rx) = channel();
+        let decoder = self.decoder();
         // A full slot is impossible (one job, replaced), so a failed send means
         // the worker is gone.
-        match try_submit(&self.jobs, DecodeJob { path, reply: tx }) {
+        match try_submit(
+            &self.jobs,
+            DecodeJob {
+                path,
+                decoder,
+                reply: tx,
+            },
+        ) {
             Ok(()) => Ok(rx),
             Err(_) => Err(AppError::internal("decode worker is not running")),
         }
@@ -461,15 +687,19 @@ impl AppState {
     pub fn status(&self) -> AppResult<AppStatus> {
         let info = self.engine_info();
         let library = self.library().ok();
+        let backend = info.as_ref().map(|i| i.backend).unwrap_or_else(|| self.backend());
         Ok(AppStatus {
             audio_available: info.is_some(),
-            audio_error: self.engine_error().map(str::to_string),
-            device_name: info.map(|i| i.device_name.clone()),
-            sample_rate: info.map(|i| i.format.sample_rate),
-            channels: info.map(|i| i.format.channels),
-            sample_format: info.map(|i| i.format.sample.label().to_string()),
-            endpoint_frames: info.map(|i| i.endpoint_frames),
-            engine_period_ms: info.map(|i| i.engine_period_ms),
+            audio_error: self.engine_error(),
+            device_name: info.as_ref().map(|i| i.device_name.clone()),
+            backend: backend.label().to_string(),
+            sample_rate: info.as_ref().map(|i| i.format.sample_rate),
+            channels: info.as_ref().map(|i| i.format.channels),
+            sample_format: info
+                .as_ref()
+                .map(|i| i.format.sample.label().to_string()),
+            endpoint_frames: info.as_ref().map(|i| i.endpoint_frames),
+            engine_period_ms: info.as_ref().map(|i| i.engine_period_ms),
             library: match library {
                 Some(lib) => Some(crate::commands::library_status(&lib)?),
                 None => None,
@@ -541,7 +771,6 @@ impl AppState {
             },
         }
     }
-
     /// Peak envelope for the waveform panel.
     ///
     /// ~1000 floats, never PCM: `AGENTS.md` forbids decoded audio crossing into
@@ -553,7 +782,7 @@ impl AppState {
         if !reslip_index::is_audio_path(std::path::Path::new(path)) {
             return Err(AppError::NotAudio(path.to_string()));
         }
-        let decoder = self.decoder().clone();
+        let decoder = self.decoder();
         let buckets = buckets.unwrap_or(DEFAULT_BUCKETS).clamp(16, 16_384);
         let owned = path.to_string();
 
@@ -677,12 +906,31 @@ impl AppState {
             .collect()
     }
 
-    /// Reindex the active library, blocking, with progress.
-    pub fn reindex_active<F>(&self, full: bool, progress: F) -> AppResult<LibraryStatus>
+    /// Reindex one library, blocking, with progress.
+    ///
+    /// `root` names the library; `None` means the active one. A background library
+    /// can be reindexed without switching to it, which is what the sidebar's
+    /// context menu does.
+    pub fn reindex_library<F>(
+        &self,
+        root: Option<&str>,
+        full: bool,
+        progress: F,
+    ) -> AppResult<LibraryStatus>
     where
         F: FnMut(usize, usize),
     {
-        let library = self.library()?;
+        let library = match root {
+            Some(root) => {
+                let path = PathBuf::from(root);
+                self.libraries
+                    .lock()
+                    .map_err(|_| AppError::internal("library lock poisoned"))?
+                    .find(&path)
+                    .ok_or_else(|| AppError::internal(format!("library is not open: {root}")))?
+            }
+            None => self.library()?,
+        };
         library.index_blocking_with(full, progress)?;
         crate::commands::library_status(&library)
     }
@@ -852,12 +1100,16 @@ fn try_submit(jobs: &LatestSlot, job: DecodeJob) -> std::result::Result<(), ()> 
 /// it, so a pool would add threads that are idle by construction. Per-file decode
 /// is 1–6ms for a typical sample (measured, architecture 3.1), which is far below
 /// the ~12ms of device queueing that dominates a click anyway.
-fn spawn_decoder(jobs: Arc<LatestSlot>, decoder: Decoder) -> JoinHandle<()> {
+fn spawn_decoder(jobs: Arc<LatestSlot>) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("reslip-decode".into())
         .spawn(move || {
             while let Some(job) = jobs.take() {
-                let clip = decoder.decode(&job.path).map(Arc::new).map_err(AppError::from);
+                let clip = job
+                    .decoder
+                    .decode(&job.path)
+                    .map(Arc::new)
+                    .map_err(AppError::from);
                 // A dropped receiver means the command was cancelled (the window
                 // closed, or a newer request superseded it). Either way the decode
                 // result is not needed.

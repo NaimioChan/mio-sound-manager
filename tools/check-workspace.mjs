@@ -175,7 +175,29 @@ await page.waitForTimeout(400)
 check((await page.locator('.modal.settings').count()) === 1, 'Settings opens from the top bar')
 const settingsSections = await page.locator('.settings-section h3').allTextContents()
 console.log('settings sections:', settingsSections.join(' | '))
-check(settingsSections.length >= 3, 'settings has playback, list and library sections')
+check(
+  settingsSections.some((s) => s === 'Audio'),
+  'settings has an audio section',
+  settingsSections.join(' | ')
+)
+check(
+  !settingsSections.some((s) => /librar/i.test(s)),
+  'libraries are no longer managed from settings',
+  settingsSections.join(' | ')
+)
+
+// The device picker lists both backends, and every entry is a real device name.
+const deviceOptions = await page.locator('.settings-section select').first().locator('option').allTextContents()
+check(deviceOptions.length > 0, 'the audio picker lists devices', `${deviceOptions.length}`)
+const backendGroups = await page.locator('.settings-section select').first().locator('optgroup').evaluateAll(
+  (els) => els.map((el) => el.getAttribute('label'))
+)
+check(
+  backendGroups.some((g) => /WASAPI/.test(g ?? '')),
+  'the picker groups WASAPI endpoints',
+  backendGroups.join(' | ')
+)
+console.log('audio backends:', backendGroups.join(' | '))
 await page.screenshot({ path: `${shotDir}/reslip-p5-settings.png` })
 
 // Toggling a setting must persist without an OK button.
@@ -193,6 +215,14 @@ await page.waitForTimeout(300)
 check((await page.locator('.modal.settings').count()) === 0, 'Escape closes settings')
 
 // --------------------------------------------------------- resizable rail
+// Start from a known width. The value is persisted, so a previous run that left
+// the rail at its maximum would make a rightward drag a no-op and this check
+// would fail for a reason that has nothing to do with resizing.
+await page.evaluate(() => {
+  localStorage.setItem('reslip:sidebar-width', '232')
+  location.reload()
+})
+await page.waitForTimeout(1200)
 const railWidthBefore = await page.evaluate(
   () => document.querySelector('.sidebar').getBoundingClientRect().width
 )

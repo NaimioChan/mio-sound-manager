@@ -42,7 +42,13 @@ if ((await rows.count()) === 0) {
 // Search something that returns long files: a short sample finishes before the
 // checks below can run, and a finished clip is a legitimately parked playhead.
 await page.locator('input.search').fill('rain')
-await page.waitForTimeout(400)
+// Wait for the query to land instead of sleeping: while a search is in flight the
+// table still shows the old rows, and a click on one of them is applied to a node
+// that is about to be replaced — which silently drops the play request.
+await page
+  .waitForSelector('.table:not([data-querying="true"])', { timeout: 5000 })
+  .catch(() => {})
+await page.waitForTimeout(150)
 const candidates = await rows.count()
 console.log('rain rows:', candidates)
 await rows.first().click()

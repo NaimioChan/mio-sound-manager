@@ -1,17 +1,21 @@
-import { For, Show, createMemo, createSignal } from 'solid-js'
-import type { LibraryStatus } from './ipc'
+import { For, Show, createMemo, createSignal, onMount } from 'solid-js'
+import { api, type AppStatus, type AudioDevice } from './ipc'
 
 /**
  * Settings, in a modal of its own.
  *
  * Scope is what a sample browser actually needs to configure, not a dumping ground:
- * playback behaviour, what the list shows, and the libraries themselves. Anything
- * that belongs to a file (category, favorite) stays on the row.
+ * the output device, playback behaviour, and what the list shows. Anything that
+ * belongs to a file (category, favorite) stays on the row, and anything that
+ * belongs to one library (reindex, close) lives in that library's context menu in
+ * the rail — a modal is the wrong place to manage several of them.
  *
- * Every setting here is persisted in `localStorage` under `reslip:*`. They are
- * per-machine display preferences, not library data, so they do not belong in the
- * SQLite index — copying a library folder to another machine should not carry
- * "this person prefers 200 rows a page".
+ * Display settings are persisted in `localStorage` under `reslip:*`. They are
+ * per-machine preferences, not library data, so they do not belong in the SQLite
+ * index — copying a library folder to another machine should not carry "this
+ * person prefers 200 rows a page". The audio device is different: it is a
+ * property of the machine's hardware, so the backend writes it into
+ * `%APPDATA%\com.naimio.reslip\audio.json` next to the session.
  */
 export interface Settings {
   autoPlay: boolean
@@ -55,19 +59,29 @@ export function saveSettings(settings: Settings): void {
   localStorage.setItem(KEYS.showCategory, String(settings.showCategory))
 }
 
+/**
+ * Buffer sizes offered for ASIO.
+ *
+ * A driver rejects a size outside its own min/max range, and a free-form field
+ * would mostly fail. These are the sizes every interface supports; the driver's
+ * own preferred size is added to the list when it is something else.
+ */
+const ASIO_BUFFERS = [64, 128, 256, 512, 1024, 2048]
+
 interface Props {
   settings: Settings
   onChange: (settings: Settings) => void
-  libraries: LibraryStatus[]
+  status: AppStatus | null
+  onStatus: (status: AppStatus) => void
   onClose: () => void
-  onReindex: (full: boolean) => void
-  onRemoveLibrary: (root: string) => void
-  onAddLibrary: () => void
-  busy: boolean
 }
 
 export function SettingsDialog(props: Props) {
   const [draft, setDraft] = createSignal<Settings>({ ...props.settings })
+  const [devices, setDevices] = createSignal<AudioDevice[]>([])
+  const [asioCompiled, setAsioCompiled] = createSignal(true)
+  const [switching, setSwitching] = createSignal(false)
+  const [deviceError, setDeviceError] = createSignal<string | null>(null)
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     const next = { ...draft(), [key]: value }
@@ -77,12 +91,135 @@ export function SettingsDialog(props: Props) {
     props.onChange(next)
   }
 
-  const activeLibrary = createMemo(() => props.libraries.find((l) => l.active) ?? null)
+  onMount(() => {
+    api
+      .audioDevices()
+      .then(setDevices)
+      .catch((e) => setDeviceError(String(e)))
+    api.asioCompiled().then(setAsioCompiled).catch(() => setAsioCompiled(false))
+  })
+
+  const wasapi = createMemo(() => devices().filter((d) => d.backend === 'WASAPI'))
+  const asio = createMemo(() => devices().filter((d) => d.backend === 'ASIO'))
+
+  /** The backend the running engine is on, not what the picker shows. */
+  const activeBackend = createMemo(() => props.status?.backend ?? 'WASAPI')
+
+  const apply = async (backend: string, device: string | null, bufferFrames: number | null) => {
+    setSwitching(true)
+    setDeviceError(null)
+    try {
+      const status = await api.setAudioDevice(backend, device, bufferFrames)
+      props.onStatus(status)
+      if (!status.audioAvailable) setDeviceError(status.audioError ?? 'device did not open')
+    } catch (e) {
+      setDeviceError(String(e))
+    } finally {
+      setSwitching(false)
+    }
+  }
 
   return (
     <div class="modal-backdrop" onClick={props.onClose}>
       <div class="modal settings" onClick={(e) => e.stopPropagation()} role="dialog">
         <h2 class="modal-title">Settings</h2>
+
+        <section class="settings-section">
+          <h3>Audio</h3>
+
+          <label class="setting">
+            <span class="setting-label">Output device</span>
+            <select
+              value={`${activeBackend()}:${props.status?.deviceName ?? ''}`}
+              disabled={switching()}
+              onChange={(e) => {
+                // A driver name can contain a colon, so only the first one splits.
+                const value = e.currentTarget.value
+                const at = value.indexOf(':')
+                const backend = value.slice(0, at)
+                const device = value.slice(at + 1)
+                void apply(backend, device || null, null)
+              }}
+            >
+              <Show when={wasapi().length > 0}>
+                <optgroup label="WASAPI (shared)">
+                  <For each={wasapi()}>
+                    {(device) => (
+                      <option value={`WASAPI:${device.name}`}>
+                        {device.label}
+                        {device.default ? ' — default' : ''}
+                      </option>
+                    )}
+                  </For>
+                </optgroup>
+              </Show>
+              <Show when={asio().length > 0}>
+                <optgroup label="ASIO">
+                  <For each={asio()}>
+                    {(device) => (
+                      <option value={`ASIO:${device.name}`} disabled={!device.available}>
+                        {device.label}
+                        {device.channels ? ` — ${device.channels} ch` : ''}
+                        {device.available ? '' : ' — unavailable'}
+                      </option>
+                    )}
+                  </For>
+                </optgroup>
+              </Show>
+            </select>
+          </label>
+
+          <Show when={activeBackend() === 'ASIO'}>
+            <label class="setting">
+              <span class="setting-label">Buffer size</span>
+              <select
+                value={String(props.status?.endpointFrames ?? '')}
+                disabled={switching()}
+                onChange={(e) =>
+                  void apply(
+                    'ASIO',
+                    props.status?.deviceName ?? null,
+                    Number(e.currentTarget.value)
+                  )
+                }
+              >
+                {/* The driver's preferred size is not necessarily one of the
+                    standard ones, so it is shown when it is the running value. */}
+                <Show
+                  when={ASIO_BUFFERS.includes(props.status?.endpointFrames ?? 0)}
+                  fallback={
+                    <option value={String(props.status?.endpointFrames ?? '')}>
+                      {props.status?.endpointFrames} frames
+                    </option>
+                  }
+                >
+                  <For each={ASIO_BUFFERS}>
+                    {(frames) => <option value={String(frames)}>{frames} frames</option>}
+                  </For>
+                </Show>
+              </select>
+            </label>
+          </Show>
+
+          <Show when={!asioCompiled()}>
+            <p class="setting-note dim">This build has no ASIO support.</p>
+          </Show>
+          <Show when={asioCompiled() && asio().length === 0}>
+            <p class="setting-note dim">No ASIO driver installed.</p>
+          </Show>
+
+          <Show when={deviceError()}>
+            {(err) => <p class="setting-note bad">{err()}</p>}
+          </Show>
+
+          <Show when={props.status?.audioAvailable}>
+            <p class="setting-note dim">
+              {props.status?.backend} · {props.status?.sampleRate} Hz ·{' '}
+              {props.status?.channels} ch · {props.status?.sampleFormat} ·{' '}
+              {props.status?.enginePeriodMs?.toFixed(2)} ms period
+            </p>
+          </Show>
+        </section>
 
         <section class="settings-section">
           <h3>Playback</h3>
@@ -92,10 +229,7 @@ export function SettingsDialog(props: Props) {
               checked={draft().autoPlay}
               onChange={(e) => set('autoPlay', e.currentTarget.checked)}
             />
-            <span>
-              Play the row I click
-              <span class="dim"> · Alt+A toggles it without opening this dialog</span>
-            </span>
+            <span>Play on click</span>
           </label>
         </section>
 
@@ -128,69 +262,6 @@ export function SettingsDialog(props: Props) {
             />
             <span>Show the category column</span>
           </label>
-        </section>
-
-        <section class="settings-section">
-          <h3>Libraries</h3>
-          <Show
-            when={props.libraries.length > 0}
-            fallback={<p class="dim">No library open.</p>}
-          >
-            <ul class="library-list">
-              <For each={props.libraries}>
-                {(library) => (
-                  <li class="library-row">
-                    <div class="library-row-main">
-                      <span class="library-row-name" title={library.root}>
-                        {library.name}
-                      </span>
-                      <span class="count">{library.count.toLocaleString()}</span>
-                    </div>
-                    <span class="library-row-path dim" title={library.root}>
-                      {library.root}
-                    </span>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </Show>
-
-          <div class="settings-actions">
-            <button class="ghost" onClick={props.onAddLibrary} disabled={props.busy}>
-              Add library…
-            </button>
-            <button
-              class="ghost"
-              onClick={() => props.onReindex(false)}
-              disabled={props.busy || !activeLibrary()}
-              title="Rescan for new and changed files"
-            >
-              Reindex
-            </button>
-            <button
-              class="ghost"
-              onClick={() => props.onReindex(true)}
-              disabled={props.busy || !activeLibrary()}
-              title="Re-probe every file and drop vanished ones"
-            >
-              Full reindex
-            </button>
-            <Show when={activeLibrary()}>
-              {(library) => (
-                <button
-                  class="ghost danger"
-                  onClick={() => props.onRemoveLibrary(library().root)}
-                  disabled={props.busy}
-                >
-                  Close library
-                </button>
-              )}
-            </Show>
-          </div>
-          <p class="modal-note dim">
-            A reindex blocks the window until it finishes, because a half-indexed
-            library shows a list that is missing rows you cannot see are missing.
-          </p>
         </section>
 
         <div class="modal-actions">

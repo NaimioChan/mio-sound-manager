@@ -27,11 +27,12 @@ if (libraries.length === 0) {
   process.exit(1)
 }
 
-// Trigger the reindex the way a user does: Settings → Reindex. The top-bar
-// button is icon-only, so it is located by its accessible name.
-await page.locator('.topbar button[aria-label="Settings"]').click()
-await page.waitForTimeout(300)
-const reindex = page.locator('.settings-actions button', { hasText: 'Reindex' }).first()
+// Trigger the reindex the way a user does: right-click a library header, then
+// Reindex. The management actions live in that menu, not in Settings, so a
+// background library can be reindexed without switching to it first.
+await page.locator('.lib-head').first().click({ button: 'right' })
+await page.waitForSelector('.menu', { timeout: 3000 })
+const reindex = page.locator('.menu-item', { hasText: /^Reindex$/ }).first()
 await reindex.click()
 
 // The overlay must be up almost immediately — it is set before the command is

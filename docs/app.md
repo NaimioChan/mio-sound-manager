@@ -47,8 +47,9 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 `AppState` 持有一个 `LibrarySet`：`Vec<Arc<Library>>` 加一个 `active` 根路径。几个决定：
 
 - **一次加锁改整个集合。** 「加入一个库」和「切到它」必须在同一个临界区，否则会出现 `active` 指向一个不在集合里的根这种状态。
-- **重开同一个文件夹是「刷新」不是「再开一份」。** 用户在设置里点「重新索引」和点「添加库」选到同一个目录，意图是刷新，侧栏不该出现两条同名项。
+- **重开同一个文件夹是「刷新」不是「再开一份」。** 右键一个库点「Reindex」和点「Add library」选到同一个目录，意图是刷新，侧栏不该出现两条同名项。
 - **非活跃库只显示头部。** 它的 facet 计数属于另一个数据库，画在活跃库的位置上会是「属于屏幕上任何东西都不是的数字」。要看它，点一下切过去。
+- **每个库自己的管理动作在它自己的右键菜单里。** 切库、Reindex、Full reindex、Reveal、Close 都在库头部的右键菜单，不在设置里——设置只能作用于「当前那个库」，而这里有多个。
 - **切库会清掉过滤条件。** 分类名和文件夹路径都是上一个库的，留着只会得到零行。
 
 ## 会话持久化（P5）
@@ -103,7 +104,10 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 | 命令 | 返回 | 说明 |
 | --- | --- | --- |
-| `get_status` | `AppStatus` | 设备、格式、引擎周期、库状态，一次往返 |
+| `get_status` | `AppStatus` | 后端、设备、格式、引擎周期、库状态，一次往返 |
+| `list_audio_devices` | `AudioDeviceDto[]` | WASAPI 端点与 ASIO 驱动合成一份列表，给设置里的设备选择 |
+| `asio_compiled` | `bool` | 这个二进制是否带 ASIO 支持 |
+| `set_audio_device(backend, device?, asioBufferFrames?)` | `AppStatus` | 切设备；打不开不报错，返回的状态里带原因 |
 | `play(path, startAt?)` | `()` | 发布音频；同一文件重播走缓存 |
 | `stop` | `()` | 清空两个槽，播放头归零 |
 | `pause` | `()` | 原地冻结，clip 留在槽里 |
@@ -114,7 +118,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `list_libraries` | `LibraryStatus[]` | 每个打开库的名字、计数、是否活跃 |
 | `remove_library(root)` | `LibraryStatus[]` | 关掉一个库，活跃的自动落到下一个 |
 | `set_active_library(root)` | `LibraryStatus[]` | 切换显示哪个库 |
-| `reindex_library(full?, onProgress)` | `LibraryStatus` | **阻塞**，同上 |
+| `reindex_library(root?, full?, onProgress)` | `LibraryStatus` | **阻塞**，同上；`root` 缺省是活跃库 |
 | `search(request)` | `SoundDto[]` | 同 `reslip-index` 的过滤条件，上限 5000 行 |
 | `count_matching(request)` | `u64` | 当前过滤命中总数，表尾的 "500 of 27,525" |
 | `list_matching_paths(request)` | `string[]` | 全选用的纯路径列表，不受 5000 行上限 |
@@ -148,7 +152,13 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **侧栏宽度可拖。** 把手是 `.rail` 里的绝对定位元素（`right: -3px`），不是 `.body` 的第三个 grid 子元素——那会多出一列并把表格挤走。宽度写进 `localStorage`，范围 160–520px。
 
-**搜索框在列表列顶部，不在窗口顶部。** 它过滤的是列表，所以它属于列表。窗口顶部留给「我在哪个库」、undo/redo 和设置（图标）。播放的三个控件——自动播放、暂停/继续、停止——在波形 dock 的右端聚成一组，纯图标：它决定的是「点一行会不会响」，属于播放区而不属于顶栏。
+**搜索框在列表列顶部，不在窗口顶部。** 它过滤的是列表，所以它属于列表。窗口顶部留给「我在哪个库」、undo/redo 和设置（图标）。播放的三个控件在波形 dock 的右端聚成一组：`AUTO PLAY` 是文字按钮，暂停/继续与停止是图标——前者的状态是「点一行会不会响」这条策略，12px 的图标说不出来。
+
+**库条目在视觉上高于它下面的树。** 库头部是 650 字重、带底色块、顶部一条分隔线，活跃库另有左侧强调条；树行是 400 字重、无底色。这不是装饰：库条目带自己的右键菜单，看起来像树的一行会让人想不到那里能右键。
+
+**设置页三节：Audio / Playback / List。** Audio 是输出设备选择（WASAPI 端点与 ASIO 驱动合成一个下拉，ASIO 选中时多一个缓冲大小下拉）加一行当前格式与周期。Playback 只有 `Play on click`。List 是滚动加载、每页行数、分类列。库的管理动作不在这里——见「多库」。
+
+**说明性副标题一律去掉。** 设置项下面只留两种文字：设备打不开的原因，和当前格式那一行。工具里没有需要先读一段话才能用的设置。
 
 **排序名和行字段名是两套。** 渲染层按行字段排序（`durationS`、`sampleRate`），索引层白名单用的是 SQL 列名（`duration`、`sample_rate`）。`SORT_WIRE`（`SoundTable.tsx`）是唯一做这个翻译的地方。第一版把行字段名直接当 `sortBy` 发出去，`search` 报 `unknown sort column durationS`；而且因为失败那次之后排序值没变，后续每次搜索都带着同一个坏名字，于是点一次 Length 之后分类和文件夹筛选也一起失效——直到用户改去点 Name。
 
@@ -180,7 +190,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **窗口内交互用 CDP 驱动真实窗口验证，不靠人看：**
 
-- `tools/check-workspace.mjs`（26 项）——加两个库、侧栏分组、切换库、无限滚动、星标、undo/redo（按钮与快捷键两条路径）、设置页三节与即时生效、拖拽改侧栏宽度并持久化、搜索框在列表列、区域拼合无溢出。
+- `tools/check-workspace.mjs`（29 项）——加两个库、侧栏分组、切换库、无限滚动、星标、undo/redo（按钮与快捷键两条路径）、设置页含 Audio 节且不再有 Libraries 节、设备下拉列出两个后端、即时生效、拖拽改侧栏宽度并持久化、搜索框在列表列、区域拼合无溢出。
 - `tools/check-index-overlay.mjs`（7 项）——遮罩立即出现、铺满窗口、光标为 progress、点击打不到列表、空格不会开始播放、结束后消失、列表可用。
 - `tools/check-browsing.mjs`（64 项，P4 回归）——分类筛选、方向键、多选、Ctrl+A、右键菜单、星标落库、分类对话框、排序（Length / Rate / Size 三列各自断言「查得到行」且「分类筛选在换排序后仍然生效」）、点击到波形、空格暂停、dock 的图标按钮顺序与 `aria-pressed`、文件夹树的展开/折叠/子节点卸载/跨重载持久化、拖拽命令。
 - `tools/check-layout.mjs`——按真实 DOM 几何断言五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、无元素溢出视口。

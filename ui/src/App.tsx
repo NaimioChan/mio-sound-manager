@@ -96,6 +96,15 @@ export function App() {
   const [active, setActive] = createSignal<SoundRow | null>(null)
 
   const [menu, setMenu] = createSignal<RowMenuRequest | null>(null)
+  /**
+   * A library header's right-click menu. Separate from `menu` because the two
+   * have different targets and different actions: one acts on sounds, this one on
+   * a library. Sharing the state would mean a union the renderer has to narrow on
+   * every read, and the menus never open at the same time anyway.
+   */
+  const [libMenu, setLibMenu] = createSignal<{ library: LibraryStatus; x: number; y: number } | null>(
+    null
+  )
   const [categoryDialog, setCategoryDialog] = createSignal<SoundRow[] | null>(null)
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [history, setHistory] = createSignal<{ undo: string | null; redo: string | null }>({
@@ -325,19 +334,20 @@ export function App() {
     }
   }
 
-  const reindex = async (full: boolean) => {
-    setIndexing({
-      label: full ? 'Re-probing every file…' : 'Looking for changes…',
-      progress: null
-    })
+  /**
+   * Reindex one library, blocking.
+   *
+   * `root` names the library; `null` means the active one. The context menu can
+   * act on a background library without switching to it first, which is the whole
+   * point of moving this out of Settings.
+   */
+  const reindexLibrary = async (root: string | null, full: boolean) => {
+    const label = full ? 'Re-probing every file…' : 'Looking for changes…'
+    const target = root ?? activeLibrary()?.root
+    if (!target) return
+    setIndexing({ label, progress: null })
     try {
-      await api.reindexLibrary((progress) => {
-        setIndexing({
-          label: full ? 'Re-probing every file…' : 'Looking for changes…',
-          progress
-        })
-      }, full)
-      setSettingsOpen(false)
+      await api.reindexLibrary(target, (progress) => setIndexing({ label, progress }), full)
       await refresh()
     } catch (e) {
       setNotice(String(e))
@@ -555,6 +565,53 @@ export function App() {
     ]
   }
 
+  /**
+   * The library header's menu: everything that acts on one library.
+   *
+   * These used to live in the settings dialog, which could only ever act on the
+   * active one — the reason they moved here. Right-clicking the header says which
+   * library the action applies to, so reindexing a background library no longer
+   * means switching to it first.
+   */
+  const libMenuItems = (): MenuItem[] => {
+    const current = libMenu()
+    if (!current) return []
+    const library = current.library
+    const busy = indexing() !== null
+    return [
+      {
+        id: 'switch',
+        label: 'Switch to this library',
+        disabled: library.active,
+        onSelect: () => void switchLibrary(library.root)
+      },
+      { id: 'd1', label: '', divider: true },
+      {
+        id: 'reindex',
+        label: 'Reindex',
+        disabled: busy,
+        onSelect: () => void reindexLibrary(library.root, false)
+      },
+      {
+        id: 'reindex-full',
+        label: 'Full reindex',
+        disabled: busy,
+        onSelect: () => void reindexLibrary(library.root, true)
+      },
+      { id: 'd2', label: '', divider: true },
+      {
+        id: 'reveal',
+        label: 'Reveal in File Manager',
+        onSelect: () => api.revealInFolder(library.root).catch((e) => setNotice(String(e)))
+      },
+      {
+        id: 'close',
+        label: 'Close library',
+        onSelect: () => void removeLibrary(library.root)
+      }
+    ]
+  }
+
   const applyCategory = (name: string, sub: string | null) => {
     const targets = categoryDialog() ?? []
     setCategoryDialog(null)
@@ -625,7 +682,8 @@ export function App() {
     }
 
     if (event.key === 'Escape') {
-      if (menu()) setMenu(null)
+      if (libMenu()) setLibMenu(null)
+      else if (menu()) setMenu(null)
       else if (settingsOpen()) setSettingsOpen(false)
     }
   }
@@ -747,6 +805,7 @@ export function App() {
               void runSearch()
             }}
             onOpenSettings={() => setSettingsOpen(true)}
+            onLibraryMenu={(library, x, y) => setLibMenu({ library, x, y })}
           />
           <div class="rail-resize" onPointerDown={startResize} title="Drag to resize" />
         </div>
@@ -790,15 +849,7 @@ export function App() {
             fallback={
               <div class="empty">
                 <h1>{bootError() ? 'Backend error' : 'No library open'}</h1>
-                <Show
-                  when={bootError()}
-                  fallback={
-                    <p>
-                      Point ReSlip at a folder of samples. The index is written into that folder, so
-                      reopening it later costs one incremental pass.
-                    </p>
-                  }
-                >
+                <Show when={bootError()}>
                   <p class="bad">{bootError()}</p>
                 </Show>
                 <button class="primary" onClick={() => void addLibrary()}>
@@ -843,7 +894,6 @@ export function App() {
               if (row) void play(row, seconds)
             }}
             onDecoded={setWaveMs}
-            decodeMs={waveMs()}
           />
         </main>
       </div>
@@ -854,6 +904,7 @@ export function App() {
           fallback={<span class="bad">{status()?.audioError ?? 'audio device unavailable'}</span>}
         >
           <span class="good">●</span>
+          <span class="backend-tag">{status()?.backend}</span>
           <span>{status()?.deviceName}</span>
           <span class="dim">
             {status()?.sampleRate} Hz · {status()?.channels} ch · {status()?.sampleFormat}
@@ -889,6 +940,17 @@ export function App() {
         )}
       </Show>
 
+      <Show when={libMenu()}>
+        {(current) => (
+          <ContextMenu
+            x={current().x}
+            y={current().y}
+            items={libMenuItems()}
+            onClose={() => setLibMenu(null)}
+          />
+        )}
+      </Show>
+
       <Show when={categoryDialog()}>
         {(targets) => (
           <CategoryDialog
@@ -905,12 +967,14 @@ export function App() {
         <SettingsDialog
           settings={settings()}
           onChange={changeSettings}
-          libraries={libraries()}
+          status={status()}
+          onStatus={(next) => {
+            // A device switch changes the format, so anything derived from the old
+            // one has to be re-read: the rows are fine, but the playhead, the
+            // status bar and the dock all read the new engine.
+            setStatus(next)
+          }}
           onClose={() => setSettingsOpen(false)}
-          onReindex={(full) => void reindex(full)}
-          onRemoveLibrary={(root) => void removeLibrary(root)}
-          onAddLibrary={() => void addLibrary()}
-          busy={indexing() !== null}
         />
       </Show>
 

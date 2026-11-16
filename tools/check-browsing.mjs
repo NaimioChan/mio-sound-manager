@@ -423,6 +423,15 @@ check(
 check(dockButtons[autoIdx]?.pressed === 'true' || dockButtons[autoIdx]?.pressed === 'false',
   'the auto-play toggle reports its state', `${dockButtons[autoIdx]?.pressed}`)
 
+// The toggle is a word, not a glyph: "AUTO PLAY" is the whole point of the
+// control, and a bolt icon at 12px does not say it.
+const autoText = await page.locator('.dock-head button.ghost.auto').first().textContent()
+check(
+  (autoText ?? '').trim().toUpperCase() === 'AUTO PLAY',
+  'the auto-play toggle is labelled in words',
+  `${autoText}`
+)
+
 // The top bar no longer carries the auto-play text button; Settings is there as
 // an icon and still opens the dialog.
 const topbarSettings = page.locator('.topbar button[aria-label="Settings"]')

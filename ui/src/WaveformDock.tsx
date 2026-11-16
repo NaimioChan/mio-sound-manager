@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup } from 'solid-js'
 import { api, type SoundRow } from './ipc'
-import { BoltIcon, PauseIcon, PlayIcon, StopIcon } from './icons'
+import { PauseIcon, PlayIcon, StopIcon } from './icons'
 
 interface Props {
   row: SoundRow | null
@@ -9,7 +9,6 @@ interface Props {
   playing: boolean
   /** Loaded but frozen: the Pause button becomes Resume and the playhead holds. */
   paused: boolean
-  decodeMs: number | null
   /** How many rows the selection covers, for the dock's header line. */
   selectionCount: number
   /** Auto-play on select: whether clicking a row auditions it. */
@@ -18,6 +17,7 @@ interface Props {
   onToggle: () => void
   onToggleAutoPlay: () => void
   onSeek: (seconds: number) => void
+  /** Decode cost of the waveform, reported to the status bar only. */
   onDecoded: (ms: number) => void
 }
 
@@ -187,7 +187,7 @@ export function WaveformDock(props: Props) {
       <div class="dock-resize" onPointerDown={startResize} />
 
       <div class="dock-head">
-        <Show when={props.row} fallback={<span class="dim">Select a sound to see its waveform.</span>}>
+        <Show when={props.row} fallback={<span class="dim">—</span>}>
           {(row) => (
             <>
               <span class="dock-name" title={row().path}>
@@ -210,9 +210,6 @@ export function WaveformDock(props: Props) {
 
         <div class="spacer" />
 
-        <Show when={props.decodeMs}>
-          {(ms) => <span class="dim">waveform {ms().toFixed(1)} ms</span>}
-        </Show>
 
         {/*
           Icon-only transport. The auto-play toggle leads, then Pause/Resume and
@@ -222,13 +219,13 @@ export function WaveformDock(props: Props) {
           screen, those are the only names a screen reader or a tooltip has.
         */}
         <button
-          class={props.autoPlay ? 'ghost icon on' : 'ghost icon'}
+          class={props.autoPlay ? 'ghost auto on' : 'ghost auto'}
           onClick={props.onToggleAutoPlay}
           title={`Auto-play ${props.autoPlay ? 'on' : 'off'} — clicking a row auditions it (Alt+A)`}
           aria-label={`Auto-play ${props.autoPlay ? 'on' : 'off'}`}
           aria-pressed={props.autoPlay}
         >
-          <BoltIcon />
+          AUTO PLAY
         </button>
 
         <button
@@ -263,9 +260,6 @@ export function WaveformDock(props: Props) {
         </Show>
         <Show when={loadError()}>
           {(err) => <div class="wave-overlay bad">{err()}</div>}
-        </Show>
-        <Show when={!props.row}>
-          <div class="wave-overlay dim">no selection</div>
         </Show>
 
         <Show when={props.row}>

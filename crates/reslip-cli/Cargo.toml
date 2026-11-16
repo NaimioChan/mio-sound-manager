@@ -9,6 +9,12 @@ license.workspace = true
 name = "reslip-cli"
 path = "src/main.rs"
 
+[features]
+default = []
+# Mirrors the engine's feature: the CLI is the acceptance harness, and the point
+# of an ASIO backend is a measured number from a real driver.
+asio = ["reslip-engine/asio"]
+
 [dependencies]
 reslip-engine = { path = "../reslip-engine" }
 reslip-index = { path = "../reslip-index" }

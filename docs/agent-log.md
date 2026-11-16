@@ -2,6 +2,54 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-16 21:20 · hermes · P6：ASIO 后端 + 设备选择；试用反馈四项
+
+- 改: 新增 `crates/reslip-engine/src/asio.rs`（ASIO 后端：STA 渲染线程、驱动枚举、i32 大端处理、每声道 plane 拆分）、`crates/reslip-app/src/audio_config.rs`（`audio.json` 持久化所选设备）、`tools/build-app.sh`（`--asio` 检查 SDK 与 libclang 后带 feature 构建）；`crates/reslip-engine/src/output.rs`（`Backend` 枚举、`Mixer` 抽成两个后端共用、`DeviceChoice` + `list_devices`、`engine_period_ms` 随后端变、`StreamInfo`/`Shared`/`join_pro_audio_group` 开放给 ASIO 模块）、`decode.rs`（`DeviceSample::I32`）、`lib.rs`（feature 门）；`crates/reslip-app/src/state.rs`（`AudioSlot` 收拢引擎/格式/错误、`open_audio`/`set_audio_device`/`list_audio_devices`、`reindex_library` 接受 root、解码器随 job 走）、`commands.rs`（`list_audio_devices`/`asio_compiled`/`set_audio_device`、`AppStatus.backend`、`AudioDeviceDto`、`reindex_library(root)`）；`crates/reslip-cli/src/main.rs`（`--backend`/`--asio-frames`、`devices` 列两个后端）；`ui/src/SettingsDialog.tsx`（重写：Audio 节 + 设备下拉 + 缓冲大小，删 Libraries 节，`Play the row I click` → `Play on click`）、`Sidebar.tsx`（库头部右键菜单、删 `click to switch`）、`App.tsx`（`libMenu` 信号与菜单项、`reindexLibrary(root, full)`、状态栏后端标签、删空态与波形 dock 的说明文案）、`WaveformDock.tsx`（AUTO PLAY 文字按钮）、`CategoryDialog.tsx`（删说明段）、`styles.css`（`.ghost.auto`、库头部强调、`.setting-note`、`.backend-tag`，删 `.library-*`/`.lib-inactive`/`.settings-actions`/`.modal-note`）、`ipc.ts`（`AudioDevice`、`audioDevices`/`asioCompiled`/`setAudioDevice`、`reindexLibrary` 带 root）；`tools/check-workspace.mjs`（设置节断言改成 Audio 存在 / Libraries 不存在 / 设备下拉分组）、`check-index-overlay.mjs`（改走库右键菜单）、`check-browsing.mjs`（AUTO PLAY 文字断言）；`AGENTS.md`、`docs/architecture.md`（第 2 节 ASIO 数字补齐、P6 行）、`docs/engine.md`（两个后端、ASIO 一节含 STA 表格）、`docs/app.md`（设备选择、库右键菜单、视觉分层、删副标题的原则）
+
+### 用户要的六项
+
+| 要求 | 做法 |
+| --- | --- |
+| auto-play 不用图标，写 AUTO PLAY | dock 里换成 `.ghost.auto` 文字按钮，仍带 `aria-pressed`；状态栏另有后端标签 |
+| 删掉无意义的 subtitle | 设置项只剩「Play on click」；删掉设置里 reindex 说明、波形 dock 的 `Select a sound…` / `no selection` / 波形耗时、空库态那段导语、分类对话框的说明段、侧栏 `click to switch` |
+| 多个库单独管理，设置里 Libraries 栏去掉 | 设置只剩 Audio / Playback / List；库头部右键菜单放 Switch / Reindex / Full reindex / Reveal / Close，`reindex_library` 接受 root，后台库不必先切过去 |
+| 库条目要和树条目有样式区分 | 头部 650 字重 + `--bg-raised` 底色 + 顶部分隔线，活跃库另有 `inset 2px` 强调条；树行 400 字重无底色 |
+| 加 ASIO 支持 | `--features asio`；`Backend` 枚举 + 独立 STA 渲染线程；设置里一个下拉同时列 WASAPI 端点与 ASIO 驱动，ASIO 选中时多一个缓冲大小；选择写 `audio.json` 并在启动时恢复 |
+| 设置里有音频设备选项 | 同上，Audio 是设置第一节 |
+
+### 三个硬坑
+
+**一、ASIO 要 STA，WASAPI 要 MTA。**
+
+第一版在 ASIO 渲染线程里调 `initialize_mta()`（照抄 WASAPI 的做法），应用里切 ASIO 报 `ASIO loadDriver function returned false`，但同一个驱动在 CLI 探针里能加载。逐步二分出来的真相：
+
+| 线程 | COM 初始化 | 结果 |
+| --- | --- | --- |
+| 主线程 | 无（默认 STA） | 成功 |
+| 工作线程 | 无 | 失败 |
+| 工作线程 | MTA | 失败 |
+| 工作线程 | STA | 成功 |
+
+驱动对象由 `CoCreateInstance` 创建（SDK `asiolist.cpp` 的 `asioOpenDriver`），TOE 驱动只从单线程套间交出对象。所以 ASIO 的渲染线程必须是 STA，WASAPI 的必须是 MTA，两个后端不能共用线程。
+
+**二、线程的 COM 套间一旦设定就改不了，所以 ASIO 枚举必须另起线程。** `output::list_devices` 先枚举 WASAPI（那一步把调用线程变成 MTA），再调 ASIO 的 `initialize_sta()` 时拿到 `RPC_E_CHANGED_MODE`，于是所有 ASIO 驱动都看起来不存在——但命令行 `devices` 又能列出来。修法是 `asio::list_devices` 自己开一个 STA 线程做完枚举再返回。
+
+**三、枚举会关掉正在跑的驱动。** SDK 的 `loadDriver` 第一件事是 `removeCurrentDriver()`，所以「打开设置页」这个动作会把正在播的 ASIO 流关掉，表现为设置页一开、播放头就不动。修法两层：`list_devices(probe)` 在 ASIO 正在用时只读注册表名不加载驱动；`open_audio` 先 drop 旧引擎（停流 + join 渲染线程）再开新引擎，否则新引擎的 `loadDriver` 会把旧引擎的驱动从下面抽走。
+
+### 实测（TOPPING Pro USB Audio Device，48kHz，本机）
+
+| 缓冲 | 周期 | publish → 回调写入 | publish → 出声 | 下溢 |
+| --- | --- | --- | --- | --- |
+| 64 帧 | 1.33ms | 1.81ms | 5.31ms | 0 |
+| 128 帧 | 2.67ms | — | — | 0 |
+| 256 帧 | 5.33ms | 5.93ms | 14.43ms | 0 |
+
+WASAPI 共享模式同机对照 11.00ms 周期。256 帧的 14.43ms 说明驱动缓冲本身就是延迟：帧数越大 ASIO 越不占优势。
+
+- 验证: `cargo test --release --workspace` 101 个通过（默认特性与 `--features asio` 各跑一遍）；`tsc --noEmit` + `vite build` 通过（58.5KB JS）；CDP 五份脚本全绿——`check-browsing.mjs` 65 项、`check-workspace.mjs` 29 项、`check-index-overlay.mjs` 7 项、`check-interactions.mjs` 通过、`check-layout.mjs` 无重叠无裁切；应用内切 ASIO 后播放头正常推进、切回 WASAPI 格式随之回退、`audio.json` 往返正确；CLI `play --backend asio --asio-frames 64` 报 5.31ms
+- 遗留: ① ASIO 只在 TOPPING Pro 上验过（单驱动、6 进 6 出、只开前 2 声道），多驱动切换与其他厂商驱动未验；② 切设备会丢掉当前播放位置（旧引擎 drop、缓存 clip 清空），切回去要重播；③ ASIO 驱动被其他进程独占时没有专门提示，错误是驱动自己的 `loadDriver` 文本；④ 分类侧栏折叠状态仍不持久；⑤ `check-browsing.mjs` 的拖拽项跑完会冻住 webview（既有行为，脚本注释已写明），跑完必须重启应用，`tools/README.md` 已补运行顺序
+- 下一步: 没有排定阶段。按试用反馈继续修
+
 ## 2026-11-16 19:40 · hermes · 试用反馈三项修复（排序 / 文件夹折叠 / 图标化播放控件）
 
 - 改: `ui/src/SoundTable.tsx`（新增 `SORT_WIRE` 翻译表、`querying` prop、表尾 `searching…`、`.table` 上加 `data-querying`）、`ui/src/App.tsx`（`request()` 的 `sortBy` 走 `SORT_WIRE`、新增 `querying` 信号、顶栏 auto-play 文字按钮删除、Settings 换图标）、`ui/src/Sidebar.tsx`（文件夹树加 twisty 与按库持久化的展开集合、`All folders` 对齐、双击展开）、`ui/src/WaveformDock.tsx`（三个控件图标化 + auto-play 前置）、新增 `ui/src/icons.tsx`、`ui/src/styles.css`（`.ghost.icon`、`.twisty` 点击区、`.foot-querying`）；`tools/check-browsing.mjs`（新增排序/筛选回归 18 项、文件夹折叠 7 项、dock 图标顺序 5 项、`settleList` 等 `data-querying`、拖拽探测加超时并移到脚本末尾）、`tools/check-interactions.mjs` / `check-workspace.mjs` / `check-index-overlay.mjs`（图标按钮改按 `aria-label` 定位）、`tools/check-layout.mjs`（`text-overflow: ellipsis` 不再算裁切）；`docs/app.md` 补四节设计说明

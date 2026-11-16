@@ -91,11 +91,6 @@ export function CategoryDialog(props: Props) {
           </datalist>
         </label>
 
-        <p class="modal-note dim">
-          A hand-set category survives reindexing. Clearing it lets the classifier
-          decide again on the next pass.
-        </p>
-
         <div class="modal-actions">
           <button class="ghost" onClick={props.onClear}>
             Clear category

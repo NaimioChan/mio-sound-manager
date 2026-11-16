@@ -169,6 +169,32 @@ input:focus {
   display: block;
 }
 
+/* The auto-play toggle carries its own words rather than a bolt glyph: the state
+   is a policy ("does clicking a row make sound"), and a 12px icon cannot say
+   that. It sits in the transport cluster, so it is sized like a text button and
+   reads as pressed when on. */
+.ghost.auto {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--fg-faint);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.ghost.auto:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.ghost.auto.on {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--bg-selected);
+}
+
 .primary {
   padding: 7px 14px;
   border-radius: 4px;
@@ -730,6 +756,18 @@ input:focus {
   color: var(--bad);
 }
 
+/* Which backend produced the period next to it. ASIO and WASAPI numbers are not
+   comparable, so the label travels with the number. */
+.backend-tag {
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+
 .statusbar .dim,
 .dim {
   color: var(--fg-faint);
@@ -856,12 +894,6 @@ input:focus {
   width: 100%;
 }
 
-.modal-note {
-  margin: 0 0 14px;
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
 .modal-actions {
   display: flex;
   align-items: center;
@@ -891,17 +923,28 @@ input:focus {
   padding-bottom: 4px;
 }
 
+/*
+  The library header is a different kind of row from the tree underneath it, and
+  it has to look like one: bolder text, a tinted background and a top edge rule.
+  Without that the header reads as just another folder, and the fact that it
+  carries its own right-click menu is invisible.
+*/
 .lib-head {
   display: flex;
   align-items: center;
   gap: 4px;
   width: 100%;
-  height: 26px;
+  height: 28px;
+  margin: 2px 0;
   padding: 0 8px 0 4px;
-  color: var(--fg-dim);
+  color: var(--fg);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 650;
+  letter-spacing: 0.01em;
   text-align: left;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  border-radius: 3px;
 }
 
 .lib-head:hover {
@@ -909,9 +952,11 @@ input:focus {
   color: var(--fg);
 }
 
+/* The active library is the one the table is showing, so it carries the accent. */
 .lib-group.active .lib-head {
   color: var(--fg);
   background: var(--bg-selected);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .lib-name {
@@ -919,12 +964,6 @@ input:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.lib-inactive {
-  padding: 2px 8px 2px 22px;
-  font-size: 11px;
-  font-style: italic;
 }
 
 .side-mode.gear {
@@ -1002,56 +1041,16 @@ input:focus {
   font: inherit;
 }
 
-.library-list {
-  margin: 0 0 10px;
-  padding: 0;
-  list-style: none;
+/* A one-line explanation under a setting: what a backend is, why a device is
+   not there. Never a paragraph — the settings dialog is not documentation. */
+.setting-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
-.library-row {
-  padding: 6px 8px;
-  border-radius: 4px;
-  background: var(--bg-row);
-  margin-bottom: 4px;
-}
-
-.library-row-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.library-row-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.library-row-path {
-  display: block;
-  font-size: 10.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-
-.settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.ghost.danger {
+.setting-note.bad {
   color: var(--bad);
-  border-color: rgba(217, 92, 92, 0.4);
-}
-
-.ghost.danger:hover:not(:disabled) {
-  border-color: var(--bad);
 }
 
 /* ---------------------------------------------------------- index overlay */

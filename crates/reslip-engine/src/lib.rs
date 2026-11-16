@@ -21,12 +21,16 @@ pub mod decode;
 pub mod output;
 pub mod waveform;
 
+#[cfg(feature = "asio")]
+pub mod asio;
+
 mod error;
 
 pub use decode::{DecodedAudio, Decoder, DeviceSample, OutputFormat, SourceAudio};
 pub use error::{EngineError, Result};
 pub use output::{
-    Engine, EngineConfig, LatencyReport, PlaybackMonitor, PlaybackSnapshot, PublishSource,
+    Backend, DeviceChoice, Engine, EngineConfig, LatencyReport, PlaybackMonitor, PlaybackSnapshot,
+    PublishSource,
 };
 pub use waveform::{DEFAULT_BUCKETS, Waveform, bucket_peaks};
 

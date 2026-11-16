@@ -17,6 +17,13 @@ path = "src/main.rs"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = []
+# Mirrors the engine's feature. The shell never talks to ASIO directly, but the
+# settings dialog lists ASIO drivers and the engine can only open one when it was
+# compiled with support, so the flag has to reach the engine through here.
+asio = ["reslip-engine/asio"]
+
 [dependencies]
 reslip-engine = { path = "../reslip-engine" }
 reslip-index = { path = "../reslip-index" }

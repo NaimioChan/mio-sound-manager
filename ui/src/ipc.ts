@@ -27,12 +27,28 @@ export interface AppStatus {
   audioAvailable: boolean
   audioError: string | null
   deviceName: string | null
+  /** "WASAPI" or "ASIO". The status bar shows it next to the period. */
+  backend: string
   sampleRate: number | null
   channels: number | null
   sampleFormat: string | null
   endpointFrames: number | null
   enginePeriodMs: number | null
   library: LibraryStatus | null
+}
+
+/** One entry in the output-device picker. */
+export interface AudioDevice {
+  backend: string
+  /** The value sent back to `setAudioDevice`. */
+  name: string
+  label: string
+  channels: number | null
+  /** ASIO only: the driver's preferred callback buffer size. */
+  bufferFrames: number | null
+  default: boolean
+  /** False when the device exists but cannot be opened (an unplugged interface). */
+  available: boolean
 }
 
 export interface PlaybackPosition {
@@ -118,6 +134,25 @@ export interface SearchRequest {
 export const api = {
   status: () => invoke<AppStatus>('get_status'),
 
+  /** Every output device, both backends. Read when the settings dialog opens. */
+  audioDevices: () => invoke<AudioDevice[]>('list_audio_devices'),
+
+  /** Whether this build can open ASIO drivers at all. */
+  asioCompiled: () => invoke<boolean>('asio_compiled'),
+
+  /**
+   * Switch the output device.
+   *
+   * Returns the new status rather than throwing on a device that will not open:
+   * the dialog shows the reason next to the picker, and the app stays usable.
+   */
+  setAudioDevice: (backend: string, device: string | null, asioBufferFrames?: number | null) =>
+    invoke<AppStatus>('set_audio_device', {
+      backend,
+      device,
+      asioBufferFrames: asioBufferFrames ?? null
+    }),
+
   /**
    * Start playing `path`.
    *
@@ -159,11 +194,18 @@ export const api = {
 
   setActiveLibrary: (root: string) => invoke<LibraryStatus[]>('set_active_library', { root }),
 
-  /** Reindex the active library, blocking, with the same progress channel. */
-  reindexLibrary: (onProgress: (p: IndexProgress) => void, full = false) => {
+  /**
+   * Reindex one library, blocking.
+   *
+   * `full` re-probes every file and drops vanished ones; otherwise the pass only
+   * looks at what changed. The library is named explicitly rather than defaulting
+   * to the active one, because the sidebar's context menu acts on whichever
+   * library was right-clicked.
+   */
+  reindexLibrary: (root: string, onProgress: (p: IndexProgress) => void, full = false) => {
     const channel = new Channel<IndexProgress>()
     channel.onmessage = onProgress
-    return invoke<LibraryStatus>('reindex_library', { full, onProgress: channel })
+    return invoke<LibraryStatus>('reindex_library', { root, full, onProgress: channel })
   },
 
   search: (request: SearchRequest) => invoke<SoundRow[]>('search', { request }),

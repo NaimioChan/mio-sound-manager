@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use reslip_engine::{
-    DecodedAudio, Decoder, Engine, EngineConfig, LatencyReport, OutputFormat, PublishSource,
+    Backend, DecodedAudio, Decoder, Engine, EngineConfig, LatencyReport, OutputFormat,
+    PublishSource,
 };
 
 mod index_cmd;
@@ -35,6 +36,8 @@ struct Args {
     command: String,
     files: Vec<PathBuf>,
     device: Option<String>,
+    backend: Backend,
+    asio_frames: Option<u32>,
     hold: f64,
     interval_ms: u64,
     rounds: u32,
@@ -49,6 +52,8 @@ fn parse_args() -> Result<Args> {
 
     let mut files = Vec::new();
     let mut device = None;
+    let mut backend = Backend::Wasapi;
+    let mut asio_frames = None;
     let mut hold = 2.0f64;
     let mut interval_ms = 120u64;
     let mut rounds = 3u32;
@@ -57,6 +62,19 @@ fn parse_args() -> Result<Args> {
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--device" => device = rest.next(),
+            "--backend" => {
+                let value = rest.next().context("--backend needs wasapi or asio")?;
+                backend = Backend::parse(&value)
+                    .with_context(|| format!("unknown backend {value}; expected wasapi | asio"))?;
+            }
+            "--asio-frames" => {
+                asio_frames = Some(
+                    rest.next()
+                        .context("--asio-frames needs a value")?
+                        .parse()
+                        .context("--asio-frames must be a frame count")?,
+                )
+            }
             "--hold" => hold = rest.next().context("--hold needs a value")?.parse()?,
             "--interval" => {
                 interval_ms = rest.next().context("--interval needs a value")?.parse()?
@@ -71,10 +89,24 @@ fn parse_args() -> Result<Args> {
         command,
         files,
         device,
+        backend,
+        asio_frames,
         hold,
         interval_ms,
         rounds,
     })
+}
+
+impl Args {
+    /// The engine configuration these flags describe.
+    fn engine_config(&self) -> EngineConfig {
+        EngineConfig {
+            backend: self.backend,
+            device_filter: self.device.clone(),
+            buffer_duration_hns: 0,
+            asio_buffer_frames: self.asio_frames,
+        }
+    }
 }
 
 fn run() -> Result<()> {
@@ -121,9 +153,28 @@ fn run_index_command(command: &str, rest: &[String]) -> Result<()> {
 
 fn list_devices() -> Result<()> {
     // Reuse the engine's own enumeration so the names printed here are the names
-    // `--device` matches against.
-    for name in reslip_engine::output::list_render_devices()? {
-        println!("{name}");
+    // `--device` matches against. Both backends come through the same call: the
+    // picker in the settings dialog draws this exact list.
+    //
+    // Nothing is playing in this process, so probing every ASIO driver is safe
+    // and gives the channel count and preferred buffer size.
+    for device in reslip_engine::output::list_devices(true) {
+        let mut facts = Vec::new();
+        if device.default {
+            facts.push("default".to_string());
+        }
+        if let Some(channels) = device.channels {
+            facts.push(format!("{channels} ch"));
+        }
+        if let Some(frames) = device.buffer_frames {
+            facts.push(format!("{frames} frames"));
+        }
+        let suffix = if facts.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", facts.join(", "))
+        };
+        println!("{:<7} {}{suffix}", device.backend.label(), device.name);
     }
     Ok(())
 }
@@ -166,10 +217,7 @@ fn probe(args: &Args) -> Result<()> {
 
 fn play(args: &Args) -> Result<()> {
     let path = args.files.first().context("play needs a file")?;
-    let mut engine = Engine::start(EngineConfig {
-        device_filter: args.device.clone(),
-        ..Default::default()
-    })?;
+    let engine = Engine::start(args.engine_config())?;
     banner(&engine);
 
     let decoder = Decoder::new(engine.format());
@@ -220,10 +268,7 @@ fn switch(args: &Args) -> Result<()> {
         bail!("switch needs at least two files");
     }
 
-    let mut engine = Engine::start(EngineConfig {
-        device_filter: args.device.clone(),
-        ..Default::default()
-    })?;
+    let engine = Engine::start(args.engine_config())?;
     banner(&engine);
 
     let decoder = Decoder::new(engine.format());
@@ -324,10 +369,7 @@ fn render(args: &Args) -> Result<()> {
     let path = args.files.first().context("render needs a file")?;
     let out_path = args.files.get(1).context("render needs an output path")?;
 
-    let mut engine = Engine::start(EngineConfig {
-        device_filter: args.device.clone(),
-        ..Default::default()
-    })?;
+    let engine = Engine::start(args.engine_config())?;
     banner(&engine);
 
     let format = engine.format();
@@ -376,6 +418,7 @@ fn to_wav(clip: &DecodedAudio) -> Result<Vec<u8>> {
 
 fn banner(engine: &Engine) {
     let f = engine.format();
+    println!("backend       {}", engine.backend().label());
     println!("device        {}", engine.device_name());
     println!(
         "format        {} Hz, {} ch, {}",
