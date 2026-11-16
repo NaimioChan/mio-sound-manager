@@ -10,9 +10,10 @@ src/
   error.rs    // EngineError，解码失败带路径（UI 要显示「这个文件播不了」）
   decode.rs   // 文件 → 设备格式 PCM，可在任意线程跑
   output.rs   // WASAPI 常驻流 + 双槽调度
+  waveform.rs // 文件 → ~1000 个峰值（UI 画波形用，PCM 不出进程）
 ```
 
-两个模块的契约是 `Arc<DecodedAudio>`：不可变、已转成设备格式、可随意共享。解码侧怎么慢都行，渲染侧只认这一份字节。
+decode 与 output 的契约是 `Arc<DecodedAudio>`：不可变、已转成设备格式、可随意共享。解码侧怎么慢都行，渲染侧只认这一份字节。waveform 复用 decode 的解码结果，但从原始采样率的交错 f32 取峰值，不经过设备格式转换。
 
 ## decode
 
@@ -52,6 +53,14 @@ Engine::publish() →  存槽、打时间戳、翻 active
 **`IAudioClient` 的生命周期。** 它在渲染线程内创建、使用、销毁。`set_get_eventhandle()` 返回的 `Handle` 与 `AudioClient` 同寿命；提前 drop 会关掉事件，`Start()` 报 `AUDCLNT_E_EVENTHANDLE_NOT_SET`（`0x88890014`）。
 
 **设备格式限制。** 只支持 f32/32bit 与 i16/16bit。共享模式设备实际只发这两种；其它情况报 `Unsupported` 而不是猜字节布局。
+
+## 给 UI 的三个入口（P3 加的）
+
+`publish` / `publish_from` / `stop` 都取 `&self`：它们只写原子量与 `arc-swap`，不需要独占引用。IPC 的命令线程因此可以直接发布，不必再搭一个控制线程把调用排队。
+
+- `publish_from(clip, offset_frames)` 是 IPC `start_at` 的落点。seek 不重新解码，只是在不可变缓冲上换一个起始位置，代价与普通播放相同的一次原子写。
+- `stop()` 清空两个槽并把 `finished` 置位。它不碰流，所以下一次 `publish` 仍是一次原子写。共享模式排不掉已进 endpoint 的音频，停会有一小段尾巴，这是设备行为不是实现缺陷。
+- `monitor()` 返回 `PlaybackMonitor`：`snapshot()` 与 `drain_reports()` 都是原子读 / 无锁队列读。播放头每秒被问 60 次，不能取 `arc-swap` guard（会跟音频线程自身的 guard 抢），所以开播时把 clip 总帧数一并存进 `active_frames`，`snapshot` 不碰槽位。
 
 ## 延迟测量口径
 

@@ -50,6 +50,19 @@ pub enum PublishSource {
     Switch,
 }
 
+/// Playback position, read without touching the audio thread's slots.
+///
+/// `position_s` is where the render thread has *written* to, which runs ahead of
+/// what the listener hears by the endpoint queue depth (~12ms shared). Correct
+/// for a playhead; not a sync reference.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaybackSnapshot {
+    pub position_s: f64,
+    pub duration_s: f64,
+    pub playing: bool,
+    pub finished: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Case-insensitive substring of the render device's friendly name. `None`
@@ -76,6 +89,10 @@ struct Shared {
     pub_ns: AtomicU64,
     pub_seq: AtomicU64,
     pos_frames: AtomicU64,
+    /// Frame count of the clip in the active slot, published alongside it so a
+    /// position poll never has to take an `arc-swap` guard on the audio thread's
+    /// slot. Pure atomics on the polling path (architecture section 7.3).
+    active_frames: AtomicU64,
     finished: AtomicBool,
     running: AtomicBool,
     measurements: ArrayQueue<LatencyReport>,
@@ -104,6 +121,82 @@ pub struct Engine {
     started: Instant,
 }
 
+/// A read-only handle to a running engine, cheap to clone and safe to poll.
+///
+/// This exists so the webview's playhead (`get_playback_position`, called at
+/// 60fps) never has to reach the playback control thread. Every method here is
+/// atomics only: no lock, no allocation, no round trip. The control thread owns
+/// the [`Engine`]; the UI owns a `PlaybackMonitor`.
+#[derive(Clone)]
+pub struct PlaybackMonitor {
+    shared: Arc<Shared>,
+    format: OutputFormat,
+    device_name: String,
+    endpoint_frames: u32,
+}
+
+impl PlaybackMonitor {
+    pub fn snapshot(&self) -> PlaybackSnapshot {
+        let position = self.shared.pos_frames.load(Ordering::Acquire);
+        let frames = self.shared.active_frames.load(Ordering::Acquire);
+        let finished = self.shared.finished.load(Ordering::Acquire);
+        PlaybackSnapshot {
+            position_s: position as f64 / self.format.sample_rate as f64,
+            duration_s: frames as f64 / self.format.sample_rate as f64,
+            playing: frames > 0 && !finished,
+            finished,
+        }
+    }
+
+    pub fn format(&self) -> OutputFormat {
+        self.format
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    pub fn endpoint_frames(&self) -> u32 {
+        self.endpoint_frames
+    }
+
+    pub fn engine_period_ms(&self) -> f64 {
+        self.endpoint_frames as f64 / 2.0 / self.format.sample_rate as f64 * 1000.0
+    }
+
+    pub fn underruns(&self) -> u64 {
+        self.shared.underruns.load(Ordering::Acquire)
+    }
+
+    pub fn silent_callbacks(&self) -> u64 {
+        self.shared.silent_callbacks.load(Ordering::Acquire)
+    }
+
+    /// Take every latency observation so far. Used by the status bar to show the
+    /// measured `publish → 出声` of the last publish, not a documented target.
+    pub fn drain_reports(&self) -> Vec<LatencyReport> {
+        let mut out = Vec::new();
+        while let Some(r) = self.shared.measurements.pop() {
+            out.push(r);
+        }
+        out
+    }
+}
+
+impl Engine {
+    /// A polling handle for the UI. Cloning the engine's `Arc<Shared>` costs one
+    /// atomic increment and keeps the measurement queue shared with the render
+    /// thread, so reports drained here are the same ones the engine produces.
+    pub fn monitor(&self) -> PlaybackMonitor {
+        PlaybackMonitor {
+            shared: Arc::clone(&self.shared),
+            format: self.format,
+            device_name: self.device_name.clone(),
+            endpoint_frames: self.endpoint_frames,
+        }
+    }
+}
+
 impl Engine {
     /// Open the device and start the persistent render thread.
     ///
@@ -117,6 +210,7 @@ impl Engine {
             pub_ns: AtomicU64::new(0),
             pub_seq: AtomicU64::new(0),
             pos_frames: AtomicU64::new(0),
+            active_frames: AtomicU64::new(0),
             finished: AtomicBool::new(false),
             running: AtomicBool::new(true),
             measurements: ArrayQueue::new(4096),
@@ -171,12 +265,33 @@ impl Engine {
     /// The clip goes into the inactive slot, then the active index flips. That
     /// single atomic store is the whole switch: the render thread cannot observe
     /// a half-installed clip, and there is no queue to drain.
-    pub fn publish(&mut self, clip: Arc<DecodedAudio>, _source: PublishSource) -> u64 {
+    ///
+    /// Takes `&self` on purpose. Everything it touches is an atomic store or an
+    /// `arc-swap` store, so a `play` command arriving on any thread can publish
+    /// without a lock and without waiting for a control thread to become free.
+    pub fn publish(&self, clip: Arc<DecodedAudio>, _source: PublishSource) -> u64 {
+        self.publish_from(clip, 0)
+    }
+
+    /// Publish a clip and start it `offset_frames` in.
+    ///
+    /// `start_at` in the IPC surface lands here. The clip is not re-decoded or
+    /// trimmed: the offset is a starting position on an immutable buffer, so a
+    /// seek costs the same atomic store a normal start does (architecture 3.3 —
+    /// every supported format is seekable from the header, so this never needs a
+    /// decode from the top).
+    pub fn publish_from(&self, clip: Arc<DecodedAudio>, offset_frames: u64) -> u64 {
         let current = self.shared.active.load(Ordering::Acquire);
         let next = 1 - current;
 
+        let total = clip.frames as u64;
+        let offset = offset_frames.min(total);
+
         self.shared.slots[next].store(Some(clip));
-        self.shared.pos_frames.store(0, Ordering::Release);
+        self.shared.pos_frames.store(offset, Ordering::Release);
+        // Total frames, not remaining: `snapshot` derives the clip duration from
+        // it, and the playhead still starts at `offset`.
+        self.shared.active_frames.store(total, Ordering::Release);
         self.shared.finished.store(false, Ordering::Release);
 
         // Timestamp and sequence become visible before the flip, so the render
@@ -187,6 +302,21 @@ impl Engine {
             .store(self.shared.now_ns(), Ordering::Relaxed);
         self.shared.active.store(next, Ordering::Release);
         seq
+    }
+
+    /// Stop playback now: clear both slots and park `finished`.
+    ///
+    /// This is the `stop` half of the IPC surface. It does not touch the stream,
+    /// so the next `publish` costs one atomic store, same as any other switch.
+    /// The endpoint keeps the audio it already queued (shared mode cannot drop
+    /// it), which is why a stop is heard as a very short tail rather than a cut.
+    pub fn stop(&self) {
+        self.shared.active.store(0, Ordering::Release);
+        self.shared.slots[0].store(None);
+        self.shared.slots[1].store(None);
+        self.shared.pos_frames.store(0, Ordering::Release);
+        self.shared.active_frames.store(0, Ordering::Release);
+        self.shared.finished.store(true, Ordering::Release);
     }
 
     /// Playback position of the active clip, in frames.
@@ -205,6 +335,11 @@ impl Engine {
     /// True once the active clip has been fully written to the endpoint.
     pub fn finished(&self) -> bool {
         self.shared.finished.load(Ordering::Acquire)
+    }
+
+    /// Everything the playhead needs, in one pass of atomic reads.
+    pub fn snapshot(&self) -> PlaybackSnapshot {
+        self.monitor().snapshot()
     }
 
     /// Take every latency observation the render thread has produced.

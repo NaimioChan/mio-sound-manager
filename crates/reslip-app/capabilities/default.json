@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main window. Every command in this app is a plain #[tauri::command] guarded by the invoke handler, so the ACL only needs core defaults; the drag plugin is here because drag-out to a DAW is a product feature (P0).",
+  "windows": ["main"],
+  "permissions": ["core:default", "drag:default"]
+}

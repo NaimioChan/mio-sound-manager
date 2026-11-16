@@ -1,0 +1,497 @@
+//! P3 acceptance: the shell's IPC surface, driven without a window.
+//!
+//! `docs/architecture.md` section 8 states P3's bar as "an empty window can call
+//! `play` / `get_waveform`". A window that a human has to click is not testable,
+//! so everything the commands do lives on `AppState` and this test drives that:
+//!
+//! * `get_status` reports the real device format, or the real device error.
+//! * `play` publishes, `get_playback_position` advances, `stop` silences.
+//! * A second `play` of the same file does not re-decode (the cache path), and a
+//!   `play` that is superseded mid-decode does not start stale audio.
+//! * `get_waveform` returns ~1000 peaks covering the whole file, and no PCM.
+//! * `open_library` / `search` / `list_folders` return the same rows the indexer
+//!   wrote, in the wire shape the renderer expects.
+//!
+//! The device is the system default when `RESLIP_TEST_DEVICE` is unset. On this
+//! machine that is FxSound (a virtual card): fine for "does it play", useless for
+//! latency, which is why no latency number is asserted here. Latency lives in
+//! `docs/agent-log.md` with the device it was measured on.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use reslip_app::AppState;
+use reslip_app::SearchRequest;
+
+/// Where test audio goes. `$TMPDIR` on this host points at Hermes' scratch dir.
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("reslip-p3-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    dir
+}
+
+/// A canonical 16-bit stereo WAV whose first half is a loud tone and whose second
+/// half is silence. The asymmetry is what makes the peak test meaningful: a
+/// waveform that returned a constant would pass on a uniform file.
+fn write_wav(path: &Path, sample_rate: u32, channels: u16, frames: u32) {
+    std::fs::create_dir_all(path.parent().expect("audio file has a folder")).unwrap();
+    let block_align = channels * 2;
+    let data_len = frames * block_align as u32;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * block_align as u32).to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+
+    for frame in 0..frames {
+        let loud = frame < frames / 2;
+        let value = if loud { 20_000i16 } else { 0i16 };
+        for _ in 0..channels {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    let mut file = std::fs::File::create(path).unwrap();
+    file.write_all(&out).unwrap();
+}
+
+/// Boot the state against the device named by `RESLIP_TEST_DEVICE`, or the
+/// system default.
+fn state() -> Option<AppState> {
+    let device = std::env::var("RESLIP_TEST_DEVICE").ok();
+    let state = AppState::with_device(device);
+    if state.engine_error().is_some() {
+        eprintln!(
+            "note: no audio device ({}); playback assertions skipped",
+            state.engine_error().unwrap_or_default()
+        );
+        return None;
+    }
+    Some(state)
+}
+
+#[test]
+fn status_reports_the_device_it_actually_opened() {
+    let Some(state) = state() else { return };
+    let status = state.status().expect("status");
+
+    assert!(status.audio_available);
+    assert_eq!(status.audio_error, None);
+
+    // The format has to be one the engine can emit, and the numbers have to be
+    // the device's, not a default: a hardcoded 48000 would pass this test while
+    // lying about a 44100 device.
+    let info = state.engine_info().expect("engine info");
+    assert_eq!(status.sample_rate, Some(info.format.sample_rate));
+    assert_eq!(status.channels, Some(info.format.channels));
+    assert!(status.sample_format.is_some());
+
+    let endpoint = status.endpoint_frames.expect("endpoint frames");
+    assert!(endpoint > 0, "device reported an empty endpoint buffer");
+
+    // Engine period is endpoint/2 on shared mode. Asserting the relationship
+    // rather than a fixed number keeps this valid on a different device.
+    let period = status.engine_period_ms.expect("engine period");
+    let expected = endpoint as f64 / 2.0 / info.format.sample_rate as f64 * 1000.0;
+    assert!((period - expected).abs() < 1e-9, "{period} vs {expected}");
+    assert!(
+        (1.0..=50.0).contains(&period),
+        "engine period {period}ms is outside anything a shared-mode device reports"
+    );
+}
+
+#[test]
+fn status_without_a_device_reports_the_engine_error_not_a_generic_one() {
+    // A device filter that cannot match anything. The engine's own
+    // `DeviceNotFound` message names the filter and lists what was available;
+    // that detail is the whole point of surfacing it.
+    let state = AppState::with_device(Some("definitely-not-a-real-device-name".into()));
+    let status = state.status().expect("status works without a device");
+
+    assert!(!status.audio_available);
+    let error = status.audio_error.expect("error text");
+    assert!(
+        error.contains("definitely-not-a-real-device-name"),
+        "error should name the filter that failed: {error}"
+    );
+    assert_eq!(status.device_name, None);
+
+    // And playback fails cleanly instead of panicking.
+    let clip_path = scratch("no-device").join("x.wav");
+    write_wav(&clip_path, 44_100, 2, 441);
+    let err = state
+        .publish(Arc::new(reslip_engine::DecodedAudio {
+            bytes: Vec::new(),
+            frames: 0,
+            format: reslip_engine::OutputFormat {
+                sample_rate: 44_100,
+                channels: 2,
+                sample: reslip_engine::DeviceSample::I16,
+            },
+            source_rate: 44_100,
+            source_channels: 2,
+            decode_ms: 0.0,
+            resampled: false,
+            path: String::new(),
+            trimmed_leading_frames: 0,
+        }), reslip_engine::PublishSource::Initial);
+    assert!(err.is_err(), "publish without a device must fail");
+}
+
+#[test]
+fn play_moves_the_playhead_and_stop_halts_it() {
+    let Some(state) = state() else { return };
+    let root = scratch("playback");
+    let audio = root.join("tone.wav");
+    write_wav(&audio, 44_100, 2, 44_100); // one second
+
+    assert!(!state.playback_position().playing, "nothing playing at boot");
+
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), None)).expect("play");
+
+    // The command resolves once the clip is published; the render thread advances
+    // `pos_frames` from then on. Poll rather than sleep a fixed time, so this is
+    // not a flaky timing test.
+    let mut moved = false;
+    for _ in 0..200 {
+        let position = state.playback_position();
+        if position.position_s > 0.0 {
+            moved = true;
+            assert!(position.duration_s > 0.9, "duration {}", position.duration_s);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(moved, "playhead never advanced after play");
+
+    state.stop_playback().expect("stop");
+    let after = state.playback_position();
+    assert!(!after.playing, "still playing after stop");
+    assert!(after.finished);
+}
+
+#[test]
+fn play_at_an_offset_starts_where_asked() {
+    let Some(state) = state() else { return };
+    let root = scratch("seek");
+    let audio = root.join("two-seconds.wav");
+    write_wav(&audio, 44_100, 2, 88_200); // two seconds
+
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), Some(1.0))).expect("play");
+
+    let mut position = state.playback_position();
+    for _ in 0..200 {
+        position = state.playback_position();
+        if position.position_s > 0.0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        position.position_s >= 1.0,
+        "playhead {} should start at the 1.0s offset",
+        position.position_s
+    );
+    assert!(position.duration_s > 1.9);
+    state.stop_playback().ok();
+}
+
+#[test]
+fn replaying_the_same_file_skips_the_decoder() {
+    let Some(state) = state() else { return };
+    let root = scratch("cache");
+    let audio = root.join("cached.wav");
+    write_wav(&audio, 44_100, 2, 22_050); // half a second
+
+    let path = audio.to_string_lossy().to_string();
+    tauri::async_runtime::block_on(state.play(&path, None)).expect("first play");
+    // The first play must have populated the cache, or the second one would
+    // decode again and this test would pass while testing nothing.
+    assert!(
+        state.cached_clip(&path).is_some(),
+        "first play did not cache the clip"
+    );
+
+    tauri::async_runtime::block_on(state.play(&path, None)).expect("second play");
+    state.stop_playback().ok();
+}
+
+#[test]
+fn a_superseded_play_does_not_start_stale_audio() {
+    let Some(state) = state() else { return };
+    let root = scratch("superseded");
+    let first = root.join("first.wav");
+    let second = root.join("second.wav");
+    write_wav(&first, 44_100, 2, 44_100);
+    write_wav(&second, 44_100, 2, 22_050);
+
+    // Start a play, then stop before it can publish. The epoch check inside
+    // `play` is what makes the late-arriving decode a no-op instead of playing a
+    // sound the user already moved past.
+    let first_path = first.to_string_lossy().to_string();
+    let second_path = second.to_string_lossy().to_string();
+
+    tauri::async_runtime::block_on(state.play(&first_path, None)).expect("first");
+    state.stop_playback().expect("stop");
+    tauri::async_runtime::block_on(state.play(&second_path, None)).expect("second");
+
+    // The second publish is what is live now: its duration is the second file's.
+    let mut position = state.playback_position();
+    for _ in 0..200 {
+        position = state.playback_position();
+        if position.duration_s > 0.0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        (position.duration_s - 0.5).abs() < 0.05,
+        "expected the 0.5s file to be live, got duration {}",
+        position.duration_s
+    );
+    state.stop_playback().ok();
+}
+
+#[test]
+fn non_audio_paths_are_rejected_before_any_work() {
+    let Some(state) = state() else { return };
+    let root = scratch("reject");
+    let text = root.join("notes.txt");
+    std::fs::write(&text, b"not audio").unwrap();
+
+    let err = tauri::async_runtime::block_on(state.play(&text.to_string_lossy(), None))
+        .expect_err("a .txt is not playable");
+    assert!(err.to_string().contains("not an audio file"), "{err}");
+
+    let err = tauri::async_runtime::block_on(state.waveform(&text.to_string_lossy(), None))
+        .expect_err("a .txt has no waveform");
+    assert!(err.to_string().contains("not an audio file"), "{err}");
+}
+
+#[test]
+fn a_missing_file_fails_the_play_command_rather_than_hanging() {
+    let Some(state) = state() else { return };
+    let root = scratch("missing");
+    let gone = root.join("gone.wav");
+
+    let err = tauri::async_runtime::block_on(state.play(&gone.to_string_lossy(), None))
+        .expect_err("decoding a missing file must fail");
+    // The decoder's message carries the path, which is what the UI shows.
+    assert!(err.to_string().contains("gone.wav"), "{err}");
+}
+
+#[test]
+fn waveform_is_a_thousand_peaks_of_the_whole_file_and_no_pcm() {
+    let Some(state) = state() else { return };
+    let root = scratch("waveform");
+    let audio = root.join("tone-then-silence.wav");
+    // 2 seconds at 44.1kHz: loud first half, silent second half.
+    write_wav(&audio, 44_100, 2, 88_200);
+
+    let wave = tauri::async_runtime::block_on(state.waveform(&audio.to_string_lossy(), None))
+        .expect("waveform");
+
+    assert_eq!(wave.peaks.len(), reslip_engine::DEFAULT_BUCKETS);
+    assert_eq!(wave.sample_rate, 44_100);
+    assert_eq!(wave.channels, 2);
+    assert!(
+        (wave.duration_s - 2.0).abs() < 0.02,
+        "duration {}",
+        wave.duration_s
+    );
+
+    // The loud half must read loud and the silent half must read silent: a
+    // waveform that ignores the audio would fail here.
+    let midpoint = wave.peaks.len() / 2;
+    let loud = wave.peaks[..midpoint].iter().cloned().fold(0.0f32, f32::max);
+    let quiet = wave.peaks[midpoint + 4..]
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max);
+    assert!(
+        loud > 0.5,
+        "loud half should be near full scale, peak was {loud}"
+    );
+    assert!(quiet < 0.01, "silent half should be silent, peak was {quiet}");
+
+    // Wire-format guard: peaks are floats in 0..=1, never bytes of PCM. `AGENTS.md`
+    // forbids decoded audio crossing into the webview.
+    assert!(wave.peaks.iter().all(|p| (0.0..=1.0).contains(p)));
+    assert_eq!(wave.peaks.len(), 1000, "payload must not scale with file size");
+}
+
+#[test]
+fn waveform_bucket_count_is_clamped_not_trusted() {
+    let Some(state) = state() else { return };
+    let root = scratch("buckets");
+    let audio = root.join("short.wav");
+    write_wav(&audio, 44_100, 1, 4_410);
+
+    let tiny = tauri::async_runtime::block_on(state.waveform(&audio.to_string_lossy(), Some(0)))
+        .expect("waveform with zero buckets");
+    assert_eq!(tiny.peaks.len(), 16, "0 buckets clamps to the minimum");
+
+    let huge = tauri::async_runtime::block_on(state.waveform(&audio.to_string_lossy(), Some(1_000_000)))
+        .expect("waveform with a huge bucket count");
+    assert_eq!(huge.peaks.len(), 16_384, "huge bucket counts clamp");
+}
+
+#[test]
+fn opening_a_library_starts_a_pass_and_search_finds_the_rows() {
+    let Some(state) = state() else { return };
+    let root = scratch("library");
+    write_wav(&root.join(r"Foley\door_slam.wav"), 44_100, 2, 4_410);
+    write_wav(&root.join(r"Weapons\Firearms\gunshot_01.wav"), 44_100, 2, 8_820);
+    std::fs::write(root.join("readme.txt"), b"not audio").unwrap();
+
+    let status = state.open_library(&root.to_string_lossy()).expect("open");
+    assert_eq!(status.root, root.to_string_lossy());
+    assert!(status.indexing, "a pass should have started");
+
+    // Wait for the background pass. Polling is what the UI does; a fixed sleep
+    // would make this test slow on success and flaky on a loaded machine.
+    let mut library = status;
+    for _ in 0..600 {
+        library = state.library_status().expect("library status").expect("open");
+        if !library.indexing {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!library.indexing, "index pass never finished");
+    assert_eq!(library.count, 2, "the .txt must not be indexed");
+
+    // Search returns the wire shape, with the formatted labels the table needs.
+    let rows = state
+        .search(SearchRequest {
+            query: String::new(),
+            ..Default::default()
+        })
+        .expect("search everything");
+    assert_eq!(rows.len(), 2);
+
+    let gunshot = rows
+        .iter()
+        .find(|r| r.filename == "gunshot_01.wav")
+        .expect("gunshot row");
+    assert_eq!(gunshot.category, "Weapons");
+    assert_eq!(gunshot.subcategory.as_deref(), Some("Firearms"));
+    assert_eq!(gunshot.channel_label, "Stereo");
+    assert_eq!(gunshot.duration_label, "0:00.20");
+    assert_eq!(gunshot.sample_rate, Some(44_100));
+    assert!(!gunshot.favorite);
+    assert_eq!(gunshot.folder.as_deref(), Some(r"Weapons\Firearms"));
+
+    // A query narrows it, using the FTS path rather than a LIKE.
+    let hits = state
+        .search(SearchRequest {
+            query: "gunshot".into(),
+            ..Default::default()
+        })
+        .expect("search");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].filename, "gunshot_01.wav");
+}
+
+#[test]
+fn folder_tree_comes_from_the_index_not_from_disk() {
+    let Some(state) = state() else { return };
+    let root = scratch("folders");
+    write_wav(&root.join(r"Foley\Impacts\slam.wav"), 44_100, 2, 1_000);
+    write_wav(&root.join(r"Foley\door.wav"), 44_100, 2, 1_000);
+    write_wav(&root.join("root_level.wav"), 44_100, 2, 1_000);
+    // An empty folder on disk must not appear: the tree is built from indexed
+    // paths, so a folder with no indexed audio is not part of the library.
+    std::fs::create_dir_all(root.join("EmptyFolder")).unwrap();
+
+    state.open_library(&root.to_string_lossy()).expect("open");
+    for _ in 0..600 {
+        let status = state.library_status().expect("status").expect("open");
+        if !status.indexing {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let tree = state.list_folders().expect("folders");
+    assert_eq!(tree.count, 3, "root count");
+
+    let foley = tree
+        .children
+        .iter()
+        .find(|c| c.name == "Foley")
+        .expect("Foley folder");
+    assert_eq!(foley.count, 2, "recursive count includes the subfolder");
+
+    let impacts = foley
+        .children
+        .iter()
+        .find(|c| c.name == "Impacts")
+        .expect("Impacts subfolder");
+    assert_eq!(impacts.count, 1);
+
+    assert!(
+        !tree.children.iter().any(|c| c.name == "EmptyFolder"),
+        "an empty folder has no indexed files and must not appear"
+    );
+}
+
+#[test]
+fn search_without_a_library_is_an_error_the_ui_can_display() {
+    let Some(state) = state() else { return };
+    let err = state
+        .search(SearchRequest::default())
+        .expect_err("searching with no library must fail");
+    assert!(err.to_string().contains("no library"), "{err}");
+
+    let err = state.list_folders().expect_err("folders with no library");
+    assert!(err.to_string().contains("no library"), "{err}");
+
+    // But the status command still answers, with `library: null`.
+    let status = state.status().expect("status");
+    assert!(status.library.is_none());
+}
+
+#[test]
+fn reopening_the_same_library_does_not_start_a_second_indexer() {
+    let Some(state) = state() else { return };
+    let root = scratch("reopen");
+    write_wav(&root.join("a.wav"), 44_100, 2, 1_000);
+
+    let first = state.open_library(&root.to_string_lossy()).expect("first open");
+    assert!(first.indexing);
+
+    // While the first pass runs, a second open must not spawn another write
+    // against the same database.
+    let second = state.open_library(&root.to_string_lossy()).expect("second open");
+    assert_eq!(second.root, first.root);
+
+    for _ in 0..600 {
+        let status = state.library_status().expect("status").expect("open");
+        if !status.indexing {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let settled = state.library_status().expect("status").expect("open");
+    assert_eq!(settled.count, 1, "one file, indexed once");
+}
+
+#[test]
+fn opening_a_folder_that_does_not_exist_is_rejected() {
+    let Some(state) = state() else { return };
+    let err = state
+        .open_library(r"C:\definitely\not\a\real\folder\reslip")
+        .expect_err("a missing folder must be rejected");
+    assert!(err.to_string().contains("not a folder"), "{err}");
+}

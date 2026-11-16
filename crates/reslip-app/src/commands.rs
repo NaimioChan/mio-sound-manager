@@ -1,0 +1,360 @@
+//! The IPC surface: wire types the renderer consumes, and one thin command per
+//! thing it can ask for.
+//!
+//! Wire format is camelCase and flat because it is consumed by TypeScript, and
+//! the reference implementation's renderer already speaks that shape. The
+//! commands themselves decide nothing — each validates the shape of its arguments
+//! and calls a method on [`AppState`]. That split is what lets `tests/ipc.rs`
+//! exercise play/stop/waveform/search without a window; a shell whose only test
+//! is a human clicking is not tested.
+
+use reslip_index::Sound;
+use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::error::{AppError, AppResult};
+use crate::library::{self, IndexProgress, Library};
+use crate::state::AppState;
+
+/// Everything the window needs at startup, in one round trip.
+///
+/// The alternative — a command per fact — makes the first paint wait on five IPC
+/// calls, and turns "the device failed to open" into a state the renderer has to
+/// assemble from partial answers.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStatus {
+    pub audio_available: bool,
+    /// Present when `audio_available` is false. The engine's own message, not a
+    /// generic one, so it names the device or format it rejected.
+    pub audio_error: Option<String>,
+    pub device_name: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<usize>,
+    pub sample_format: Option<String>,
+    pub endpoint_frames: Option<u32>,
+    /// Engine period in ms. The number that has to be quoted whenever a latency
+    /// claim is made — `AGENTS.md`: latency is a measured number, not an adjective.
+    pub engine_period_ms: Option<f64>,
+    pub library: Option<LibraryStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatus {
+    pub root: String,
+    pub count: u64,
+    pub indexing: bool,
+    pub indexed: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackPosition {
+    pub position_s: f64,
+    pub duration_s: f64,
+    pub playing: bool,
+    pub finished: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveformDto {
+    pub peaks: Vec<f32>,
+    pub duration_s: f64,
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub decode_ms: f64,
+}
+
+/// A sound as the table renders it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundDto {
+    pub path: String,
+    pub filename: String,
+    pub duration_s: Option<f64>,
+    /// Pre-formatted for the table cell, so the renderer does not reimplement
+    /// `m:ss.cs` per row (and get the rounding wrong in its own way).
+    pub duration_label: String,
+    pub channels: Option<u32>,
+    pub channel_label: String,
+    pub sample_rate: Option<u32>,
+    pub filesize: Option<u64>,
+    pub category: String,
+    pub subcategory: Option<String>,
+    pub confidence: f64,
+    pub matched_terms: Vec<String>,
+    pub favorite: bool,
+    pub category_manual: bool,
+    pub folder: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderNodeDto {
+    pub name: String,
+    pub path: String,
+    pub count: u64,
+    pub children: Vec<FolderNodeDto>,
+}
+
+/// Filters and paging as the renderer sends them. Every field optional; the
+/// defaults search everything.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchRequest {
+    pub query: String,
+    pub max_duration: Option<f64>,
+    pub channels: Option<u32>,
+    pub category: Option<String>,
+    pub subcategory: Option<String>,
+    pub folder: Option<String>,
+    pub min_confidence: Option<f64>,
+    pub favorite_only: bool,
+    pub sort_by: Option<String>,
+    pub sort_dir: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+impl SearchRequest {
+    /// Validate and translate to the index's own parameter type.
+    ///
+    /// The sort name is checked against a whitelist here rather than in SQL: an
+    /// unknown column is an error, never interpolated.
+    pub fn into_params(self) -> AppResult<reslip_index::SearchParams> {
+        let sort_by = match self.sort_by.as_deref() {
+            None | Some("") => None,
+            Some(name) => Some(
+                library::sort_column(name)
+                    .ok_or_else(|| AppError::internal(format!("unknown sort column {name}")))?,
+            ),
+        };
+        Ok(reslip_index::SearchParams {
+            query: self.query,
+            max_duration: self.max_duration,
+            channels: self.channels,
+            category: self.category,
+            subcategory: self.subcategory,
+            folder: self.folder,
+            min_confidence: self.min_confidence,
+            favorite_only: self.favorite_only,
+            sort_by,
+            sort_dir: self.sort_dir.as_deref().map(library::sort_dir),
+            limit: self.limit.unwrap_or(200).clamp(1, 5_000),
+            offset: self.offset.unwrap_or(0),
+        })
+    }
+}
+
+impl From<Sound> for SoundDto {
+    fn from(s: Sound) -> Self {
+        Self {
+            duration_label: duration_label(s.duration_s),
+            channel_label: channel_label(s.channels),
+            path: s.path,
+            filename: s.filename,
+            duration_s: s.duration_s,
+            channels: s.channels,
+            sample_rate: s.sample_rate,
+            filesize: s.filesize,
+            category: s.category,
+            subcategory: s.subcategory,
+            confidence: s.confidence,
+            matched_terms: s.matched_terms,
+            favorite: s.favorite,
+            category_manual: s.category_manual,
+            folder: s.folder,
+        }
+    }
+}
+
+impl From<reslip_index::FolderNode> for FolderNodeDto {
+    fn from(node: reslip_index::FolderNode) -> Self {
+        Self {
+            name: node.name,
+            path: node.path,
+            count: node.count,
+            children: node.children.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// `m:ss.cs`, or `—` when the header did not give a usable duration.
+pub fn duration_label(duration_s: Option<f64>) -> String {
+    let Some(seconds) = duration_s else {
+        return "—".to_string();
+    };
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "—".to_string();
+    }
+    let minutes = (seconds / 60.0).floor() as u64;
+    let rest = seconds - minutes as f64 * 60.0;
+    let whole = rest.floor() as u64;
+    let cents = ((rest - whole as f64) * 100.0).round() as u64;
+    // Rounding 59.996 up must not print `0:59.100`: carry into the minute.
+    if cents >= 100 {
+        let (minutes, whole) = if whole + 1 == 60 {
+            (minutes + 1, 0)
+        } else {
+            (minutes, whole + 1)
+        };
+        return format!("{minutes}:{whole:02}.00");
+    }
+    format!("{minutes}:{whole:02}.{cents:02}")
+}
+
+pub fn channel_label(channels: Option<u32>) -> String {
+    match channels {
+        Some(1) => "Mono".to_string(),
+        Some(2) => "Stereo".to_string(),
+        Some(n) => format!("{n}ch"),
+        None => "—".to_string(),
+    }
+}
+
+/// Current library status, or `NoLibrary` when none is open.
+pub fn library_status(library: &Library) -> AppResult<LibraryStatus> {
+    let progress: IndexProgress = library.progress();
+    Ok(LibraryStatus {
+        root: library.root().display().to_string(),
+        count: library.count()?,
+        indexing: progress.running,
+        indexed: progress.done,
+        total: progress.total,
+    })
+}
+
+// ---------------------------------------------------------------- commands
+
+#[tauri::command]
+pub fn get_status(state: State<'_, AppState>) -> AppResult<AppStatus> {
+    state.status()
+}
+
+/// Start playing `path`, optionally `startAt` seconds in.
+#[tauri::command]
+pub async fn play(state: State<'_, AppState>, path: String, start_at: Option<f64>) -> AppResult<()> {
+    state.play(&path, start_at).await
+}
+
+#[tauri::command]
+pub fn stop(state: State<'_, AppState>) -> AppResult<()> {
+    state.stop_playback()
+}
+
+/// The playhead. Called from `requestAnimationFrame`, so it stays allocation free
+/// and lock free — which is why it does not touch the decode worker or the library.
+#[tauri::command]
+pub fn get_playback_position(state: State<'_, AppState>) -> PlaybackPosition {
+    state.playback_position()
+}
+
+/// Peak envelope for the waveform panel.
+#[tauri::command]
+pub async fn get_waveform(
+    state: State<'_, AppState>,
+    path: String,
+    buckets: Option<usize>,
+) -> AppResult<WaveformDto> {
+    state.waveform(&path, buckets).await
+}
+
+/// Open a library folder. Returns before indexing finishes; the renderer polls
+/// `library.indexing` / `indexed` / `total` for progress.
+#[tauri::command]
+pub fn open_library(state: State<'_, AppState>, root: String) -> AppResult<LibraryStatus> {
+    state.open_library(&root)
+}
+
+#[tauri::command]
+pub fn get_library(state: State<'_, AppState>) -> AppResult<Option<LibraryStatus>> {
+    state.library_status()
+}
+
+#[tauri::command]
+pub fn search(state: State<'_, AppState>, request: SearchRequest) -> AppResult<Vec<SoundDto>> {
+    let library = state.library()?;
+    let params = request.into_params()?;
+    Ok(library.search(&params)?.into_iter().map(SoundDto::from).collect())
+}
+
+#[tauri::command]
+pub fn list_folders(state: State<'_, AppState>) -> AppResult<FolderNodeDto> {
+    let library = state.library()?;
+    Ok(library.folder_tree()?.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duration_labels_read_as_minutes_and_hundredths() {
+        assert_eq!(duration_label(Some(0.0)), "0:00.00");
+        assert_eq!(duration_label(Some(3.0)), "0:03.00");
+        assert_eq!(duration_label(Some(3.456)), "0:03.46");
+        assert_eq!(duration_label(Some(61.2)), "1:01.20");
+        assert_eq!(duration_label(None), "—");
+        assert_eq!(duration_label(Some(f64::NAN)), "—");
+    }
+
+    #[test]
+    fn duration_label_carries_into_the_minute() {
+        // 59.999 rounds to 60 hundredths inside the seconds field; the label must
+        // carry rather than print `0:59.100`.
+        assert_eq!(duration_label(Some(59.999)), "1:00.00");
+        assert_eq!(duration_label(Some(119.999)), "2:00.00");
+    }
+
+    #[test]
+    fn channel_labels_match_the_table() {
+        assert_eq!(channel_label(Some(1)), "Mono");
+        assert_eq!(channel_label(Some(2)), "Stereo");
+        assert_eq!(channel_label(Some(6)), "6ch");
+        assert_eq!(channel_label(None), "—");
+    }
+
+    #[test]
+    fn an_unknown_sort_column_is_an_error_not_a_sql_injection() {
+        let request = SearchRequest {
+            sort_by: Some("; DROP TABLE sounds".to_string()),
+            ..Default::default()
+        };
+        assert!(request.into_params().is_err());
+    }
+
+    #[test]
+    fn sort_names_map_to_the_whitelist() {
+        let request = SearchRequest {
+            sort_by: Some("duration".to_string()),
+            sort_dir: Some("desc".to_string()),
+            limit: Some(1_000_000),
+            ..Default::default()
+        };
+        let params = request.into_params().expect("duration is a valid column");
+        assert_eq!(params.sort_by, Some(reslip_index::SortColumn::Duration));
+        assert_eq!(params.sort_dir, Some(reslip_index::SortDir::Desc));
+        assert_eq!(params.limit, 5_000, "limit is clamped");
+    }
+
+    #[test]
+    fn default_paging_is_bounded() {
+        let params = SearchRequest::default().into_params().unwrap();
+        assert_eq!(params.limit, 200);
+        assert_eq!(params.offset, 0);
+    }
+
+    #[test]
+    fn zero_limit_is_clamped_up_rather_than_meaning_everything() {
+        let params = SearchRequest {
+            limit: Some(0),
+            ..Default::default()
+        }
+        .into_params()
+        .unwrap();
+        assert_eq!(params.limit, 1);
+    }
+}

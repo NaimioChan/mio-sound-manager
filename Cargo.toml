@@ -1,6 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["crates/reslip-engine", "crates/reslip-index", "crates/reslip-cli"]
+members = [
+    "crates/reslip-engine",
+    "crates/reslip-index",
+    "crates/reslip-cli",
+    "crates/reslip-app",
+]
+# The Tauri shell needs a built webview bundle before it can compile, so it is
+# deliberately not a default member: `cargo build` / `cargo test` at the root
+# keep working with no npm step. Build it explicitly with
+#   ./tools/build-app.sh          (release)
+#   cargo build -p reslip-app     (after `cd ui && npm run build`)
+default-members = ["crates/reslip-engine", "crates/reslip-index", "crates/reslip-cli"]
 
 [workspace.package]
 version = "0.1.0"

@@ -2,6 +2,49 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-16 15:10 · hermes · P3 Tauri 外壳 + IPC 落地
+
+- 改: 新建 `crates/reslip-app`（`commands` / `state` / `library` / `error` + `tests/ipc.rs`）、`ui/`（SolidJS + Vite，`App` / `SoundTable` / `WaveformDock` / `Sidebar` / `ipc.ts`）、`tools/`（`run-app.sh` / `kill-app.sh` / `inspect-app.mjs` / `drive-app.mjs` / `drive-big-library.mjs` / `check-interactions.mjs`）；`crates/reslip-engine` 新增 `waveform` 模块，`Engine` 加 `publish_from` / `stop` / `monitor` / `PlaybackMonitor`；新增 `docs/app.md`；更新 `AGENTS.md`、`docs/architecture.md` 第 8 节
+- 状态: **P3 通过**，产品代码 = engine + index + app + ui
+- 验收库: `D:/reslip-test-library`（28 万文件），设备 FxSound（默认设备，48k 2ch f32，引擎周期 11.00ms）
+
+### 验收怎么测的（不靠人看窗口）
+
+`tests/ipc.rs` 15 个测试直接驱动 `AppState`，跑真实设备与真实索引，不打开窗口。加上 `commands.rs` 的 7 个与 P1/P2 的 57 个，`cargo test --release --workspace` 共 **79 个通过**。
+
+窗口内的交互用 CDP 驱动真实窗口断言：
+
+- `tools/check-interactions.mjs`: 播放头推进（0.61 → 1.12s）、点波形 75% 处 seek 到 94.68s（目标 94.06s）、Stop 后播放头钉在 0.00s 不动
+- `tools/drive-big-library.mjs`（真实 28 万库）:
+
+| 口径 | 实测 |
+| --- | --- |
+| `open_library` → 首屏有行 | **69 ms** |
+| 搜索 `gunshot` | 38 行 / 约 65 ms（含 80ms 防抖） |
+| 点击行 → 波形上屏 | 30–43 ms |
+| 增量索引全程 | **6.5 s**（P2 命令行 5.4s，差异是这里顺序走完后 UI 轮询结束） |
+
+索引期间 UI 仍可查询（WAL），侧栏与状态栏的数字实时增长。
+
+### 引擎的三处改动及理由
+
+1. **`publish` / `publish_from` / `stop` 改 `&self`。** 它们只写原子量与 `arc-swap`，不需要 `&mut`。这样任何线程都能发布，命令层不必再搭控制线程串行化。
+2. **`publish_from(clip, offset_frames)`。** IPC 的 `start_at` 落到这里；seek 是在不可变缓冲上换起始位置，代价与普通播放相同的一次原子写，不重新解码。
+3. **`PlaybackMonitor`。** `Engine::monitor()` 给 webview 一份只读句柄，`snapshot()` 与 `drain_reports()` 都是纯原子读 / 无锁队列，播放头轮询不碰音频线程的槽。
+
+波形在 `decode_source`（原始采样率交错 f32，不重采样不打包）之上做 `bucket_peaks`。**桶边界按帧精确，不是参考实现的 256 帧块量化**：2 秒文件的 1000 桶视图上，块量化会让每个桶边界最多偏 5.8ms，尖锐瞬态会画到隔壁柱子。峰值来自播放用的同一次解码（含 gapless 裁剪），否则波形与声音差 23–25ms。
+
+### 踩到的两个坑
+
+1. **`tauri` 必须开 `custom-protocol`。** 不开时 release 构建仍把 webview 指向 `devUrl`（localhost:1420），Vite 没跑就是空白窗口。第一次运行正是如此：CDP 里页面 URL 是 `http://localhost:1420/`，改成 `http://tauri.localhost/` 后才从 exe 内部取 asset。
+2. **Windows 不允许替换正在映射的 exe**，`cargo build --release` 报 `failed to remove file reslip.exe`。`tools/kill-app.sh` 用 PowerShell `Stop-Process`（`taskkill //F` 在 git-bash 下会把 `//F` 弄坏）。
+
+另有一条工程约定：**要想让 UI 可被验证，必须能从外部连上 webview。** `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` 要在 webview 创建前设置，所以有 `tools/run-app.sh`。驱动脚本放在 `slip-sound/` 下跑——`playwright-core` 装在那里，且 ESM 按脚本自身位置解析 `node_modules`。
+
+- 验证: `cargo test --release --workspace` 79 个通过；`ui/` 的 `tsc --noEmit` 与 `vite build` 通过（26KB JS）；真实 28 万库的打开/搜索/点击/波形/seek/stop 全部实测；截图见 `reslip-big-playing.png`
+- 遗留: ① 打开库用 `window.prompt` 而非原生文件夹对话框（需 `tauri-plugin-dialog` + ACL，P4 一起做）；② 侧栏只有文件夹树，无 category/subcategory facet 计数与收藏行（`reslip-index` 的 `facets()` 已就绪，缺 P4 的交互规格）；③ P0 验证过的拖拽导出还没接到列表；④ 键盘操作（方向键选行、空格播放）属于 P4；⑤ 长文件仍整段解码，波形因此也是一次整段解码，`decodeMs` 直接显示给用户（实测短素材 0.9–9.4ms）；⑥ `autoAdvance`（播完自动下一行）未做，参考实现有
+- 下一步: P4 前端搬迁（列表/波形/搜索的完整交互：键盘、多选、拖拽导出、原生目录选择、分类侧栏）
+
 ## 2026-11-16 14:40 · hermes · P2 索引器 + schema 落地
 
 - 改: 新建 `crates/reslip-index`（probe / wav_header / classify / db / folders / indexer）；`crates/reslip-cli` 新增 `index` / `index-stats` / `search` / `classify-diff` / `probe-bench` 五个子命令；新增 `tools/gen-category-dict.mjs`（词典生成器）与 `probes/wav-fmt20`（缺陷复现）；新增 `docs/index.md`；本条日志

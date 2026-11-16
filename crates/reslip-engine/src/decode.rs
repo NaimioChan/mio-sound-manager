@@ -99,6 +99,19 @@ impl DecodedAudio {
     }
 }
 
+/// Interleaved f32 at the file's own rate and channel count, as decoded.
+///
+/// This is the pre-conversion form of a clip: no resampling, no channel remap,
+/// no byte packing. [`Decoder::decode`] converts it for the device; the peak
+/// scanner reads it directly, so a waveform is computed from exactly the samples
+/// that will be played (including the gapless trim).
+pub struct SourceAudio {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub trimmed_leading_frames: usize,
+}
+
 /// Decodes files into the device format. Cheap to construct and stateless
 /// between files, so one instance can serve sequential and parallel decodes.
 #[derive(Debug, Clone, Copy)]
@@ -121,7 +134,13 @@ impl Decoder {
         let started = Instant::now();
         let display = path.display().to_string();
 
-        let (interleaved, src_rate, src_channels, trimmed) = self.decode_to_f32(path)?;
+        let source = self.decode_source(path)?;
+        let (interleaved, src_rate, src_channels, trimmed) = (
+            source.samples,
+            source.sample_rate,
+            source.channels,
+            source.trimmed_leading_frames,
+        );
 
         let mut resampled = false;
         let interleaved = if src_rate != self.format.sample_rate && !interleaved.is_empty() {
@@ -150,6 +169,22 @@ impl Decoder {
             resampled,
             path: display,
             trimmed_leading_frames: trimmed,
+        })
+    }
+
+    /// Decode `path` to interleaved f32 without touching the device format.
+    ///
+    /// Used by the waveform scanner. The device format is irrelevant to a peak
+    /// envelope, and resampling a whole file just to measure its maxima would
+    /// double the work for no visible difference.
+    pub fn decode_source<P: AsRef<Path>>(&self, path: P) -> Result<SourceAudio> {
+        let (samples, sample_rate, channels, trimmed_leading_frames) =
+            self.decode_to_f32(path.as_ref())?;
+        Ok(SourceAudio {
+            samples,
+            sample_rate,
+            channels,
+            trimmed_leading_frames,
         })
     }
 

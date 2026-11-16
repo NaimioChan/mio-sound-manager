@@ -344,7 +344,7 @@ webview 需要知道「播到哪了」来画播放头。不用事件推送（每
 | **P0** ✅ | 拖拽导出可行性验证 | 能从一个最小 Tauri 2 窗口把文件拖进真实 DAW。**2026-11-16 通过**：Cubase 16 / REAPER / FL Studio 均接受并导入 |
 | **P1** ✅ | 音频引擎原型（不含 UI） | 命令行程序，指定文件路径即播，打印实测延迟；连按模拟切换无 glitch。**2026-11-16 通过**：`crates/reslip-engine` + `crates/reslip-cli`，六格式可播，切换下溢 0 |
 | **P2** ✅ | 索引器 + schema | 对真实库跑一遍，打印各阶段耗时，与第 5 节数字对照。**2026-11-16 通过**：`crates/reslip-index`，28 万真实文件全量 63.9s、增量 5.4s；分类与 Slip Sound 旧库 271,350 行零差异。与 5.1 的 9s 外推不符，原因见 5.1 末尾 |
-| **P3** | Tauri 外壳 + IPC 骨架 | 空窗口能调 `play`/`get_waveform` |
+| **P3** ✅ | Tauri 外壳 + IPC 骨架 | 空窗口能调 `play`/`get_waveform`。**2026-11-16 通过**：`crates/reslip-app` + `ui/`，22 个 Rust 测试（其中 15 个走真实设备与真实索引，不开窗口）；真实 28 万库打开到首屏 69ms、搜索 65ms、点击到波形 30–43ms。窗口内交互用 CDP 驱动断言（播放头推进 / seek / 停止），细节见 `docs/app.md` |
 | **P4** | 前端搬迁（列表、波形、搜索） | 能浏览、搜索、点击播放 |
 | **P5** | 工具功能（Slicer / Effects / Loop / Export） | 逐项对照 Slip Sound 行为 |
 | **P6** | ASIO 可选后端 | feature flag 打开后延迟下降，关闭时功能不变 |
