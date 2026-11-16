@@ -290,7 +290,7 @@ FTS5 配置不变（`unicode61 remove_diacritics 2`，索引 `filename`/`categor
 
 | 风险 | 影响 | 缓解 |
 | --- | --- | --- |
-| **Tauri 2 的拖拽导出在 Windows 上可用性** | 高：拖到 DAW 是核心交互 | 已有可用方案：CrabNebula 的 `drag` crate 2.1.1 在 `src/platform_impl/windows/` 用 `OLE` + `DoDragDrop` + `CF_HDROP` 实现真实文件拖拽，`tauri-plugin-drag` 2.1.1 把它包成 Tauri 命令（`plugin:drag|start_drag`，参数为绝对路径列表）。本机已验证 `drag` crate 编译通过。**实现前仍需实测「拖进真实 DAW」这一步**，因为 crate 编译通过不等于 Ableton/Reaper 接受 |
+| **Tauri 2 的拖拽导出在 Windows 上可用性** | ~~高~~ **已解除（2026-11-16）** | `tauri-plugin-drag` 2.1.1 → `drag` 2.1.1 → `OleInitialize` + `SHCreateShellItemArrayFromIDLists` + `BHID_DataObject` + `DoDragDrop`，产出标准 `CF_HDROP`。实测拖进 Cubase 16 / REAPER / FL Studio 均被接受，单文件、多文件、含中文与空格的文件名都通过。验证程序在 `probes/tauri-drag-p0`。**遗留**：`start_drag` 的 `onEvent` 回调从不触发，产品里不能用它判断拖拽结果 |
 | ASIO 可选后端的构建复杂度 | 中 | 用 feature flag 隔离，默认不编译 |
 | 独占模式在 ASIO 下是否也抢设备 | 中 | 需开着真实 DAW 复测（上轮只测了 cpal 双实例） |
 | 变速不变调（stretch）的实现 | 中 | ffmpeg 的 `atempo` 只在导出用；实时预览需要 Rust 侧时间伸缩，可能要用 `signalsmith-stretch` 或降级为「预览不处理变速」 |
@@ -335,8 +335,8 @@ webview 需要知道「播到哪了」来画播放头。不用事件推送（每
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| **P0** | 拖拽导出可行性验证 | 能从一个最小 Tauri 2 窗口把文件拖进真实 DAW（`drag` crate 已编译通过，DAW 接受性未验） |
-| **P1** | 音频引擎原型（不含 UI） | 命令行程序，指定文件路径即播，打印实测延迟；连按模拟切换无 glitch |
+| **P0** ✅ | 拖拽导出可行性验证 | 能从一个最小 Tauri 2 窗口把文件拖进真实 DAW。**2026-11-16 通过**：Cubase 16 / REAPER / FL Studio 均接受并导入 |
+| **P1** ✅ | 音频引擎原型（不含 UI） | 命令行程序，指定文件路径即播，打印实测延迟；连按模拟切换无 glitch。**2026-11-16 通过**：`crates/reslip-engine` + `crates/reslip-cli`，六格式可播，切换下溢 0 |
 | **P2** | 索引器 + schema | 对真实库跑一遍，打印各阶段耗时，与第 5 节数字对照 |
 | **P3** | Tauri 外壳 + IPC 骨架 | 空窗口能调 `play`/`get_waveform` |
 | **P4** | 前端搬迁（列表、波形、搜索） | 能浏览、搜索、点击播放 |
@@ -344,6 +344,20 @@ webview 需要知道「播到哪了」来画播放头。不用事件推送（每
 | **P6** | ASIO 可选后端 | feature flag 打开后延迟下降，关闭时功能不变 |
 
 P0 必须先做：如果拖拽导出在 Tauri 2 + Windows 上无解，整个外壳选型要重新考虑（退回 Electron 的代价是体积和内存，但能保住交互）。
+
+### 8.1 P1 实测结果（本机，E2x2 `Playback 1/2`，44100Hz 2ch f32）
+
+引擎周期 **11.00ms**（endpoint 970 帧 = 22ms），不是本文其他章节记录的 10ms——周期由设备与驱动决定，换设备就换数字。`publish → 出声` 含共享模式恒定的 12ms 排队。
+
+| 口径 | 单次播放 | 连续切换 p50 | 连续切换 max |
+| --- | --- | --- | --- |
+| `publish → 回调写入` | 8.36–9.74ms | 2.5–5.9ms | 9.7ms |
+| 其中已排队 | 12.00ms | 12.00ms | 12.00ms |
+| `publish → 出声` | 20.35–21.74ms | 14.5–16.9ms | 22.05ms |
+
+24 次与 48 次连切的下溢计数均为 0。切换 p50 低于单次播放是因为稳态下队列更短。
+
+**两个会直接吃掉延迟的解码缺陷**（已修，细节见 `docs/engine.md`）：MP3 的 LAME encoder delay 25.1ms（`enable_gapless` 默认关闭）、M4A 的 AAC priming 1024 帧 23.2ms（symphonia 的 isomp4 解析了 `elst` 但没暴露）。二者都与整个设备路径同量级。
 
 ## 9. 明确否决的路线
 

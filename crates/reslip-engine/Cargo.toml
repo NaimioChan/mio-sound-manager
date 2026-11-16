@@ -1,0 +1,16 @@
+[package]
+name = "reslip-engine"
+description = "Decoding, dual-slot scheduling and WASAPI shared-mode output"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+symphonia = { version = "0.5.5", features = ["all-formats", "all-codecs"] }
+wasapi = "0.27"
+rubato = "5.1"
+arc-swap = "1.9"
+crossbeam-queue = "0.3"
+windows = { version = "0.62", features = ["Win32_System_Threading", "Win32_Foundation"] }
+thiserror = "2"
+log = "0.4"

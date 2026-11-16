@@ -1,0 +1,22 @@
+[package]
+name = "tauri-drag-p0"
+version = "0.1.0"
+description = "P0 probe: can a Tauri 2 window drag files into a real DAW on Windows"
+edition = "2024"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# custom-protocol forces production asset mode so the static `ui/` folder is embedded
+# into the binary; no dev server, no npm, one `cargo build` produces a runnable exe.
+tauri = { version = "2", features = ["custom-protocol"] }
+tauri-plugin-drag = "2.1.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

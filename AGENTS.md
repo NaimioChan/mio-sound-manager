@@ -2,7 +2,7 @@
 
 ReSlip: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **设计阶段。架构已定，未开始实现。** 决策与依据见 `docs/architecture.md`；调研结论见 `docs/TODO-low-latency-audio.md`；实测数据见 `docs/research-notes-playback.md`。
+Status: **P0（拖拽导出）与 P1（音频引擎原型）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；调研结论见 `docs/TODO-low-latency-audio.md`；实测数据见 `docs/research-notes-playback.md`；进度与遗留见 `docs/agent-log.md`。
 
 ## Stack (decided)
 
@@ -23,11 +23,28 @@ Status: **设计阶段。架构已定，未开始实现。** 决策与依据见 
 - Indexing and playback are separate subsystems with separate acceptance numbers. Do not let one block the other.
 - **The renderer never touches PCM.** Waveform peaks come from the backend as ~1000 floats; decoded audio never crosses IPC into the webview.
 - **The audio callback does no allocation, no locking, no IO, no logging.** It copies from a pre-decoded slot and nothing else.
+- **Gapless decoding is mandatory, not an optimisation.** With `FormatOptions::enable_gapless` off, MP3 keeps 25.1ms of LAME encoder delay at the head; MP4/AAC keeps 1024 priming frames (23.2ms) because symphonia's isomp4 parses `elst` but never surfaces it. Both are the same order of magnitude as the entire device path, so a missing trim is felt as a late trigger.
+
+## Commands
+
+```bash
+cargo build --release          # workspace, release profile
+cargo test                     # engine unit tests
+cargo run --release -p reslip-cli -- devices
+cargo run --release -p reslip-cli -- play <file> --device E2x2
+cargo run --release -p reslip-cli -- switch <f1> <f2> ... --device E2x2 --interval 25 --rounds 5
+cargo run --release -p reslip-cli -- probe <file>                          # decode cost only
+cargo run --release -p reslip-cli -- render <in> <out.wav> --device E2x2   # PCM path check
+```
+
+`--device` matches a friendly-name substring. The default device is FxSound (a virtual card), so latency measured without `--device E2x2` means nothing.
 
 ## Where things live
 
 | Area | Path |
 | --- | --- |
+| 音频引擎（解码、重采样、双槽、WASAPI 输出） | `crates/reslip-engine/` |
+| 命令行验收工具（P1 的验收产物） | `crates/reslip-cli/` |
 | 架构决策（后端选型、线程模型、技术栈、实施顺序） | `docs/architecture.md` |
 | 调研结论（Q1–Q6 逐条答复） | `docs/TODO-low-latency-audio.md` |
 | 实测数据（延迟、索引、格式探测） | `docs/research-notes-playback.md` |

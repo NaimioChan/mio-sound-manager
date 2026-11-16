@@ -1,0 +1,14 @@
+[package]
+name = "reslip-cli"
+description = "P1 acceptance harness: play a file from the command line, print measured latency"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "reslip-cli"
+path = "src/main.rs"
+
+[dependencies]
+reslip-engine = { path = "../reslip-engine" }
+anyhow = "1"

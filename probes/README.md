@@ -68,6 +68,32 @@ cargo build --release
 
 `index-probe` 会在临时目录建三个测试数据库（`index-probe-{a,b,c}.db`），跑完自动删除。
 
+## tauri-drag-p0
+
+P0 验收程序：最小 Tauri 2 窗口，验证窗口内拖拽能产出真实 `CF_HDROP` 并被 DAW 接受。
+
+```bash
+cd tauri-drag-p0/src-tauri
+cargo build --release
+./target/release/tauri-drag-p0.exe
+```
+
+窗口列出 `samples/` 里的测试文件，按住左键拖到 DAW 的轨道区。每次拖动的开始与结果写到 exe 同目录的 `p0-drag.log`。
+
+不用 npm、不起 dev server：`tauri.conf.json` 打开了 `custom-protocol`，静态页 `ui/index.html` 直接编进二进制，一次 `cargo build` 就出可运行的 exe。
+
+**结论（2026-11-16）**：拖进 Cubase 16、REAPER、FL Studio 均被接受。`onEvent` 回调不触发，见 `docs/agent-log.md`。
+
+## formats/
+
+六种格式的同一段正弦测试音（WAV/AIFF/FLAC/MP3/OGG/M4A），由 ffmpeg 从 `tauri-drag-p0/samples/p0-tone-440-44k-stereo.wav` 转出。用于验证播放管线对每种格式的解码、重采样与声道映射。重新生成：
+
+```bash
+cd probes/formats
+SRC="../tauri-drag-p0/samples/p0-tone-440-44k-stereo.wav"
+for f in flac mp3 ogg m4a aiff; do ffmpeg -y -loglevel error -i "$SRC" "tone.$f"; done
+```
+
 ## 已知限制
 
 - `wasapi3-probe` 的 `audible.exe` 用 `get_current_padding()` 估算「进 DAC」的时刻，不含 DAC 之前的硬件缓冲。真实感知延迟会略高。

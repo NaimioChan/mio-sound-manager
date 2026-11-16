@@ -13,3 +13,7 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+/src-tauri/gen/
+
+# Tauri generated ACL schemas
+probes/**/src-tauri/gen/
