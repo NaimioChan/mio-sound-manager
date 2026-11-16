@@ -1,0 +1,15 @@
+# Rust / cargo
+/target
+**/*.rs.bk
+
+# 探针与临时产物
+*.pdb
+*.exe
+
+# 编辑器
+.vscode/
+.idea/
+
+# 系统
+Thumbs.db
+.DS_Store
