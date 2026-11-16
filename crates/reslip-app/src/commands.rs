@@ -55,7 +55,28 @@ pub struct PlaybackPosition {
     pub position_s: f64,
     pub duration_s: f64,
     pub playing: bool,
+    /// Loaded but frozen: Space resumes instead of restarting, and the playhead
+    /// must stay put while this is true.
+    pub paused: bool,
     pub finished: bool,
+}
+
+/// One `(category, subcategory, count)` row of the sidebar.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FacetDto {
+    pub category: String,
+    pub subcategory: Option<String>,
+    pub count: u64,
+}
+
+/// Everything the sidebar draws, in one round trip.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarDto {
+    pub facets: Vec<FacetDto>,
+    pub favorites: u64,
+    pub total: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -245,6 +266,17 @@ pub fn stop(state: State<'_, AppState>) -> AppResult<()> {
     state.stop_playback()
 }
 
+/// Freeze the loaded clip where it is. Space in the table toggles this.
+#[tauri::command]
+pub fn pause(state: State<'_, AppState>) -> AppResult<()> {
+    state.pause_playback()
+}
+
+#[tauri::command]
+pub fn resume(state: State<'_, AppState>) -> AppResult<()> {
+    state.resume_playback()
+}
+
 /// The playhead. Called from `requestAnimationFrame`, so it stays allocation free
 /// and lock free — which is why it does not touch the decode worker or the library.
 #[tauri::command]
@@ -285,6 +317,102 @@ pub fn search(state: State<'_, AppState>, request: SearchRequest) -> AppResult<V
 pub fn list_folders(state: State<'_, AppState>) -> AppResult<FolderNodeDto> {
     let library = state.library()?;
     Ok(library.folder_tree()?.into())
+}
+
+/// Every path the current filter matches, for "select all".
+///
+/// Separate from `search` on purpose: `search` returns full rows and clamps at
+/// 5,000, because a table page has no reason to be bigger. Selecting everything
+/// is a different question — the answer for a filtered subset of a 280k library
+/// is 280k paths — and materialising 280k row DTOs to keep a set of paths would
+/// be tens of megabytes of structs the caller throws away.
+#[tauri::command]
+pub fn list_matching_paths(
+    state: State<'_, AppState>,
+    request: SearchRequest,
+) -> AppResult<Vec<String>> {
+    state.matching_paths(request)
+}
+
+/// How many rows the current filter matches. The status bar shows it next to the
+/// page count so "38 of 27,525" is never a guess.
+#[tauri::command]
+pub fn count_matching(state: State<'_, AppState>, request: SearchRequest) -> AppResult<u64> {
+    state.count_matching(request)
+}
+
+/// Facet counts, favorites and total for the sidebar, in one round trip.
+#[tauri::command]
+pub fn get_sidebar(state: State<'_, AppState>) -> AppResult<SidebarDto> {
+    state.sidebar()
+}
+
+/// Star or unstar many sounds. One transaction, so a 200-row selection is one
+/// commit rather than 200.
+#[tauri::command]
+pub fn set_favorite(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    favorite: bool,
+) -> AppResult<u64> {
+    state.set_favorite(&paths, favorite)
+}
+
+/// Assign a category by hand to many sounds. Marks them `category_manual`, so a
+/// later index pass keeps the choice.
+#[tauri::command]
+pub fn set_category(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    category: String,
+    subcategory: Option<String>,
+) -> AppResult<u64> {
+    state.set_category(&paths, &category, subcategory.as_deref())
+}
+
+/// Drop the manual category on many sounds, so the next pass reclassifies them.
+#[tauri::command]
+pub fn clear_category(state: State<'_, AppState>, paths: Vec<String>) -> AppResult<u64> {
+    state.clear_category(&paths)
+}
+
+/// Native folder picker. Returns `None` when the user cancels.
+///
+/// The blocking variant is used on purpose: this command is `async`, so Tauri
+/// runs it on the async runtime rather than the main thread, and blocking there
+/// does not freeze the window. The non-blocking variant would need a channel back
+/// into the command, which is more machinery for the same result.
+#[tauri::command]
+pub async fn pick_library_folder(app: tauri::AppHandle) -> AppResult<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Open a sample library")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("folder picker failed: {e}")))?;
+
+    Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
+}
+
+/// Show a sound in Windows Explorer with the file selected.
+///
+/// Uses the opener plugin's reveal rather than spawning `explorer /select`: it
+/// goes through `SHOpenFolderAndSelectItems`, which reuses an open Explorer
+/// window instead of opening a second one on the same folder.
+#[tauri::command]
+pub fn reveal_in_folder(app: tauri::AppHandle, path: String) -> AppResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+
+    if !std::path::Path::new(&path).exists() {
+        return Err(AppError::internal(format!("file is gone: {path}")));
+    }
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| AppError::internal(format!("reveal failed: {e}")))
 }
 
 #[cfg(test)]

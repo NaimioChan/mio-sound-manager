@@ -238,6 +238,23 @@ impl AppState {
         Ok(())
     }
 
+    /// Freeze the loaded clip. Distinct from stop: the slot stays populated and
+    /// the playhead stays where it is, so Space resumes rather than restarts.
+    pub fn pause_playback(&self) -> AppResult<()> {
+        self.engine()?.pause();
+        Ok(())
+    }
+
+    pub fn resume_playback(&self) -> AppResult<()> {
+        self.engine()?.resume();
+        Ok(())
+    }
+
+    /// True while a clip is loaded and paused.
+    pub fn is_paused(&self) -> bool {
+        self.engine.as_ref().is_some_and(|e| e.paused())
+    }
+
     /// Invalidate any decode in flight. Called when playback is stopped or when a
     /// newer play request arrives.
     pub fn bump_epoch(&self) -> u64 {
@@ -382,6 +399,7 @@ impl AppState {
                     position_s: snap.position_s,
                     duration_s: snap.duration_s,
                     playing: snap.playing,
+                    paused: snap.paused,
                     finished: snap.finished,
                 }
             }
@@ -389,6 +407,7 @@ impl AppState {
                 position_s: 0.0,
                 duration_s: 0.0,
                 playing: false,
+                paused: false,
                 finished: true,
             },
         }
@@ -471,8 +490,71 @@ impl AppState {
             .collect())
     }
 
+    /// Every path the filter matches, for "select all".
+    ///
+    /// A separate query rather than `search` with a huge limit: `search` clamps at
+    /// 5,000 rows because a table page has no reason to be bigger, and selecting
+    /// everything is not a table page. Only paths come back, so a 280k selection
+    /// is a few megabytes of strings rather than tens of megabytes of row DTOs.
+    pub fn matching_paths(&self, request: SearchRequest) -> AppResult<Vec<String>> {
+        let library = self.library()?;
+        // `limit: 0` means "no limit" for this call specifically; the index's
+        // clamp is for pages, and this is not a page.
+        let mut params = request.into_params()?;
+        params.limit = u32::MAX;
+        Ok(library.search(&params)?.into_iter().map(|s| s.path).collect())
+    }
+
+    /// How many rows the filter matches, for the status bar's "38 of 27,525".
+    pub fn count_matching(&self, request: SearchRequest) -> AppResult<u64> {
+        let library = self.library()?;
+        Ok(library.count_matching(&request.into_params()?)?)
+    }
+
     pub fn list_folders(&self) -> AppResult<FolderNodeDto> {
         Ok(self.library()?.folder_tree()?.into())
+    }
+
+    /// Facet counts, favorites and total, in one call for the sidebar.
+    pub fn sidebar(&self) -> AppResult<crate::commands::SidebarDto> {
+        let library = self.library()?;
+        let facets = library
+            .facets()?
+            .into_iter()
+            .map(|f| crate::commands::FacetDto {
+                category: f.category,
+                subcategory: f.subcategory,
+                count: f.count,
+            })
+            .collect();
+        let (favorites, total) = library.summary()?;
+        Ok(crate::commands::SidebarDto {
+            facets,
+            favorites,
+            total,
+        })
+    }
+
+    /// Star or unstar many sounds in one transaction.
+    pub fn set_favorite(&self, paths: &[String], favorite: bool) -> AppResult<u64> {
+        Ok(self.library()?.set_favorite(paths, favorite)?)
+    }
+
+    /// Assign one category to many sounds, marking them manual.
+    pub fn set_category(
+        &self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+    ) -> AppResult<u64> {
+        Ok(self
+            .library()?
+            .set_category(paths, category, subcategory)?)
+    }
+
+    /// Drop the manual category on many sounds.
+    pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
+        Ok(self.library()?.clear_category(paths)?)
     }
 }
 

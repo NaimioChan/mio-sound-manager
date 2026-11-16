@@ -60,6 +60,9 @@ pub struct PlaybackSnapshot {
     pub position_s: f64,
     pub duration_s: f64,
     pub playing: bool,
+    /// Paused with the clip still loaded. The playhead stays where it is, so
+    /// resuming costs nothing and the position does not jump back to zero.
+    pub paused: bool,
     pub finished: bool,
 }
 
@@ -93,6 +96,10 @@ struct Shared {
     /// position poll never has to take an `arc-swap` guard on the audio thread's
     /// slot. Pure atomics on the polling path (architecture section 7.3).
     active_frames: AtomicU64,
+    /// Set by `pause`, cleared by `publish` and `resume`. While set the render
+    /// callback writes silence and leaves `pos_frames` alone, so the playhead
+    /// freezes exactly where the listener heard it stop.
+    paused: AtomicBool,
     finished: AtomicBool,
     running: AtomicBool,
     measurements: ArrayQueue<LatencyReport>,
@@ -139,11 +146,16 @@ impl PlaybackMonitor {
     pub fn snapshot(&self) -> PlaybackSnapshot {
         let position = self.shared.pos_frames.load(Ordering::Acquire);
         let frames = self.shared.active_frames.load(Ordering::Acquire);
+        let paused = self.shared.paused.load(Ordering::Acquire);
         let finished = self.shared.finished.load(Ordering::Acquire);
         PlaybackSnapshot {
             position_s: position as f64 / self.format.sample_rate as f64,
             duration_s: frames as f64 / self.format.sample_rate as f64,
-            playing: frames > 0 && !finished,
+            // A paused clip is loaded and parked: still "playing" in the sense of
+            // having a live slot, but the playhead must not advance and Space must
+            // resume it rather than restart it.
+            playing: frames > 0 && !finished && !paused,
+            paused: frames > 0 && !finished && paused,
             finished,
         }
     }
@@ -211,6 +223,7 @@ impl Engine {
             pub_seq: AtomicU64::new(0),
             pos_frames: AtomicU64::new(0),
             active_frames: AtomicU64::new(0),
+            paused: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             running: AtomicBool::new(true),
             measurements: ArrayQueue::new(4096),
@@ -293,6 +306,9 @@ impl Engine {
         // it, and the playhead still starts at `offset`.
         self.shared.active_frames.store(total, Ordering::Release);
         self.shared.finished.store(false, Ordering::Release);
+        // A new publish always starts audible: leaving `paused` set would play a
+        // silent clip, which is the one state that looks like a broken engine.
+        self.shared.paused.store(false, Ordering::Release);
 
         // Timestamp and sequence become visible before the flip, so the render
         // thread can trust both the moment it sees the new active index.
@@ -316,7 +332,34 @@ impl Engine {
         self.shared.slots[1].store(None);
         self.shared.pos_frames.store(0, Ordering::Release);
         self.shared.active_frames.store(0, Ordering::Release);
+        self.shared.paused.store(false, Ordering::Release);
         self.shared.finished.store(true, Ordering::Release);
+    }
+
+    /// Pause at the current position, keeping the clip loaded.
+    ///
+    /// `stop` clears the slots and parks the playhead at zero; that is the wrong
+    /// behaviour for Space. Pause leaves both slots alone and only flips a flag,
+    /// so the render callback starts writing silence and `pos_frames` stops
+    /// moving. [`resume`](Self::resume) then costs one atomic store and continues
+    /// from the exact frame the listener heard, with no decode and no re-seek.
+    pub fn pause(&self) {
+        self.shared.paused.store(true, Ordering::Release);
+    }
+
+    /// Continue a paused clip from where it stopped. A no-op when nothing is
+    /// loaded, so a stray Space on an empty dock does not fabricate state.
+    pub fn resume(&self) {
+        if self.shared.active_frames.load(Ordering::Acquire) > 0
+            && !self.shared.finished.load(Ordering::Acquire)
+        {
+            self.shared.paused.store(false, Ordering::Release);
+        }
+    }
+
+    /// True while a clip is loaded and paused.
+    pub fn paused(&self) -> bool {
+        self.shared.paused.load(Ordering::Acquire)
     }
 
     /// Playback position of the active clip, in frames.
@@ -550,10 +593,11 @@ fn render_loop(
 
         // Padding is what the endpoint still has queued ahead of us. Zero means
         // the device is starving right now; if a clip is mid-playback that is an
-        // audible gap. A finished clip is not counted: its slot stays populated
-        // by design, and silence after it is correct.
+        // audible gap. A finished or paused clip is not counted: its slot stays
+        // populated by design, and silence after it is correct.
+        let paused = shared.paused.load(Ordering::Acquire);
         let padding = client.get_current_padding().unwrap_or(0);
-        if padding == 0 && !shared.finished.load(Ordering::Acquire) {
+        if padding == 0 && !paused && !shared.finished.load(Ordering::Acquire) {
             let active_idx = shared.active.load(Ordering::Acquire) & 1;
             if shared.slots[active_idx].load().is_some() {
                 shared.underruns.fetch_add(1, Ordering::Relaxed);
@@ -578,7 +622,12 @@ fn render_loop(
             let pos = shared.pos_frames.load(Ordering::Acquire) as usize;
             let frame_bytes = clip.frame_bytes();
 
-            if frame_bytes == bytes_per_frame && pos < clip.frames {
+            // Paused: write silence and leave `pos_frames` where it is. The clip
+            // stays in the slot so resuming is one flag flip, and the position the
+            // listener hears is the position the playhead shows.
+            if paused {
+                filled = 0;
+            } else if frame_bytes == bytes_per_frame && pos < clip.frames {
                 let n = (clip.frames - pos).min(space);
                 let start = pos * frame_bytes;
                 scratch[..n * frame_bytes]

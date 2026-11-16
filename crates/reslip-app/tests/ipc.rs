@@ -495,3 +495,226 @@ fn opening_a_folder_that_does_not_exist_is_rejected() {
         .expect_err("a missing folder must be rejected");
     assert!(err.to_string().contains("not a folder"), "{err}");
 }
+
+// ---------------------------------------------------------------- P4 surface
+//
+// P4's bar (`docs/architecture.md` section 8) is "can browse, search, click to
+// play". The browsing half needs library state the user can *change* — favorites
+// and categories — plus the sidebar numbers that reflect those changes. Every
+// test below drives `AppState`, not the window.
+
+/// Open a scratch library and wait for the background pass, so the tests below
+/// start from a settled index rather than racing the indexer.
+fn settled_library(state: &AppState, name: &str) -> PathBuf {
+    let root = scratch(name);
+    write_wav(&root.join(r"Foley\door_slam.wav"), 44_100, 2, 4_410);
+    write_wav(&root.join(r"Weapons\Firearms\gunshot_01.wav"), 44_100, 2, 8_820);
+    write_wav(&root.join(r"Weapons\Firearms\gunshot_02.wav"), 44_100, 2, 8_820);
+
+    state.open_library(&root.to_string_lossy()).expect("open");
+    for _ in 0..600 {
+        let status = state.library_status().expect("status").expect("open");
+        if !status.indexing {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    root
+}
+
+#[test]
+fn favoriting_a_selection_updates_the_rows_and_the_sidebar_in_one_go() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "favorites");
+
+    let rows = state
+        .search(SearchRequest {
+            query: "gunshot".into(),
+            ..Default::default()
+        })
+        .expect("search");
+    assert_eq!(rows.len(), 2);
+    let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
+
+    let changed = state
+        .set_favorite(&paths, true)
+        .expect("favorite both gunshots");
+    assert_eq!(changed, 2, "one transaction, two rows");
+
+    // The sidebar's numbers are what the rail draws; they have to agree with the
+    // rows, which is why both come from the same database in one call.
+    let (favorites, total) = state.library().expect("library").summary().expect("summary");
+    assert_eq!(favorites, 2);
+    assert_eq!(total, 3);
+
+    // And the change survives a re-read, i.e. it was committed, not cached.
+    let after = state
+        .search(SearchRequest {
+            favorite_only: true,
+            ..Default::default()
+        })
+        .expect("favorites only");
+    assert_eq!(after.len(), 2);
+    assert!(after.iter().all(|r| r.favorite));
+
+    // Un-favoriting is the same call with the other flag.
+    state.set_favorite(&paths, false).expect("unfavorite");
+    let (favorites, _) = state.library().expect("library").summary().expect("summary");
+    assert_eq!(favorites, 0);
+
+    drop(root);
+}
+
+#[test]
+fn a_hand_set_category_survives_a_reindex_and_clearing_it_does_not() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "category");
+
+    let target = state
+        .search(SearchRequest {
+            query: "door_slam".into(),
+            ..Default::default()
+        })
+        .expect("search")
+        .into_iter()
+        .next()
+        .expect("door_slam row");
+    // The classifier reads the filename, not the folder, so the guess is not
+    // asserted by name — only that a guess exists and that a manual choice beats it.
+    let guessed = target.category.clone();
+    assert_ne!(guessed, "Uncategorized", "the classifier should guess something");
+    assert!(!target.category_manual);
+
+    let paths = vec![target.path.clone()];
+    state
+        .set_category(&paths, "Ambience", Some("Doors"))
+        .expect("set category");
+
+    // `category_manual` is the flag the indexer checks before overwriting. If the
+    // setter forgot it, a reindex would silently undo the user's work.
+    let manual = state
+        .search(SearchRequest {
+            category: Some("Ambience".into()),
+            ..Default::default()
+        })
+        .expect("search by new category");
+    assert_eq!(manual.len(), 1);
+    assert!(manual[0].category_manual, "manual flag must be set");
+    assert_eq!(manual[0].subcategory.as_deref(), Some("Doors"));
+
+    // A full pass re-probes and re-classifies, and must keep the manual choice.
+    state
+        .library()
+        .expect("library")
+        .index_blocking(true)
+        .expect("full pass");
+    let after_pass = state
+        .search(SearchRequest {
+            query: "door_slam".into(),
+            ..Default::default()
+        })
+        .expect("search after reindex");
+    assert_eq!(
+        after_pass[0].category, "Ambience",
+        "a full pass must not overwrite a manual category"
+    );
+
+    // Clearing it hands the file back to the classifier on the next pass.
+    state.clear_category(&paths).expect("clear category");
+    let cleared = state
+        .search(SearchRequest {
+            query: "door_slam".into(),
+            ..Default::default()
+        })
+        .expect("search after clear");
+    assert_eq!(cleared[0].category, "Uncategorized");
+    assert!(!cleared[0].category_manual);
+
+    drop(root);
+}
+
+#[test]
+fn the_sidebar_lists_every_category_with_a_count() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "facets");
+
+    let facets = state.library().expect("library").facets().expect("facets");
+
+    // Weapons comes from the filenames, so the two gunshots must group together
+    // under one category with one subcategory.
+    let weapons: u64 = facets
+        .iter()
+        .filter(|f| f.category == "Weapons")
+        .map(|f| f.count)
+        .sum();
+    assert_eq!(weapons, 2, "two gunshots under Weapons");
+
+    let firearms = facets
+        .iter()
+        .find(|f| f.category == "Weapons" && f.subcategory.as_deref() == Some("Firearms"))
+        .expect("Firearms subcategory");
+    assert_eq!(firearms.count, 2);
+
+    // And the counts have to add up to the library: a facet list that misses a
+    // file is a rail that hides sounds with no way to reach them.
+    let summed: u64 = facets.iter().map(|f| f.count).sum();
+    assert_eq!(summed, 3, "every indexed sound appears in exactly one facet");
+
+    drop(root);
+}
+
+#[test]
+fn pause_freezes_the_playhead_and_resume_continues_without_re_decoding() {
+    let Some(state) = state() else { return };
+    let root = scratch("pause");
+    let audio = root.join("tone.wav");
+    write_wav(&audio, 44_100, 2, 44_100);
+
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), None)).expect("play");
+
+    // Let the render thread write a little audio, so "frozen" means frozen at a
+    // non-zero position rather than frozen at the start.
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    state.pause_playback().expect("pause");
+    // One engine period of slack: the callback already in flight still writes its
+    // block before it observes the flag.
+    std::thread::sleep(std::time::Duration::from_millis(40));
+
+    let paused = state.playback_position();
+    assert!(paused.paused, "pause flag must be reported");
+    assert!(!paused.playing, "a paused clip is not playing");
+    assert!(paused.position_s > 0.0, "the playhead stopped past the start");
+
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    let still = state.playback_position();
+    assert_eq!(
+        still.position_s, paused.position_s,
+        "the playhead must not move while paused"
+    );
+    assert_eq!(
+        still.duration_s, paused.duration_s,
+        "the clip stays loaded, so its duration is still known"
+    );
+
+    // Resume continues from the same frame: no re-seek, no jump back to zero.
+    state.resume_playback().expect("resume");
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let resumed = state.playback_position();
+    assert!(resumed.playing, "resume must report playing");
+    assert!(!resumed.paused);
+    assert!(
+        resumed.position_s > paused.position_s,
+        "resume must continue forward: {} vs {}",
+        resumed.position_s,
+        paused.position_s
+    );
+
+    // Stop still clears everything, so the two commands stay distinguishable.
+    state.stop_playback().expect("stop");
+    let stopped = state.playback_position();
+    assert_eq!(stopped.position_s, 0.0);
+    assert!(!stopped.paused);
+    assert!(stopped.finished);
+
+    drop(root);
+}

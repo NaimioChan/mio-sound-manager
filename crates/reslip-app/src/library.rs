@@ -171,6 +171,37 @@ impl Library {
         Ok(self.db()?.facets()?)
     }
 
+    /// Favorite count and total, for the sidebar's two summary rows.
+    ///
+    /// Read in one statement rather than two round trips: the sidebar redraws on
+    /// every edit, and a second query would make the two numbers disagree for a
+    /// frame after a star click.
+    pub fn summary(&self) -> AppResult<(u64, u64)> {
+        Ok(self.db()?.summary()?)
+    }
+
+    /// Set the favorite flag on many paths in one transaction.
+    pub fn set_favorite(&self, paths: &[String], favorite: bool) -> AppResult<u64> {
+        Ok(self.db()?.set_favorite_many(paths, favorite)?)
+    }
+
+    /// Assign one category to many paths in one transaction.
+    pub fn set_category(
+        &self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+    ) -> AppResult<u64> {
+        Ok(self
+            .db()?
+            .set_category_many(paths, category, subcategory)?)
+    }
+
+    /// Drop the manual category on many paths, letting the next pass reclassify.
+    pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
+        Ok(self.db()?.clear_category_many(paths)?)
+    }
+
     /// Folder tree with recursive counts. Built from indexed paths, never from
     /// `readdir` (see `docs/index.md`).
     pub fn folder_tree(&self) -> AppResult<FolderNode> {

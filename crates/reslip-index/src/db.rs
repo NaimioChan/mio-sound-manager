@@ -543,6 +543,25 @@ impl IndexDb {
         Ok(())
     }
 
+    /// Set the favorite flag on many paths in one transaction.
+    ///
+    /// The single-row form is fine for a star click; this one exists because the
+    /// table lets the user star a whole multi-selection, and one transaction per
+    /// row would commit — and fsync under WAL — once per sound.
+    pub fn set_favorite_many(&mut self, paths: &[String], favorite: bool) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let changed = {
+            let mut stmt = tx.prepare("UPDATE sounds SET favorite = ?1 WHERE path = ?2")?;
+            let mut changed = 0u64;
+            for path in paths {
+                changed += stmt.execute(params![favorite as i64, path])? as u64;
+            }
+            changed
+        };
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Assign a category by hand. Sets `category_manual`, so the next reindex
     /// keeps the choice instead of overwriting it with the classifier's guess.
     pub fn set_category(
@@ -560,6 +579,34 @@ impl IndexDb {
         Ok(())
     }
 
+    /// Assign the same category to many paths in one transaction.
+    ///
+    /// Same reason as [`set_favorite_many`](Self::set_favorite_many): the UI
+    /// categorises a multi-selection, and the FTS triggers fire per row, so the
+    /// batching has to be at the transaction level.
+    pub fn set_category_many(
+        &mut self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+    ) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let changed = {
+            let mut stmt = tx.prepare(
+                "UPDATE sounds
+                 SET category = ?1, subcategory = ?2, confidence = 1, category_manual = 1
+                 WHERE path = ?3",
+            )?;
+            let mut changed = 0u64;
+            for path in paths {
+                changed += stmt.execute(params![category, subcategory, path])? as u64;
+            }
+            changed
+        };
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Undo a manual assignment, so the next reindex re-classifies the file.
     pub fn clear_category(&self, path: &str) -> Result<()> {
         self.conn.execute(
@@ -570,6 +617,26 @@ impl IndexDb {
             params![path],
         )?;
         Ok(())
+    }
+
+    /// Clear the manual category on many paths in one transaction.
+    pub fn clear_category_many(&mut self, paths: &[String]) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let changed = {
+            let mut stmt = tx.prepare(
+                "UPDATE sounds
+                 SET category = 'Uncategorized', subcategory = NULL, confidence = 0,
+                     matched_terms = NULL, category_manual = 0
+                 WHERE path = ?1",
+            )?;
+            let mut changed = 0u64;
+            for path in paths {
+                changed += stmt.execute(params![path])? as u64;
+            }
+            changed
+        };
+        tx.commit()?;
+        Ok(changed)
     }
 
     pub fn search(&self, params: &SearchParams) -> Result<Vec<Sound>> {
@@ -706,6 +773,19 @@ impl IndexDb {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Favorite count and total in one statement.
+    ///
+    /// The sidebar shows both numbers next to each other; two separate queries
+    /// would let them disagree for a frame right after a star click.
+    pub fn summary(&self) -> Result<(u64, u64)> {
+        let (favorites, total) = self.conn.query_row(
+            "SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds",
+            [],
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+        )?;
+        Ok((favorites, total))
     }
 
     /// The folder tree under the library root, with recursive counts.

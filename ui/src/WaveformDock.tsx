@@ -6,8 +6,13 @@ interface Props {
   positionS: number
   durationS: number
   playing: boolean
+  /** Loaded but frozen: the Stop button becomes Resume and the playhead holds. */
+  paused: boolean
   decodeMs: number | null
+  /** How many rows the selection covers, for the dock's header line. */
+  selectionCount: number
   onStop: () => void
+  onToggle: () => void
   onSeek: (seconds: number) => void
   onDecoded: (ms: number) => void
 }
@@ -192,6 +197,9 @@ export function WaveformDock(props: Props) {
               <span class="dim">
                 {row().sampleRate} Hz · {row().channelLabel}
               </span>
+              <Show when={props.selectionCount > 1}>
+                <span class="dim">{props.selectionCount} selected</span>
+              </Show>
             </>
           )}
         </Show>
@@ -202,7 +210,20 @@ export function WaveformDock(props: Props) {
           {(ms) => <span class="dim">waveform {ms().toFixed(1)} ms</span>}
         </Show>
 
-        <button class="ghost" onClick={props.onStop} disabled={!props.playing}>
+        <button
+          class="ghost"
+          onClick={props.onToggle}
+          disabled={!props.playing && !props.paused}
+          title={props.paused ? 'Resume (Space)' : 'Pause (Space)'}
+        >
+          {props.paused ? 'Resume' : 'Pause'}
+        </button>
+        <button
+          class="ghost"
+          onClick={props.onStop}
+          disabled={!props.playing && !props.paused}
+          title="Stop and clear the playhead"
+        >
           Stop
         </button>
       </div>

@@ -2,6 +2,40 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-16 16:15 · hermes · P4 前端搬迁（列表/波形/搜索完整交互）
+
+- 改: `crates/reslip-engine/src/output.rs`（`pause`/`resume`/`paused`，`PlaybackSnapshot.paused`）；`crates/reslip-index/src/db.rs`（`set_favorite_many`/`set_category_many`/`clear_category_many`/`summary`）；`crates/reslip-app`（`commands.rs` 新增 `pause`/`resume`/`get_sidebar`/`set_favorite`/`set_category`/`clear_category`/`pick_library_folder`/`reveal_in_folder`/`list_matching_paths`/`count_matching`，`state.rs` 对应封装与 `matching_paths`，`Cargo.toml` 加 `tauri-plugin-dialog` + `tauri-plugin-opener`，`capabilities/default.json` 加两个 ACL，`tauri.conf.json` 的 CSP 加 `connect-src`）；`ui/src` 重写 `App.tsx`/`SoundTable.tsx`/`Sidebar.tsx`，新增 `ContextMenu.tsx`/`CategoryDialog.tsx`，`ipc.ts` 补类型与 `startDrag`，`styles.css` 补菜单/模态/facet/行对齐；新增 `tools/check-browsing.mjs`、`tools/check-layout.mjs`；`docs/app.md` 重写，`docs/architecture.md` 第 8 节标 P4 通过
+- 状态: **P4 通过**
+- 验收库: `D:/reslip-test-library`（28 万文件），设备 FxSound
+
+### 收掉了 P3 遗留的全部六项
+
+原生目录选择（`tauri-plugin-dialog` + ACL）、分类侧栏 facet 计数与收藏行、拖拽导出接到列表、键盘操作（方向键/Home/End/PageUp/PageDown/Ctrl+A/空格）、暂停（引擎新增）、自动播放开关。P3 日志里"长文件整段解码"仍是 P1 的取舍，未变。
+
+### 实测抓到的四个真实缺陷（都不是测试写错）
+
+1. **未收藏的星标单元格宽度为零。** 内容为空 span 时 `scrollWidth` 也是 0，Playwright 报 "element is not visible"——但根因不是测试：点击目标不存在，意味着"收藏"只能在已经收藏之后点得动，等于从行上无法收藏。现在未收藏画 `☆`，颜色退到 `--border-strong`。
+2. **表头与行的列轨道相差 25px。** 表头在滚动容器之外，轨道按整宽算。先用 `padding-right` 补，差值反而更大（18px 残差）——`box-sizing: border-box` 下 padding 让 `fr` 轨道按比例吸收差值。真正的原因是**行是绝对定位且没设 `left/right`**，于是收缩到内容宽度、轨道按文字宽算。加 `left: 0; right: 0` 后残差降到 0.26px（亚像素舍入），用 `width: calc(100% - Npx)` 补滚动条。
+3. **`plugin:drag|start_drag` 的 `onEvent` 是必填的 `Channel`。** 不传整条命令报 `missing required key onEvent`，拖拽根本不会开始。P0 的探针当时传了通道，产品里漏了。`startDrag` 现在 `new Channel()` 传进去，注释写明 P0 已实测该通道从不触发、传它是为了满足签名。
+4. **CSP 缺 `connect-src`。** P3 只写了 `default-src 'self'`，每次 IPC 都先被 CSP 拦一次再到 `ipc.localhost`，控制台两条错误，功能靠兜底路径还能跑。补 `connect-src 'self' ipc: http://ipc.localhost`。
+
+另外 `search` 的 `limit` 被 `clamp(1, 5_000)`，Ctrl+A 在 28 万库里只能选 5000 条。新增 `list_matching_paths`（只回路径、不设上限），实测选中 **271,350** 条。
+
+### 验收怎么测的
+
+`cargo test --release --workspace` **83 个通过**（P3 是 79）。`tests/ipc.rs` 19 个新增 4 个：收藏批量写入后行与侧栏数字一致、手动分类扛住一次全量重索引而清除后交还分类器、facet 计数覆盖全部行、暂停冻结播放头且 resume 从同一帧继续（0.42 → 0.42 → 1.02s）。
+
+窗口内交互全用 CDP 驱动真实窗口，两个脚本共 40 项断言：
+
+- `tools/check-browsing.mjs`：分类筛选与 chip、方向键、Shift/Ctrl 多选、Ctrl+A、右键菜单与 Escape、星标落库、分类对话框存取与清除、排序箭头、点击到波形 32–36ms、空格暂停时播放头 0.61→0.61s、继续后 0.61→1.01s、Stop 归零、拖拽命令到达插件、文件夹模式。
+- `tools/check-layout.mjs`：按真实 DOM 几何断言五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、每个单元格与表头不被裁切、dock 头部子元素不重叠、无元素溢出视口。
+
+`playwright-core` 不在本仓库，验收脚本用 `createRequire` 指向 `slip-sound/package.json`，因此可以从任意目录运行（P3 时要求先 `cd slip-sound/`）。
+
+- 验证: `cargo test --release --workspace` 83 个通过；`ui/` 的 `tsc --noEmit` 与 `vite build` 通过（43.4KB JS）；真实 28 万库上 40 项 CDP 断言全绿；布局几何断言无重叠无裁切
+- 遗留: ① 想改 `AGENTS.md` 的状态行（加 P4）被保护机制拦下（审批超时），**现状是没改**——`AGENTS.md` 顶部仍写着"P0–P3 已通过"；② 无限滚动未做，一页 500 行，参考实现有滚动加载；③ 撤销/重做未做，收藏与分类写入后不可撤回；④ 分类侧栏的折叠状态不持久（侧栏模式是持久的）；⑤ 拖拽悬停光标样式不变（P0 用户指出过）
+- 下一步: P5 工具功能（Slicer / Effects / Seamless Loop / Export），逐项对照 Slip Sound 行为；这些是 ffmpeg 外部进程的活儿，播放路径仍不经过 ffmpeg
+
 ## 2026-11-16 15:10 · hermes · P3 Tauri 外壳 + IPC 落地
 
 - 改: 新建 `crates/reslip-app`（`commands` / `state` / `library` / `error` + `tests/ipc.rs`）、`ui/`（SolidJS + Vite，`App` / `SoundTable` / `WaveformDock` / `Sidebar` / `ipc.ts`）、`tools/`（`run-app.sh` / `kill-app.sh` / `inspect-app.mjs` / `drive-app.mjs` / `drive-big-library.mjs` / `check-interactions.mjs`）；`crates/reslip-engine` 新增 `waveform` 模块，`Engine` 加 `publish_from` / `stop` / `monitor` / `PlaybackMonitor`；新增 `docs/app.md`；更新 `AGENTS.md`、`docs/architecture.md` 第 8 节

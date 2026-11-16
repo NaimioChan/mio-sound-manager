@@ -22,7 +22,8 @@ mod library;
 mod state;
 
 pub use commands::{
-    AppStatus, FolderNodeDto, LibraryStatus, PlaybackPosition, SearchRequest, SoundDto, WaveformDto,
+    AppStatus, FacetDto, FolderNodeDto, LibraryStatus, PlaybackPosition, SearchRequest, SidebarDto,
+    SoundDto, WaveformDto,
 };
 pub use error::AppError;
 pub use library::Library;
@@ -34,6 +35,8 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // The engine is opened once, at startup, and the stream stays live
             // for the life of the process (architecture section 4). If the device
@@ -47,12 +50,22 @@ pub fn run() {
             commands::get_status,
             commands::play,
             commands::stop,
+            commands::pause,
+            commands::resume,
             commands::get_playback_position,
             commands::get_waveform,
             commands::open_library,
             commands::search,
             commands::get_library,
             commands::list_folders,
+            commands::list_matching_paths,
+            commands::count_matching,
+            commands::get_sidebar,
+            commands::set_favorite,
+            commands::set_category,
+            commands::clear_category,
+            commands::pick_library_folder,
+            commands::reveal_in_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ReSlip");
