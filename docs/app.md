@@ -225,15 +225,15 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 ## 验证
 
-**Rust 侧 97 个测试，不需要窗口**（`cargo test --release --workspace`）：
+**Rust 侧 106 个测试，不需要窗口**（`cargo test --release --workspace`）：
 
 - `tests/ipc.rs` 25 个，跑在真实设备上（本机 FxSound；`MIO_TEST_DEVICE` 可换）。P3/P4 部分覆盖：状态报真实设备格式、设备缺失报引擎原文、播放推进播放头、`startAt` 偏移、同文件重播不重新解码、被取代的播放不播旧音频、非音频路径提前拒绝、波形 1000 点且响/静可分辨、桶数夹住、文件夹树来自索引、无库时报错可显示；P5 新增 6 个——两个库同时打开且切换后搜索只看活跃库、关掉活跃库自动落到下一个、切到未打开的库被拒、undo 恢复收藏且 redo 放回、undo 恢复的是**旧分类和旧归属**、多行编辑一次撤销。
 - `commands.rs` 7 个：时长/声道标签格式、排序白名单、分页上限钳制。
 - `session.rs` 5 个：缺文件是空会话、往返、损坏文件降级、消失的文件夹跳过但保留、活跃库优先。
 - `history.rs` 3 个：新编辑清空 redo、栈有上限、标签描述将要发生的事。
-- `mio-index` 44 个、`mio-engine` 13 个。
+- `mio-index` 49 个、`mio-engine` 13 个、`mio-app` lib 19 个。
 
-**真实 28 万文件库（`D:\mio-test-library`，本机默认设备 FxSound）：**
+**真实 28 万文件库（`D:/reslip-test-library`，本机默认设备 FxSound）：**
 
 | 口径 | 实测 |
 | --- | --- |
