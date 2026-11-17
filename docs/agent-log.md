@@ -2,6 +2,21 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-17 22:35 · hermes · 顶栏去库标签、打包 v0.1.0 试用版并发 GitHub
+
+- 改: `ui/src/App.tsx`（删品牌名右侧的 `ix-pill.lib-chip`）、`ui/src/styles.css`（删 `.lib-chip`）、`crates/mio-app/tauri.conf.json`（bundle active + nsis + currentUser + 三语安装界面；`beforeBuildCommand` 改成 `npm run build`）、`ui/package.json` + lock（`@tauri-apps/cli` 进 devDependencies）
+- 验证: `tsc --noEmit` 干净；`check-layout` / `check-interactions` / `check-tags` 全通过；`tauri build --features asio --bundles nsis` 产出 4.97 MiB 安装包与 17.2 MB 便携版；**打包后的 exe 单独启动过**（CDP 9224）：顶栏只有 `Mio Sound Manager`、零个 pill、`asio_compiled=true`、设备表 7 个 WASAPI + 1 个 ASIO
+- 遗留: ① 仓库没有 README（用户明确说先不写）；② 没有 LICENSE 文件，而 `Cargo.toml` 写着 `license = "MIT"`——要发开源得补；③ 安装包只在当前机器上验证了「能生成」，没有实际跑一遍安装流程
+- 下一步: 补 README 与 LICENSE；下一个版本把 `%APPDATA%` 下的配置改成便携版可覆盖（目前便携版也写 APPDATA）
+
+### 这次的两件事
+
+**顶栏标签删了。** 那个 chip 显示的是 session 里记的库名，和侧栏头部重复，位置又紧贴品牌名，看起来像第二行标题。`session.json` 本身没动，侧栏头部照旧显示库名。
+
+**打包。** `tauri build --bundles nsis`。踩到一个坑：`tauri.conf.json` 的 `beforeBuildCommand` 是在 `ui/` 下执行的，写 `npm --prefix ui run build` 会变成 `ui/ui/package.json` 找不到——改成 `npm run build` 才对。另外 `@tauri-apps/cli` 原来不在依赖里，`cargo tauri` 也没装，`npx tauri` 会去下载一个不受控的版本，所以把它钉进 devDependencies。
+
+产物：`Mio-Sound-Manager_0.1.0_x64-setup.exe`（NSIS、当前用户、不弹 UAC）和 `Mio-Sound-Manager_0.1.0_x64-portable.exe`（单 exe）。仓库 `NaimioChan/mio-sound-manager` 是 public，release `v0.1.0` 标成 pre-release（试用版）。
+
 ## 2026-11-17 22:10 · hermes · 删设置页说明小字、加界面缩放、产品构建默认带 ASIO
 
 - 改: `ui/src/SettingsDialog.tsx`（删 7 处 `.setting-hint` 解释行、删主题卡片的描述行、`ThemeCard` 的 tooltip 改用名字、加「界面缩放」行）、`ui/src/zoom.ts`（新增：`loadZoom` / `applyZoom` / `ZOOM_STEPS` / CDP 调试钩子）、`ui/src/{App,main}.tsx`（zoom 信号 + `onMount` 里 `applyZoom` + `changeZoom` 回调）、`ui/src/theme.ts`（`Theme.hintKey` 移除）、`ui/src/styles.css`（删 `.theme-card-hint`）、`ui/src/locales/{en,zh,ja}.ts`（删 13 个 hint / currentTheme 键、加 `settings.zoom`、`settings.asioMissing` 改成一句话）、`crates/mio-app/capabilities/default.json`（加 `core:webview:allow-set-webview-zoom`）、`tools/build-app.sh`（ASIO 改为默认，`--no-asio` 反向开关，SDK 路径从 `%TEMP%` 改 `%LOCALAPPDATA%\mio\asio_sdk`）、`tools/check-tags.mjs`（加 8 项：hint 只剩状态、主题卡无描述、缩放行存在、150% 真的缩小 CSS 像素）、`AGENTS.md`、`docs/{app,engine}.md`
@@ -17,7 +32,7 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 **三、构建默认为产品构建。** `tools/build-app.sh` 不带参数即 WASAPI + ASIO，`--no-asio` 反向开关。SDK 从 `%TEMP%\asio_sdk` 挪到 `%LOCALAPPDATA%\mio\asio_sdk`——Windows 会清临时目录，构建前提不能是被随时回收的东西。
 
-**关于 `reslip-test-library`。** 它不是构建标记、不是 dev-only 字符串，是 `%APPDATA%\com.naimio.miosound\session.json` 里记的上次打开的库文件夹名，出现在顶栏的库 chip 和侧栏的库条目上。exe 与打包后的 JS 里都搜不到该字符串（`grep -c reslip` 两处均为 0）——实测把 session 挪走再启动，空态里没有任何 `reslip` 字样。换成正常库后它自然消失；发给别人的话对方机器上没有这个 session，第一次启动就是「未打开任何库」。
+**关于 `reslip-test-library`。** 它不是构建标记、不是 dev-only 字符串，是 `%APPDATA%\com.naimio.miosound\session.json` 里记的上次打开的库文件夹名。v0.1.0 起顶栏不再显示它（品牌名右侧那个 chip 删掉了，库名只在侧栏头部）；exe 与打包后的 JS 里都搜不到该字符串。
 
 ## 2026-11-17 19:35 · hermes · BPM 排序、tag 多选、文件夹自绘菜单、去副标题、修两个 UI bug
 
