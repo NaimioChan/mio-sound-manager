@@ -1,5 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import { api, type SoundRow } from './ipc'
+import { categoryName, channelLabel, t } from './i18n'
 import { ICON } from './icons'
 
 interface Props {
@@ -228,15 +229,15 @@ export function WaveformDock(props: Props) {
                 {row().filename}
               </span>
               <span class="dim">
-                {row().category}
+                {categoryName(row().category)}
                 <Show when={row().subcategory}> / {row().subcategory}</Show>
               </span>
               <span class="dim">{row().durationLabel}</span>
               <span class="dim">
-                {row().sampleRate} Hz · {row().channelLabel}
+                {row().sampleRate} Hz · {channelLabel(row().channels)}
               </span>
               <Show when={props.selectionCount > 1}>
-                <span class="dim">{props.selectionCount} selected</span>
+                <span class="dim">{t('status.selected', { count: props.selectionCount })}</span>
               </Show>
             </>
           )}
@@ -250,14 +251,14 @@ export function WaveformDock(props: Props) {
           control. Never disabled — the level belongs to the output, not to the
           clip, so it is settable with nothing loaded.
         */}
-        <div class="volume" title="Output level">
+        <div class="volume" title={t('dock.outputLevel')}>
           <ix-icon-button
             id="volume-mute"
             size="24"
             variant="tertiary"
             icon={props.gain === 0 ? ICON.mute : ICON.sound}
-            title={props.gain === 0 ? 'Unmute' : 'Mute'}
-            aria-label={props.gain === 0 ? 'Unmute' : 'Mute'}
+            title={props.gain === 0 ? t('dock.unmute') : t('dock.mute')}
+            aria-label={props.gain === 0 ? t('dock.unmute') : t('dock.mute')}
             onClick={() => props.onGain(props.gain === 0 ? 1 : 0)}
           />
           <div class="volume-slider">
@@ -268,7 +269,7 @@ export function WaveformDock(props: Props) {
               step={1}
               value={Math.round(props.gain * GAIN_MAX)}
               trace
-              aria-label="Output level"
+              aria-label={t('dock.outputLevel')}
               on:valueChange={(e: CustomEvent<number>) => props.onGain(gainFromSlider(e.detail))}
             />
           </div>
@@ -286,11 +287,11 @@ export function WaveformDock(props: Props) {
           id="auto-play"
           variant="secondary"
           pressed={props.autoPlay}
-          title={`Auto-play ${props.autoPlay ? 'on' : 'off'} — clicking a row auditions it (Alt+A)`}
-          aria-label={`Auto-play ${props.autoPlay ? 'on' : 'off'}`}
+          title={`${props.autoPlay ? t('dock.autoPlayOn') : t('dock.autoPlayOff')} — ${t('dock.autoPlayHint')}`}
+          aria-label={props.autoPlay ? t('dock.autoPlayOn') : t('dock.autoPlayOff')}
           on:pressedChange={() => props.onToggleAutoPlay()}
         >
-          AUTO PLAY
+          {t('dock.autoPlayLabel')}
         </ix-toggle-button>
 
         <ix-icon-button
@@ -299,8 +300,8 @@ export function WaveformDock(props: Props) {
           variant="tertiary"
           icon={props.paused ? ICON.play : ICON.pause}
           disabled={!props.playing && !props.paused}
-          title={props.paused ? 'Resume (Space)' : 'Pause (Space)'}
-          aria-label={props.paused ? 'Resume' : 'Pause'}
+          title={props.paused ? t('dock.resume') : t('dock.pause')}
+          aria-label={props.paused ? t('dock.resumeLabel') : t('dock.pauseLabel')}
           onClick={props.onToggle}
         />
 
@@ -310,8 +311,8 @@ export function WaveformDock(props: Props) {
           variant="tertiary"
           icon={ICON.stop}
           disabled={!props.playing && !props.paused}
-          title="Stop and clear the playhead"
-          aria-label="Stop"
+          title={t('dock.stop')}
+          aria-label={t('dock.stopLabel')}
           onClick={props.onStop}
         />
       </div>
@@ -321,7 +322,7 @@ export function WaveformDock(props: Props) {
         <canvas ref={headCanvas} class="wave-head" onClick={seek} />
 
         <Show when={loading()}>
-          <div class="wave-overlay">decoding…</div>
+          <div class="wave-overlay">{t('dock.decoding')}</div>
         </Show>
         <Show when={loadError()}>{(err) => <div class="wave-overlay bad">{err()}</div>}</Show>
 

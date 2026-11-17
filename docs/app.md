@@ -28,7 +28,9 @@ ui/                  // SolidJS + Vite + @siemens/ix，构建产物被编进 exe
   src/SettingsDialog.tsx // 设置页（iX modal，含主题选择）
   src/IndexOverlay.tsx   // 阻塞式索引的遮罩
   src/theme.ts           // 配色主题系统：调色板 → iX token 覆盖
-  src/icons.ts           // 用到的 iX 图标名，集中一处
+  src/icons.ts           // 图标 SVG（仓库内 src/assets/icons/），转 data URL 给 ix-icon
+  src/i18n.ts            // 语言信号 + t()；locale 存 mio:locale
+  src/locales/{en,zh,ja}.ts // 三语字典，en 是键集基准
   src/ix-elements.d.ts   // iX 自定义元素的 Solid JSX 类型
   src/styles.css         // 布局与几何，颜色一律取自 iX token
   src/ipc.ts             // 线上类型 + 命令封装
@@ -191,11 +193,38 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **modal 是命令式打开的。** 渲染出 `ix-modal` 之后调 `showModal()`（内部 `dialog.showModal()` 加动画）。host 在 `.visible` 之前是 `display: none`，而内层 `dialog` 是 `position: fixed`，所以**量 host 的 `getBoundingClientRect()` 永远是 0×0**，检查要量 shadow root 里的 `dialog`。
 
+**图标必须是 data URL 或本地文件，不能用名字。** `ix-icon` 拿到名字时不是查注册表，而是拼出 `svg/<name>.svg` 去 fetch——那个目录不在打包产物里，于是每个图标都 fetch 失败、回退成 iX 的错误符号（一个带叉的方块）。iX 自己的组件为什么没事：它们从 `@siemens/ix-icons/icons` 导入 data URL。
+
+图标现在放在 `ui/src/assets/icons/`（从 `@siemens/ix-icons/svg/` 复制，MIT），`icons.ts` 以 `?raw` 导入并拼成 `data:image/svg+xml;utf8,<原始 SVG>`。两个细节缺一不可：
+
+- **不要 `encodeURIComponent`。** iX 内部只调 `decodeURI`，它不还原 `%3D` 这类保留字符。编码过的 SVG 会被解析成属性字面量为 `width%3d"512px"` 的 `<svg>`，每条 path 丢掉 `d`，渲染结果是一个空框——看起来像"图标没加载"，实际是"图标解析坏了"。
+- **去掉 `<?xml …?>` 声明。** iX 用 `DOMParser` 按 `text/html` 解析，XML 声明在那里是 bogus comment；一半的图标文件开头就有它。
+
+放仓库里而不是依赖包里，是为了离线可用：运行时零网络请求，也不依赖包的内部资源布局。
+
+**`ix-select` 的 host 是 `inline-block`，会收缩到最宽选项的宽度。** 设置页里它因此比同一行的按钮短一截、右边空出几十像素。修法是在行内把它拉满：`.setting ix-select { display: block; width: 100% }`（`ix-input` 同理）。
+
 **`ix-dropdown` 不用于右键菜单。** 它锚定元素，而右键菜单要开在光标处、针对一行可能下一帧就被卸载的行。菜单是自己写的面板，颜色取 `--theme-menu--*` 与 `--theme-color-ghost--*`，看起来仍是这套设计系统。
+
+## 多语言
+
+`ui/src/i18n.ts` 加 `ui/src/locales/{en,zh,ja}.ts`，三语：英文、简体中文、日文。
+
+**翻的是外壳文案，不是数据。** 分类名（`Weapons`、`Foley`）、文件名、采样率都是数据：分类名被分类器写进数据库，界面翻译它会让 facet 筛选发一个库里没有的字符串。唯一的例外是 `Uncategorized`——它是 schema 的默认值而不是分类结果，所以显示时翻译（`categoryName()`），比较时仍用原串。
+
+**键集由类型保证。** 英文是 `as const` 的基准，另两语是 `Record<MessageKey, string>`，漏键或拼错键是编译错误。`tools/check-i18n.mjs` 补类型管不到的一条：某语种丢掉了英文里的 `{placeholder}`（渲染成"3 个"而不是"3 个声音"）或者凭空多一个（屏幕上出现字面量 `{count}`）。
+
+**后端不再发英文文案。** undo/redo 原本跨 IPC 传 `"Add to Favorites"` 这种字符串，界面照着显示——那条路径无论怎么翻都翻不到。改成传 `EditKind` 枚举（`favorite` / `unfavorite` / `setCategory` / `clearCategory`），词在前端。`SoundDto.channel_label` 同理删掉，只留 `channels: Option<u32>`，由 `channelLabel()` 出词。
+
+**`<html lang>` 跟着 locale 走。** 它决定 Windows 给 CJK 文本挑哪套字体、文本框拿到哪个输入法；留在 `en` 会让中文用错字形。
+
+**语言选项各写自己的语言。** 选择器里是 `English` / `简体中文` / `日本語`——给看不懂英文的人显示 "Chinese" 的选择器是唯一不该被翻译的菜单。
 
 ## 配色主题系统
 
 `ui/src/theme.ts`。一个主题由**八个颜色**描述（背景、前景中性色、两个强调色、对比色、success/warning/alarm/info/neutral），其余两百多个 token 由它们推导：中性 ramp 从背景混到前景，ghost 与 component 填充是前景色带 alpha，选中态是强调色带 alpha，语义色的 hover/active 是向黑白各混一点。
+
+**主题的名字与说明是文案，不是调色板。** `Theme` 上存的是 `labelKey` / `hintKey`，由选择器 `t()` 出来；`theme.ts` 只管颜色。
 
 **为什么不逐个主题手写 token 表。** 六套主题各写一份两百行 token 是六次写错 hover 与 base 不匹配的机会。推导保证六套主题的对比节奏一致。
 
@@ -249,7 +278,10 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 - `tools/check-themes.mjs`——六套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、浅色主题的背景确实比文字亮、`classic-*` 不残留覆盖块、重载后主题仍在，最后对十处文本元素跑 WCAG 对比度。
 - `tools/check-volume.mjs`——滑杆经 `valueChange` 改值后读**引擎的** `get_gain`（另一条命令，只改前端状态的实现过不了这一项）、静音/取消静音、重载后电平仍在且被推回引擎。
 - `tools/check-layout.mjs`——五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、dock 控件簇的**顺序**（音量 → AUTO PLAY → 暂停 → 停止）与间距、音量滑杆宽度、无元素逃出视口（滚动容器内的不算）。
+- `tools/check-i18n.mjs`——三语字典的键集与占位符一致性（`tsc` 管不到的那部分）。
 - `tools/shot.mjs` / `shot-themes.mjs`——截图，给人看，不做断言。
+
+**CDP 脚本固定英文 locale 再断言。** 四个 `check-*.mjs` 断言的文案是英文（`Length`、`AUTO PLAY`、`Resume`），在中文机器上会因为找不到 locator 而失败——那是脚本的前提问题，不是功能坏了。所以脚本开头写 `localStorage.setItem('mio:locale', 'en')` 再 reload；列头和菜单项另有 `data-sort-key` / `data-menu-id`，选元素时不依赖翻译。文案覆盖由 `check-i18n.mjs` 负责。
 
 **驱动 iX 组件的三条经验**（写脚本时都会踩到）：
 

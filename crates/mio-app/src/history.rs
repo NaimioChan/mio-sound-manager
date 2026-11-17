@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use mio_index::Sound;
+use serde::Serialize;
 
 use crate::error::AppResult;
 use crate::library::Library;
@@ -26,6 +27,26 @@ use crate::library::Library;
 /// How many edits can be taken back. Deep enough for a working session, shallow
 /// enough that a 280k-row "select all, categorise" undo stack stays bounded.
 const MAX_DEPTH: usize = 50;
+
+/// What an edit was, so the UI can name it in the user's language.
+///
+/// This used to be a `String` label ("Add to Favorites") produced here and shown
+/// verbatim by the renderer. That cannot survive localisation: the backend has no
+/// idea which language the window is in, and sending English prose across IPC to be
+/// displayed means the undo tooltip is the one string that never translates. The
+/// kind is data; the words belong to `ui/src/locales/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EditKind {
+    /// Starred one or more sounds.
+    Favorite,
+    /// Unstarred them.
+    Unfavorite,
+    /// Assigned a manual category.
+    SetCategory,
+    /// Dropped a manual category.
+    ClearCategory,
+}
 
 /// One field of one sound, as it was before the edit.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,8 +73,8 @@ impl FieldState {
 /// A completed edit, stored in the form needed to invert it.
 #[derive(Debug, Clone)]
 pub struct Edit {
-    /// What the user did, for the menu label ("Favorite", "Set category").
-    pub label: String,
+    /// What the user did. The UI turns this into words; see `EditKind`.
+    pub kind: EditKind,
     /// The library the edit belongs to. Undo must go back to the same database
     /// even if the user has since switched to another library.
     pub root: PathBuf,
@@ -87,12 +108,12 @@ impl History {
         !self.redo.is_empty()
     }
 
-    pub fn undo_label(&self) -> Option<&str> {
-        self.undo.back().map(|e| e.label.as_str())
+    pub fn undo_kind(&self) -> Option<EditKind> {
+        self.undo.back().map(|e| e.kind)
     }
 
-    pub fn redo_label(&self) -> Option<&str> {
-        self.redo.last().map(|e| e.label.as_str())
+    pub fn redo_kind(&self) -> Option<EditKind> {
+        self.redo.last().map(|e| e.kind)
     }
 
     fn take_undo(&mut self) -> Option<Edit> {
@@ -184,22 +205,22 @@ pub fn restore(library: &Library, states: &[FieldState]) -> AppResult<u64> {
 /// Reads the previous state first, then runs the edit. The two are not one
 /// transaction; a failure between them leaves the edit unapplied and nothing on
 /// the undo stack, which is the safe direction (no phantom undo entry).
-pub fn run<F>(library: &Library, label: &str, paths: &[String], apply: F) -> AppResult<Edit>
+pub fn run<F>(library: &Library, kind: EditKind, paths: &[String], apply: F) -> AppResult<Edit>
 where
     F: FnOnce() -> AppResult<u64>,
 {
     let before = snapshot(library, paths)?;
     apply()?;
     Ok(Edit {
-        label: label.to_string(),
+        kind,
         root: library.root().to_path_buf(),
         before,
     })
 }
 
 impl History {
-    /// Undo the last edit against `libraries`, returning the label that was undone.
-    pub fn undo(&mut self, libraries: &[std::sync::Arc<Library>]) -> AppResult<Option<String>> {
+    /// Undo the last edit against `libraries`, returning what kind it was.
+    pub fn undo(&mut self, libraries: &[std::sync::Arc<Library>]) -> AppResult<Option<EditKind>> {
         let Some(edit) = self.take_undo() else {
             return Ok(None);
         };
@@ -214,17 +235,17 @@ impl History {
         let after = snapshot(library, &paths)?;
         restore(library, &edit.before)?;
 
-        let label = edit.label.clone();
+        let kind = edit.kind;
         self.push_redo(Edit {
-            label: label.clone(),
+            kind,
             root: edit.root.clone(),
             before: after,
         });
-        Ok(Some(label))
+        Ok(Some(kind))
     }
 
     /// Redo the last undone edit.
-    pub fn redo(&mut self, libraries: &[std::sync::Arc<Library>]) -> AppResult<Option<String>> {
+    pub fn redo(&mut self, libraries: &[std::sync::Arc<Library>]) -> AppResult<Option<EditKind>> {
         let Some(edit) = self.take_redo() else {
             return Ok(None);
         };
@@ -236,15 +257,15 @@ impl History {
         let after = snapshot(library, &paths)?;
         restore(library, &edit.before)?;
 
-        let label = edit.label.clone();
+        let kind = edit.kind;
         // Back onto the undo stack without clearing the rest of the redo stack:
         // redo is being walked forward, not forking.
         self.push_undo_raw(Edit {
-            label: label.clone(),
+            kind,
             root: edit.root.clone(),
             before: after,
         });
-        Ok(Some(label))
+        Ok(Some(kind))
     }
 }
 
@@ -262,9 +283,9 @@ mod tests {
         }
     }
 
-    fn edit(label: &str) -> Edit {
+    fn edit(kind: EditKind) -> Edit {
         Edit {
-            label: label.into(),
+            kind,
             root: PathBuf::from(r"C:\lib"),
             before: vec![state("a.wav", false, "Foley")],
         }
@@ -273,37 +294,38 @@ mod tests {
     #[test]
     fn a_new_edit_clears_the_redo_stack() {
         let mut history = History::new();
-        history.push(edit("one"));
+        history.push(edit(EditKind::Favorite));
         // Pretend something was undone, then edited again.
-        history.redo.push(edit("one"));
+        history.redo.push(edit(EditKind::Favorite));
         assert!(history.can_redo());
 
-        history.push(edit("two"));
-        assert!(!history.can_redo(), "editing after an undo forks the timeline");
+        history.push(edit(EditKind::SetCategory));
+        assert!(
+            !history.can_redo(),
+            "editing after an undo forks the timeline"
+        );
     }
 
     #[test]
     fn the_stack_is_bounded() {
         let mut history = History::new();
-        for i in 0..(MAX_DEPTH + 10) {
-            history.push(edit(&format!("edit {i}")));
+        for _ in 0..(MAX_DEPTH + 10) {
+            history.push(edit(EditKind::Favorite));
         }
         assert_eq!(history.undo.len(), MAX_DEPTH);
-        // The oldest entries are the ones dropped.
-        assert_eq!(history.undo_label(), Some(format!("edit {}", MAX_DEPTH + 9).as_str()));
     }
 
     #[test]
-    fn labels_describe_what_would_happen() {
+    fn the_kind_describes_what_would_happen() {
         let mut history = History::new();
-        assert_eq!(history.undo_label(), None);
+        assert_eq!(history.undo_kind(), None);
 
-        history.push(edit("Favorite"));
-        assert_eq!(history.undo_label(), Some("Favorite"));
+        history.push(edit(EditKind::Favorite));
+        assert_eq!(history.undo_kind(), Some(EditKind::Favorite));
 
         let taken = history.take_undo().expect("one entry");
         history.push_redo(taken);
-        assert_eq!(history.redo_label(), Some("Favorite"));
-        assert_eq!(history.undo_label(), None);
+        assert_eq!(history.redo_kind(), Some(EditKind::Favorite));
+        assert_eq!(history.undo_kind(), None);
     }
 }

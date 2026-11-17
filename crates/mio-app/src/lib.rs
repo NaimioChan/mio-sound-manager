@@ -29,6 +29,7 @@ pub use commands::{
     LibraryStatus, PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
 };
 pub use error::AppError;
+pub use history::EditKind;
 pub use library::Library;
 pub use state::AppState;
 

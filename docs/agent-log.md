@@ -2,6 +2,34 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-17 17:40 · hermes · 修图标、修设置页 Device 对齐、加中英日三语
+
+- 改: `ui/src/assets/icons/*.svg`（新增 11 个，从 `@siemens/ix-icons/svg/` 复制）、`ui/src/icons.ts`（改为导入本地 SVG → data URL）、`ui/src/i18n.ts` + `ui/src/locales/{en,zh,ja}.ts`（新增，151 键）、`ui/src/styles.css`（`.setting ix-select/ix-input` 拉满）、`ui/src/{App,SoundTable,Sidebar,WaveformDock,CategoryDialog,SettingsDialog,IndexOverlay,theme,main,ipc}.tsx?`（全部文案接 `t()`）、`crates/mio-app/src/{history,state,commands}.rs`（undo/redo 由英文 label 改为 `EditKind` 枚举；删 `SoundDto.channel_label`）、`tools/check-i18n.mjs`（新增）、四个 `check-*.mjs`（固定英文 locale + 改用 `data-sort-key`/`data-menu-id` 选元素）、`docs/app.md`（新增「多语言」节、图标与 ix-select 两个坑）
+- 验证: `cargo test --release` 105 个通过（engine 13 / index 49 / app lib 18 / ipc 25）；`tsc --noEmit` 干净；`check-i18n.mjs` 三语各 151 键、占位符一致；`check-interactions.mjs` / `check-layout.mjs` / `check-themes.mjs` / `check-volume.mjs` 全通过；三语逐一切换后实测 DOM 文案正确（表头/侧栏/搜索框/dock/状态栏）、零文本溢出、dock 不超界；图标逐个截图取点阵确认渲染出真实字形（齿轮/文件夹/喇叭/暂停/停止），主界面 6 个 + 设置 13 个零空图标
+- 遗留: ① `AGENTS.md` 的命令表与目录说明没改成（新增 `check-i18n.mjs`、`i18n.ts`、`locales/`）——受保护写入被拦，未绕行；② 分类名是数据库里的英文数据，只翻译了 `Uncategorized` 这一个 schema 哨兵值，其余分类名不随语言变（有意为之，翻它会让 facet 筛选发出库里没有的字符串）；③ `tools/shot*.mjs` 未固定 locale，截图会跟随系统语言
+- 下一步: 需要时把 AGENTS.md 那三行补上（`node tools/check-i18n.mjs`、`ui/src/i18n.ts`、`ui/src/locales/`）
+
+### 三个问题各自的根因
+
+**一、图标全是叉号方块。** 不是资源路径配错，是 `ix-icon` 拿到**名字**时不去查注册表，而是拼 `svg/<name>.svg` 去 fetch——打包产物里没有这个目录，每个图标 fetch 失败后回退成 iX 的错误符号。iX 自己的组件（chevron、check）没事，因为它们从 `@siemens/ix-icons/icons` 导入 data URL。
+
+修的过程中还踩了一层：第一版用 `encodeURIComponent` 包 SVG，结果图标变成**空白**而不是叉号——iX 内部只调 `decodeURI`，它不还原 `%3D`，于是 `<svg width%3d"512px">` 这种废属性被解析出来，每条 path 丢掉 `d`。正确写法是 `data:image/svg+xml;utf8,<原始 SVG>`，并去掉 `<?xml …?>` 声明（iX 按 `text/html` 解析，XML 声明在那儿是 bogus comment）。
+
+用户要求离线可用，所以 SVG 复制进仓库 `ui/src/assets/icons/`，`?raw` 导入，运行时零网络请求，也不依赖包的内部资源布局。
+
+**二、设置页 Device 下拉没右对齐。** `ix-select` 的 host 是 `inline-block`，宽度收缩到最宽选项（实测 236px，外层容器 320px，右边空 84px）。同一行的按钮和 toggle 都是满宽，只有它短。修法一条规则：`.setting ix-select { display: block; width: 100% }`。修完实测 `gapToRowEdge: 0`。
+
+**三、i18n。** 翻的是外壳文案，不是数据。分类名（`Weapons`、`Foley`）由分类器写进数据库，界面翻译它会让 facet 筛选发一个库里没有的字符串；唯一例外是 `Uncategorized`（schema 默认值而非分类结果），显示时翻译、比较时用原串。
+
+后端原本跨 IPC 传 `"Add to Favorites"` 这种英文 label 给界面直接显示，那条路径怎么翻都翻不到。改成传 `EditKind` 枚举，词在前端。`SoundDto.channel_label` 同理删掉，只留 `channels`。
+
+键集由类型保证（英文 `as const` 是基准，另两语 `Record<MessageKey, string>`），`tools/check-i18n.mjs` 补类型管不到的一条：某语种丢了英文里的 `{placeholder}` 或凭空多一个。
+
+### 检查脚本跟着改了一处
+
+四个 `check-*.mjs` 断言的是英文文案（`Length`、`AUTO PLAY`、`Resume`），在中文机器上会因找不到 locator 而失败——那是脚本的前提问题，不是功能坏了。现在脚本开头把 `mio:locale` 固定成 `en` 再 reload；列头与菜单项另有 `data-sort-key` / `data-menu-id`，选元素不依赖翻译。文案覆盖交给 `check-i18n.mjs`。
+
+
 ## 2026-11-17 15:12 · hermes · 改名 Mio Sound Manager + iX 重写前端 + 主题系统 + 输出音量
 
 - 改: 新仓 `projects/mio-sound-manager`（从 `reslip` 迁入，`target/`、`ui/node_modules`、`ui/dist` 未带）；`crates/reslip-*` → `crates/mio-*`，crate/二进制名、identifier（`com.naimio.miosound`）、`localStorage` 前缀（`mio:`）、线程名全部改名；`ui/src/` 前端整体重写（SolidJS + `@siemens/ix` 5.3）：新增 `theme.ts`（六套主题）、`icons.ts`、`ix-elements.d.ts`；`styles.css` 重写为纯 token；`WaveformDock` 加静音按钮 + 104px 横向滑杆 + 百分比；引擎加 `set_gain`/`get_gain`（`Shared.gain_bits` 原子 + 渲染回调按设备格式原地缩放）；`tools/` 删掉旧的 8 个检查脚本，换成 `check-interactions` / `check-themes` / `check-volume` / `check-layout` / `shot` / `shot-themes`

@@ -1,4 +1,5 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
+import { categoryName, channelLabel, t } from './i18n'
 import { startDrag, type SoundRow } from './ipc'
 
 /**
@@ -50,19 +51,20 @@ export const SORT_WIRE: Record<SortKey, string> = {
 
 interface Column {
   key: SortKey
-  label: string
+  /** Resolved at render time: the header follows the locale. */
+  label: () => string
   width: string
   numeric?: boolean
 }
 
 const COLUMNS: Column[] = [
-  { key: 'favorite', label: '★', width: '32px' },
-  { key: 'filename', label: 'Name', width: 'minmax(180px, 2fr)' },
-  { key: 'category', label: 'Category', width: 'minmax(140px, 1fr)' },
-  { key: 'durationS', label: 'Length', width: '84px', numeric: true },
-  { key: 'channels', label: 'Ch', width: '64px' },
-  { key: 'sampleRate', label: 'Rate', width: '78px', numeric: true },
-  { key: 'filesize', label: 'Size', width: '84px', numeric: true }
+  { key: 'favorite', label: () => '★', width: '32px' },
+  { key: 'filename', label: () => t('col.name'), width: 'minmax(180px, 2fr)' },
+  { key: 'category', label: () => t('col.category'), width: 'minmax(140px, 1fr)' },
+  { key: 'durationS', label: () => t('col.length'), width: '84px', numeric: true },
+  { key: 'channels', label: () => t('col.channels'), width: '64px' },
+  { key: 'sampleRate', label: () => t('col.rate'), width: '78px', numeric: true },
+  { key: 'filesize', label: () => t('col.size'), width: '84px', numeric: true }
 ]
 
 /**
@@ -316,10 +318,11 @@ export function SoundTable(props: Props) {
           {(col) => (
             <button
               class={col.numeric ? 'head-cell numeric' : 'head-cell'}
+              data-sort-key={col.key}
               onClick={() => props.onSort(col.key)}
-              title={`Sort by ${col.label}`}
+              title={t('col.sortBy', { column: col.label() })}
             >
-              {col.label}
+              {col.label()}
               <Show when={props.sortKey === col.key}>
                 <span class="sort-arrow">{props.sortAsc ? '▲' : '▼'}</span>
               </Show>
@@ -400,7 +403,7 @@ export function SoundTable(props: Props) {
                       e.stopPropagation()
                       props.onToggleFavorite(row)
                     }}
-                    title={row.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                    title={row.favorite ? t('row.removeFavorite') : t('row.addFavorite')}
                   >
                     {row.favorite ? '★' : '☆'}
                   </span>
@@ -409,14 +412,14 @@ export function SoundTable(props: Props) {
                   </span>
                   <Show when={props.showCategory}>
                     <span class="cell dim" title={row.matchedTerms.join(', ')}>
-                      {row.category}
+                      {categoryName(row.category)}
                       <Show when={row.subcategory}>
                         <span class="sub"> / {row.subcategory}</span>
                       </Show>
                     </span>
                   </Show>
                   <span class="cell numeric">{row.durationLabel}</span>
-                  <span class="cell dim">{row.channelLabel}</span>
+                  <span class="cell dim">{channelLabel(row.channels)}</span>
                   <span class="cell numeric dim">{formatRate(row.sampleRate)}</span>
                   <span class="cell numeric dim">{formatBytes(row.filesize)}</span>
                 </div>
@@ -427,7 +430,7 @@ export function SoundTable(props: Props) {
       </div>
 
       <Show when={props.rows.length === 0}>
-        <div class="table-empty">No sounds match.</div>
+        <div class="table-empty">{t('table.noMatch')}</div>
       </Show>
 
       {/*
@@ -441,14 +444,17 @@ export function SoundTable(props: Props) {
             when={props.querying}
             fallback={
               <>
-                {props.rows.length.toLocaleString()} of {props.matching.toLocaleString()}
+                {t('table.count', {
+                  shown: props.rows.length.toLocaleString(),
+                  total: props.matching.toLocaleString()
+                })}
                 <Show when={props.hasMore}>
-                  <span> · scroll for more</span>
+                  <span> · {t('table.scrollForMore')}</span>
                 </Show>
               </>
             }
           >
-            <span class="foot-querying">searching…</span>
+            <span class="foot-querying">{t('table.searching')}</span>
           </Show>
         </div>
       </Show>

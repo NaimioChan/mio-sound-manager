@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js'
+import { UNCATEGORIZED, categoryName, t } from './i18n'
 import type { Facet, FolderNode, LibraryStatus } from './ipc'
 import { ICON } from './icons'
 
@@ -154,8 +155,8 @@ export function Sidebar(props: Props) {
     const list = [...byName.values()]
     for (const group of list) group.children.sort((a, b) => b.count - a.count)
     list.sort((a, b) => {
-      if (a.name === 'Uncategorized') return 1
-      if (b.name === 'Uncategorized') return -1
+      if (a.name === UNCATEGORIZED) return 1
+      if (b.name === UNCATEGORIZED) return -1
       return b.count - a.count
     })
     return list
@@ -198,7 +199,7 @@ export function Sidebar(props: Props) {
               e.stopPropagation()
               if (hasChildren()) toggleFolder(node.path)
             }}
-            title={hasChildren() ? (open() ? 'Collapse' : 'Expand') : undefined}
+            title={hasChildren() ? (open() ? t('common.collapse') : t('common.expand')) : undefined}
           >
             {hasChildren() ? (open() ? '▾' : '▸') : ''}
           </span>
@@ -224,19 +225,19 @@ export function Sidebar(props: Props) {
           class={mode() === 'categories' ? 'side-mode on' : 'side-mode'}
           onClick={() => changeMode('categories')}
         >
-          Categories
+          {t('side.categories')}
         </button>
         <button
           class={mode() === 'folders' ? 'side-mode on' : 'side-mode'}
           onClick={() => changeMode('folders')}
         >
-          Folders
+          {t('side.folders')}
         </button>
         <button
           class="side-mode gear"
           onClick={props.onOpenSettings}
-          title="Settings (Ctrl+,)"
-          aria-label="Settings"
+          title={t('topbar.settings')}
+          aria-label={t('topbar.settingsLabel')}
         >
           <ix-icon name={ICON.settings} size="16" />
         </button>
@@ -244,7 +245,7 @@ export function Sidebar(props: Props) {
 
       <Show
         when={props.libraries.length > 0}
-        fallback={<div class="side-empty">no library open</div>}
+        fallback={<div class="side-empty">{t('side.noLibrary')}</div>}
       >
         <section class="side-section grow">
           <For each={props.libraries}>
@@ -281,9 +282,9 @@ export function Sidebar(props: Props) {
                       <button
                         class={props.favoritesOnly ? 'facet selected' : 'facet'}
                         onClick={props.onToggleFavorites}
-                        title="Show favorites only"
+                        title={t('side.favoritesOnly')}
                       >
-                        <span class="facet-name">★ Favorites</span>
+                        <span class="facet-name">★ {t('side.favorites')}</span>
                         <span class="count">{props.favorites.toLocaleString()}</span>
                       </button>
                       <button
@@ -294,7 +295,7 @@ export function Sidebar(props: Props) {
                         }
                         onClick={() => props.onCategory(null, null)}
                       >
-                        <span class="facet-name">All sounds</span>
+                        <span class="facet-name">{t('side.allSounds')}</span>
                         <span class="count">{props.total.toLocaleString()}</span>
                       </button>
 
@@ -324,7 +325,7 @@ export function Sidebar(props: Props) {
                                   {expandedCats().has(group.name) ? '▾' : '▸'}
                                 </Show>
                               </span>
-                              <span class="facet-name">{group.name}</span>
+                              <span class="facet-name">{categoryName(group.name)}</span>
                               <span class="count">{group.count.toLocaleString()}</span>
                             </button>
 
@@ -341,7 +342,7 @@ export function Sidebar(props: Props) {
                                     onClick={() => clickSubcategory(group.name, child.name)}
                                     title={`${group.name} / ${child.name}`}
                                   >
-                                    <span class="facet-name">{child.name}</span>
+                                    <span class="facet-name">{categoryName(child.name)}</span>
                                     <span class="count">{child.count.toLocaleString()}</span>
                                   </button>
                                 )}
@@ -364,7 +365,7 @@ export function Sidebar(props: Props) {
                         onClick={() => props.onFolder(null)}
                       >
                         <span class="twisty spacer" />
-                        <span class="folder-name">All folders</span>
+                        <span class="folder-name">{t('side.allFolders')}</span>
                         <span class="count">{library.count.toLocaleString()}</span>
                       </button>
                       <Show when={props.folders} fallback={<div class="side-empty">…</div>}>

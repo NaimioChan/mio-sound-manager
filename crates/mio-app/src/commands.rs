@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
+use crate::history::EditKind;
 use crate::library::{self, Library};
 use crate::state::AppState;
 
@@ -126,10 +127,10 @@ pub struct SoundDto {
     pub filename: String,
     pub duration_s: Option<f64>,
     /// Pre-formatted for the table cell, so the renderer does not reimplement
-    /// `m:ss.cs` per row (and get the rounding wrong in its own way).
+    /// `m:ss.cs` per row (and get the rounding wrong in its own way). Numeric, so
+    /// it is not a translation.
     pub duration_label: String,
     pub channels: Option<u32>,
-    pub channel_label: String,
     pub sample_rate: Option<u32>,
     pub filesize: Option<u64>,
     pub category: String,
@@ -203,7 +204,6 @@ impl From<Sound> for SoundDto {
     fn from(s: Sound) -> Self {
         Self {
             duration_label: duration_label(s.duration_s),
-            channel_label: channel_label(s.channels),
             path: s.path,
             filename: s.filename,
             duration_s: s.duration_s,
@@ -254,15 +254,6 @@ pub fn duration_label(duration_s: Option<f64>) -> String {
         return format!("{minutes}:{whole:02}.00");
     }
     format!("{minutes}:{whole:02}.{cents:02}")
-}
-
-pub fn channel_label(channels: Option<u32>) -> String {
-    match channels {
-        Some(1) => "Mono".to_string(),
-        Some(2) => "Stereo".to_string(),
-        Some(n) => format!("{n}ch"),
-        None => "—".to_string(),
-    }
 }
 
 /// Current library status, or `NoLibrary` when none is open.
@@ -468,33 +459,30 @@ pub async fn reindex_library(
     .map_err(|e| AppError::internal(format!("index task failed: {e}")))?
 }
 
-/// Undo the last library edit. Returns the label, or `None` when there is nothing
-/// to undo.
+/// Undo the last library edit. Returns what kind it was, or `None` when there is
+/// nothing to undo.
 #[tauri::command]
-pub fn undo(state: State<'_, AppState>) -> AppResult<Option<String>> {
+pub fn undo(state: State<'_, AppState>) -> AppResult<Option<EditKind>> {
     state.undo()
 }
 
 #[tauri::command]
-pub fn redo(state: State<'_, AppState>) -> AppResult<Option<String>> {
+pub fn redo(state: State<'_, AppState>) -> AppResult<Option<EditKind>> {
     state.redo()
 }
 
-/// What undo and redo would do, for the menu labels.
+/// What undo and redo would do. The kinds are data; the renderer names them.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryState {
-    pub undo_label: Option<String>,
-    pub redo_label: Option<String>,
+    pub undo_kind: Option<EditKind>,
+    pub redo_kind: Option<EditKind>,
 }
 
 #[tauri::command]
 pub fn get_history(state: State<'_, AppState>) -> AppResult<HistoryState> {
-    let (undo_label, redo_label) = state.history_state();
-    Ok(HistoryState {
-        undo_label,
-        redo_label,
-    })
+    let (undo_kind, redo_kind) = state.history_state();
+    Ok(HistoryState { undo_kind, redo_kind })
 }
 
 #[tauri::command]
@@ -631,14 +619,6 @@ mod tests {
         // carry rather than print `0:59.100`.
         assert_eq!(duration_label(Some(59.999)), "1:00.00");
         assert_eq!(duration_label(Some(119.999)), "2:00.00");
-    }
-
-    #[test]
-    fn channel_labels_match_the_table() {
-        assert_eq!(channel_label(Some(1)), "Mono");
-        assert_eq!(channel_label(Some(2)), "Stereo");
-        assert_eq!(channel_label(Some(6)), "6ch");
-        assert_eq!(channel_label(None), "—");
     }
 
     #[test]

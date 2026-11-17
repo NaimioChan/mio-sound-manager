@@ -74,7 +74,6 @@ export interface SoundRow {
   durationS: number | null
   durationLabel: string
   channels: number | null
-  channelLabel: string
   sampleRate: number | null
   filesize: number | null
   category: string
@@ -105,9 +104,12 @@ export interface Sidebar {
   total: number
 }
 
+/** What an undoable edit was. The words for these live in `locales/`. */
+export type EditKind = 'favorite' | 'unfavorite' | 'setCategory' | 'clearCategory'
+
 export interface HistoryState {
-  undoLabel: string | null
-  redoLabel: string | null
+  undoKind: EditKind | null
+  redoKind: EditKind | null
 }
 
 /** One tick from a blocking index pass. */
@@ -245,8 +247,8 @@ export const api = {
 
   clearCategory: (paths: string[]) => invoke<number>('clear_category', { paths }),
 
-  undo: () => invoke<string | null>('undo'),
-  redo: () => invoke<string | null>('redo'),
+  undo: () => invoke<EditKind | null>('undo'),
+  redo: () => invoke<EditKind | null>('redo'),
   history: () => invoke<HistoryState>('get_history'),
 
   /** Native folder picker. Resolves `null` when the user cancels. */

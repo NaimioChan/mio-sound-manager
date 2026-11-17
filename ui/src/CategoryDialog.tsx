@@ -1,4 +1,5 @@
 import { For, Show, createMemo, createSignal } from 'solid-js'
+import { categoryName, t } from './i18n'
 import type { Facet } from './ipc'
 
 /**
@@ -67,18 +68,26 @@ export function CategoryDialog(props: Props) {
   return (
     <ix-modal ref={open} size="480">
       <ix-modal-header
-        heading="Set category"
-        subHeading={props.count > 1 ? `${props.count} sounds` : '1 sound'}
+        heading={t('category.heading')}
+        subHeading={
+          props.count > 1
+            ? t('category.nSounds', { count: props.count })
+            : t('category.oneSound')
+        }
       />
       <ix-modal-content>
         <div class="modal-form">
           <label class="field">
-            <span class="field-label">Category</span>
+            <span class="field-label">{t('category.label')}</span>
             <ix-input
               id="category-input"
               value={category()}
-              placeholder="e.g. Weapons"
-              helperText={categories().length > 0 ? `Existing: ${categories().slice(0, 4).join(', ')}` : undefined}
+              placeholder={t('category.placeholder')}
+              helperText={
+                categories().length > 0
+                  ? t('category.existing', { names: categories().slice(0, 4).join(', ') })
+                  : undefined
+              }
               on:valueChange={(e: CustomEvent<string>) => setCategory(e.detail)}
               onKeyDown={(e: KeyboardEvent) => {
                 if (e.key === 'Enter') save()
@@ -87,14 +96,14 @@ export function CategoryDialog(props: Props) {
           </label>
 
           <label class="field">
-            <span class="field-label">Subcategory (optional)</span>
+            <span class="field-label">{t('category.subLabel')}</span>
             <ix-input
               id="subcategory-input"
               value={subcategory()}
-              placeholder="e.g. Firearms"
+              placeholder={t('category.subPlaceholder')}
               helperText={
                 subcategories().length > 0
-                  ? `Existing: ${subcategories().slice(0, 4).join(', ')}`
+                  ? t('category.existing', { names: subcategories().slice(0, 4).join(', ') })
                   : undefined
               }
               on:valueChange={(e: CustomEvent<string>) => setSubcategory(e.detail)}
@@ -108,7 +117,7 @@ export function CategoryDialog(props: Props) {
               facet. Two chips rows read faster than a datalist dropdown. */}
           <Show when={categories().length > 0}>
             <div class="field">
-              <span class="field-label">Pick an existing one</span>
+              <span class="field-label">{t('category.pickExisting')}</span>
               <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '4px' }}>
                 <For each={categories()}>
                   {(name) => (
@@ -120,7 +129,7 @@ export function CategoryDialog(props: Props) {
                         setSubcategory('')
                       }}
                     >
-                      {name}
+                      {categoryName(name)}
                     </ix-chip>
                   )}
                 </For>
@@ -130,12 +139,12 @@ export function CategoryDialog(props: Props) {
 
           <Show when={subcategories().length > 0}>
             <div class="field">
-              <span class="field-label">Subcategories of {category()}</span>
+              <span class="field-label">{t('category.subcategoriesOf', { name: category() })}</span>
               <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '4px' }}>
                 <For each={subcategories()}>
                   {(name) => (
                     <ix-chip variant="neutral" outline onClick={() => setSubcategory(name)}>
-                      {name}
+                      {categoryName(name)}
                     </ix-chip>
                   )}
                 </For>
@@ -147,14 +156,14 @@ export function CategoryDialog(props: Props) {
       <ix-modal-footer>
         <div class="modal-actions">
           <ix-button variant="danger-secondary" onClick={() => close(props.onClear)}>
-            Clear category
+            {t('category.clear')}
           </ix-button>
           <div class="spacer" />
           <ix-button variant="secondary" onClick={() => close(props.onClose)}>
-            Cancel
+            {t('common.cancel')}
           </ix-button>
           <ix-button variant="primary" disabled={!category().trim()} onClick={() => close(save)}>
-            Save
+            {t('common.save')}
           </ix-button>
         </div>
       </ix-modal-footer>

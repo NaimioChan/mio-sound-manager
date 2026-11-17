@@ -5,6 +5,7 @@ import {
   type AudioDevice,
   type LibraryStatus
 } from './ipc'
+import { LOCALES, locale, setLocale, t, type Locale } from './i18n'
 import { THEMES, findTheme, type Theme } from './theme'
 
 /**
@@ -111,14 +112,14 @@ function ThemeCard(props: { theme: Theme; current: boolean; onPick: () => void }
     <button
       class={props.current ? 'theme-card on' : 'theme-card'}
       onClick={props.onPick}
-      title={props.theme.hint}
+      title={t(props.theme.hintKey)}
       data-theme-id={props.theme.id}
     >
       <span class="theme-swatch">
         <For each={swatch()}>{(color) => <span style={{ background: color }} />}</For>
       </span>
-      <span class="theme-card-name">{props.theme.label}</span>
-      <span class="theme-card-hint">{props.theme.hint}</span>
+      <span class="theme-card-name">{t(props.theme.labelKey)}</span>
+      <span class="theme-card-hint">{t(props.theme.hintKey)}</span>
     </button>
   )
 }
@@ -173,12 +174,12 @@ export function SettingsDialog(props: Props) {
 
   return (
     <ix-modal ref={open} size="720">
-      <ix-modal-header heading="Settings" subHeading="Device, library, appearance" />
+      <ix-modal-header heading={t('settings.heading')} subHeading={t('settings.subHeading')} />
       <ix-modal-content>
         <div class="modal-form">
           {/* ---------------------------------------------------------- audio */}
           <section class="settings-section">
-            <h3>Output device</h3>
+            <h3>{t('settings.outputDevice')}</h3>
 
             <Show
               when={props.status?.audioAvailable}
@@ -196,7 +197,7 @@ export function SettingsDialog(props: Props) {
             </Show>
 
             <div class="setting">
-              <span class="setting-label">Device</span>
+              <span class="setting-label">{t('settings.device')}</span>
               <div style={{ width: '320px' }}>
                 <ix-select
                   value={currentDevice()}
@@ -219,10 +220,7 @@ export function SettingsDialog(props: Props) {
             </div>
 
             <Show when={!asioCompiled()}>
-              <div class="setting-hint">
-                ASIO is not compiled into this build. Rebuild with
-                <code> ./tools/build-app.sh --asio</code> to offer ASIO drivers.
-              </div>
+              <div class="setting-hint">{t('settings.asioMissing')}</div>
             </Show>
             <Show when={deviceError()}>
               {(err) => (
@@ -235,27 +233,28 @@ export function SettingsDialog(props: Props) {
 
           {/* -------------------------------------------------------- library */}
           <section class="settings-section">
-            <h3>Library</h3>
+            <h3>{t('settings.library')}</h3>
 
             <Show
               when={props.activeLibrary}
-              fallback={<div class="setting-hint">No library is open.</div>}
+              fallback={<div class="setting-hint">{t('settings.noLibrary')}</div>}
             >
               {(library) => (
                 <>
                   <div class="setting">
                     <span class="setting-label">{library().name}</span>
                     <span class="setting-hint">
-                      {library().count.toLocaleString()} sounds · {library().root}
+                      {t('settings.soundCount', { count: library().count.toLocaleString() })} ·{' '}
+                      {library().root}
                     </span>
                   </div>
                   <div class="setting">
-                    <span class="setting-label">Reveal the index</span>
+                    <span class="setting-label">{t('settings.revealIndex')}</span>
                     <ix-button
                       variant="secondary"
                       onClick={() => void api.revealInFolder(library().root)}
                     >
-                      Open folder
+                      {t('settings.reveal')}
                     </ix-button>
                   </div>
                 </>
@@ -263,19 +262,16 @@ export function SettingsDialog(props: Props) {
             </Show>
 
             <div class="setting">
-              <span class="setting-label">Add another library</span>
+              <span class="setting-label">{t('settings.addLibrary')}</span>
               <ix-button variant="secondary" onClick={props.onAddLibrary}>
-                Open library…
+                {t('settings.openLibrary')}
               </ix-button>
             </div>
 
             <div class="setting">
               <span class="setting-label">
-                Rows per page
-                <div class="setting-hint">
-                  How many rows one search returns. Larger pages scroll further between
-                  fetches.
-                </div>
+                {t('settings.rowsPerPage')}
+                <div class="setting-hint">{t('settings.rowsPerPageHint')}</div>
               </span>
               <div style={{ width: '140px' }}>
                 <ix-select
@@ -294,11 +290,8 @@ export function SettingsDialog(props: Props) {
 
             <div class="setting">
               <span class="setting-label">
-                Show the category column
-                <div class="setting-hint">
-                  Turn it off for a denser list. Filtering by category still works from the
-                  rail.
-                </div>
+                {t('settings.showCategory')}
+                <div class="setting-hint">{t('settings.showCategoryHint')}</div>
               </span>
               <ix-toggle
                 checked={props.settings.showCategory}
@@ -311,14 +304,12 @@ export function SettingsDialog(props: Props) {
 
           {/* ------------------------------------------------------ behaviour */}
           <section class="settings-section">
-            <h3>Behaviour</h3>
+            <h3>{t('settings.behaviour')}</h3>
 
             <div class="setting">
               <span class="setting-label">
-                Auto-play on select
-                <div class="setting-hint">
-                  Clicking a row auditions it. The same switch as AUTO PLAY in the dock.
-                </div>
+                {t('settings.autoPlay')}
+                <div class="setting-hint">{t('settings.autoPlayHint')}</div>
               </span>
               <ix-toggle
                 checked={props.settings.autoPlay}
@@ -328,10 +319,8 @@ export function SettingsDialog(props: Props) {
 
             <div class="setting">
               <span class="setting-label">
-                Infinite scroll
-                <div class="setting-hint">
-                  Fetch the next page as the list nears its end, instead of showing one page.
-                </div>
+                {t('settings.infiniteScroll')}
+                <div class="setting-hint">{t('settings.infiniteScrollHint')}</div>
               </span>
               <ix-toggle
                 checked={props.settings.infiniteScroll}
@@ -344,11 +333,8 @@ export function SettingsDialog(props: Props) {
 
           {/* ------------------------------------------------------ appearance */}
           <section class="settings-section">
-            <h3>Appearance</h3>
-            <div class="setting-hint">
-              Themes repaint the Siemens iX token set, so every control, panel and the
-              waveform follow the same palette.
-            </div>
+            <h3>{t('settings.appearance')}</h3>
+            <div class="setting-hint">{t('settings.themeHint')}</div>
             <div class="theme-grid">
               <For each={THEMES}>
                 {(theme) => (
@@ -361,7 +347,31 @@ export function SettingsDialog(props: Props) {
               </For>
             </div>
             <div class="setting-hint">
-              Current: {findTheme(props.theme).label}
+              {t('settings.currentTheme', { name: t(findTheme(props.theme).labelKey) })}
+            </div>
+
+            {/* Language sits in Appearance because that is what it is: the app is
+                not re-laid out, the words change. Each option is written in its own
+                language — a picker that says "Chinese" to a reader who cannot read
+                English defeats itself. */}
+            <div class="setting">
+              <span class="setting-label">
+                {t('settings.language')}
+                <div class="setting-hint">{t('settings.languageHint')}</div>
+              </span>
+              <div style={{ width: '160px' }}>
+                <ix-select
+                  value={locale()}
+                  allowClear={false}
+                  on:valueChange={(e: CustomEvent<string | string[]>) =>
+                    setLocale(String(e.detail) as Locale)
+                  }
+                >
+                  <For each={LOCALES}>
+                    {(entry) => <ix-select-item value={entry.id} label={entry.label} />}
+                  </For>
+                </ix-select>
+              </div>
             </div>
           </section>
         </div>
@@ -370,7 +380,7 @@ export function SettingsDialog(props: Props) {
         <div class="modal-actions">
           <div class="spacer" />
           <ix-button variant="primary" onClick={close}>
-            Done
+            {t('common.done')}
           </ix-button>
         </div>
       </ix-modal-footer>

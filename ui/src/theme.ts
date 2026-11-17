@@ -17,6 +17,8 @@
 // block is `html[data-ix-theme][data-ix-color-schema]` (0,2,1), which wins
 // regardless of source order — verified in the browser, not assumed.
 
+import type { MessageKey } from './locales/en'
+
 /** The eight colours a theme is made of. */
 export interface Palette {
   /** The deepest surface: the window background. */
@@ -38,9 +40,14 @@ export interface Palette {
 
 export interface Theme {
   id: string
-  label: string
-  /** One line for the picker. Says what the theme is for, not what it looks like. */
-  hint: string
+  /**
+   * Message keys, not text. A theme's name and its one-line description are UI
+   * copy like any other label, so they live in `locales/` and are resolved by the
+   * picker; `theme.ts` owns palettes, not words.
+   */
+  labelKey: MessageKey
+  /** Says what the theme is for, not what it looks like. */
+  hintKey: MessageKey
   schema: 'dark' | 'light'
   /** `null` means "iX's own classic palette, untouched". */
   palette: Palette | null
@@ -280,22 +287,22 @@ function buildTokens(p: Palette, schema: 'dark' | 'light'): Record<string, strin
 export const THEMES: Theme[] = [
   {
     id: 'classic-dark',
-    label: 'Classic Dark',
-    hint: 'Siemens iX, as shipped',
+    labelKey: 'theme.classicDark',
+    hintKey: 'theme.classicDarkHint',
     schema: 'dark',
     palette: null
   },
   {
     id: 'classic-light',
-    label: 'Classic Light',
-    hint: 'Siemens iX, inverted',
+    labelKey: 'theme.classicLight',
+    hintKey: 'theme.classicLightHint',
     schema: 'light',
     palette: null
   },
   {
     id: 'studio-dark',
-    label: 'Studio Dark',
-    hint: 'Graphite and violet, for long sessions',
+    labelKey: 'theme.studioDark',
+    hintKey: 'theme.studioDarkHint',
     schema: 'dark',
     palette: {
       bg: '#101014',
@@ -312,8 +319,8 @@ export const THEMES: Theme[] = [
   },
   {
     id: 'studio-light',
-    label: 'Studio Light',
-    hint: 'Paper and indigo, for daylight',
+    labelKey: 'theme.studioLight',
+    hintKey: 'theme.studioLightHint',
     schema: 'light',
     palette: {
       bg: '#ffffff',
@@ -330,8 +337,8 @@ export const THEMES: Theme[] = [
   },
   {
     id: 'amber-console',
-    label: 'Amber Console',
-    hint: 'Near-black with an amber trace, for dim rooms',
+    labelKey: 'theme.amber',
+    hintKey: 'theme.amberHint',
     schema: 'dark',
     palette: {
       bg: '#0d0b08',
@@ -348,8 +355,8 @@ export const THEMES: Theme[] = [
   },
   {
     id: 'frost-dark',
-    label: 'Frost',
-    hint: 'Cool blue-grey, low glare',
+    labelKey: 'theme.frost',
+    hintKey: 'theme.frostHint',
     schema: 'dark',
     palette: {
       bg: '#12171d',

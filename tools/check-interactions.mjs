@@ -20,6 +20,9 @@ if (!page) {
 // A previous run can leave a modal open, which blocks every click. Reload first:
 // the checks are all stateless from the app's point of view, and a clean page is
 // the only reliable starting state for a script that drives a real window.
+// These checks assert on English copy, so the locale is pinned before the reload.
+// Copy coverage is `check-i18n.mjs`'s job, not this script's.
+await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
 await page.reload()
 await page.waitForSelector('.row', { timeout: 60_000 })
 await page.waitForTimeout(1000)
@@ -70,17 +73,17 @@ check(/\d+ selected/.test(status), 'the status bar reports the selection', statu
 
 // --- sorting: click a header twice, expect the arrow to flip
 const sortBefore = await page.locator('.head-cell .sort-arrow').first().textContent()
-await page.locator('.head-cell', { hasText: 'Length' }).click()
+await page.locator('.head-cell[data-sort-key="durationS"]').click()
 await page.waitForTimeout(500)
 const lengthArrow = await page
-  .locator('.head-cell', { hasText: 'Length' })
+  .locator('.head-cell[data-sort-key="durationS"]')
   .locator('.sort-arrow')
   .textContent()
 check(!!lengthArrow, 'clicking Length sorts by it', lengthArrow)
-await page.locator('.head-cell', { hasText: 'Length' }).click()
+await page.locator('.head-cell[data-sort-key="durationS"]').click()
 await page.waitForTimeout(500)
 const flipped = await page
-  .locator('.head-cell', { hasText: 'Length' })
+  .locator('.head-cell[data-sort-key="durationS"]')
   .locator('.sort-arrow')
   .textContent()
 check(
@@ -109,7 +112,7 @@ await page.waitForTimeout(300)
 const menuItems = await page.locator('.menu-item').count()
 check(menuItems >= 6, 'right-click opens the row menu', `${menuItems} items`)
 check(
-  (await page.locator('.menu-item', { hasText: 'Set Category' }).count()) === 1,
+  (await page.locator('.menu-item[data-menu-id="category"]').count()) === 1,
   'the menu offers Set Category'
 )
 await page.keyboard.press('Escape')
@@ -118,7 +121,7 @@ check((await page.locator('.menu').count()) === 0, 'Escape closes the menu')
 
 // --- the category dialog is an iX modal
 await page.locator('.row').first().click({ button: 'right' })
-await page.locator('.menu-item', { hasText: 'Set Category' }).click()
+await page.locator('.menu-item[data-menu-id="category"]').click()
 await page.waitForTimeout(900)
 check((await page.locator('ix-modal').count()) === 1, 'Set Category opens an iX modal')
 // The host is display:none until iX adds `.visible`, and the dialog inside it is
@@ -185,11 +188,11 @@ if (!pressedAfter) {
 // The sort checks above left Length ascending, which puts the shortest clips on
 // screen. Click it once more for descending, so the longest loaded row is visible.
 const lengthArrowNow = await page
-  .locator('.head-cell', { hasText: 'Length' })
+  .locator('.head-cell[data-sort-key="durationS"]')
   .locator('.sort-arrow')
   .textContent()
 if (lengthArrowNow === '▲') {
-  await page.locator('.head-cell', { hasText: 'Length' }).click()
+  await page.locator('.head-cell[data-sort-key="durationS"]').click()
   await page.waitForTimeout(700)
 }
 const longestIndex = await page.evaluate(() => {

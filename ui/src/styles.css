@@ -907,6 +907,16 @@ button {
   font-size: var(--mio-ms-0);
 }
 
+/* iX's `ix-select` host is `inline-block` and shrinks to its widest option, so a
+   select in a settings row stopped short of the row's right edge while every other
+   control (a button, a toggle) sat flush. The row's track is what should decide the
+   width, so the control fills the wrapper it is given. */
+.setting ix-select,
+.setting ix-input {
+  display: block;
+  width: 100%;
+}
+
 .setting-hint {
   color: var(--theme-color-weak-text);
   font-size: var(--mio-ms--2);

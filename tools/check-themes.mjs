@@ -17,6 +17,8 @@ if (!page) {
   console.error('no page on the debugger')
   process.exit(1)
 }
+await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
+await page.reload()
 await page.waitForSelector('.app', { timeout: 20_000 })
 
 const problems = []

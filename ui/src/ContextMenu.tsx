@@ -85,6 +85,7 @@ export function ContextMenu(props: Props) {
             <button
               class="menu-item"
               role="menuitem"
+              data-menu-id={item.id}
               disabled={item.disabled}
               onClick={() => {
                 props.onClose()

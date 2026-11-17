@@ -33,7 +33,7 @@ use crate::commands::{
     SoundDto, WaveformDto,
 };
 use crate::error::{AppError, AppResult};
-use crate::history::History;
+use crate::history::{EditKind, History};
 use crate::library::Library;
 use crate::session::{Session, SessionStore};
 
@@ -1043,8 +1043,12 @@ impl AppState {
     /// Star or unstar many sounds in one transaction, recording it for undo.
     pub fn set_favorite(&self, paths: &[String], favorite: bool) -> AppResult<u64> {
         let library = self.library()?;
-        let label = if favorite { "Add to Favorites" } else { "Remove from Favorites" };
-        let edit = crate::history::run(&library, label, paths, || {
+        let kind = if favorite {
+            EditKind::Favorite
+        } else {
+            EditKind::Unfavorite
+        };
+        let edit = crate::history::run(&library, kind, paths, || {
             Ok(library.set_favorite(paths, favorite)?)
         })?;
         self.record(edit);
@@ -1059,7 +1063,7 @@ impl AppState {
         subcategory: Option<&str>,
     ) -> AppResult<u64> {
         let library = self.library()?;
-        let edit = crate::history::run(&library, "Set Category", paths, || {
+        let edit = crate::history::run(&library, EditKind::SetCategory, paths, || {
             Ok(library.set_category(paths, category, subcategory)?)
         })?;
         self.record(edit);
@@ -1069,7 +1073,7 @@ impl AppState {
     /// Drop the manual category on many sounds, recording for undo.
     pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
         let library = self.library()?;
-        let edit = crate::history::run(&library, "Clear Category", paths, || {
+        let edit = crate::history::run(&library, EditKind::ClearCategory, paths, || {
             Ok(library.clear_category(paths)?)
         })?;
         self.record(edit);
@@ -1082,8 +1086,8 @@ impl AppState {
         }
     }
 
-    /// Undo the last edit. Returns the label that was undone, if any.
-    pub fn undo(&self) -> AppResult<Option<String>> {
+    /// Undo the last edit. Returns what kind it was, if any.
+    pub fn undo(&self) -> AppResult<Option<EditKind>> {
         let libraries = self.all_libraries()?;
         let mut history = self
             .history
@@ -1093,7 +1097,7 @@ impl AppState {
     }
 
     /// Redo the last undone edit.
-    pub fn redo(&self) -> AppResult<Option<String>> {
+    pub fn redo(&self) -> AppResult<Option<EditKind>> {
         let libraries = self.all_libraries()?;
         let mut history = self
             .history
@@ -1102,16 +1106,13 @@ impl AppState {
         history.redo(&libraries)
     }
 
-    /// What undo/redo would do, for the menu labels.
-    pub fn history_state(&self) -> (Option<String>, Option<String>) {
+    /// What undo/redo would do, so the UI can name it in the user's language.
+    pub fn history_state(&self) -> (Option<EditKind>, Option<EditKind>) {
         let history = match self.history.lock() {
             Ok(h) => h,
             Err(_) => return (None, None),
         };
-        (
-            history.undo_label().map(str::to_string),
-            history.redo_label().map(str::to_string),
-        )
+        (history.undo_kind(), history.redo_kind())
     }
 }
 

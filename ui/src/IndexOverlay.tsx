@@ -1,4 +1,5 @@
 import { Show } from 'solid-js'
+import { t } from './i18n'
 import type { IndexProgress } from './ipc'
 
 /**
@@ -41,27 +42,27 @@ export function IndexOverlay(props: {
           <ix-progress-indicator
             type="linear"
             value={pct() ?? 0}
-            label={pct() === null ? 'walking the folder' : `${pct()}%`}
+            label={pct() === null ? t('index.walking') : `${pct()}%`}
           />
 
           <div class="index-detail">
             <Show
               when={props.progress && props.progress.total > 0 ? props.progress : null}
-              fallback={<span>walking the folder…</span>}
+              fallback={<span>{t('index.walkingEllipsis')}</span>}
             >
               {(p) => (
                 <span>
-                  {p().done.toLocaleString()} / {p().total.toLocaleString()} files
-                  <Show when={pct() === 100}> · finishing up…</Show>
+                  {t('index.files', {
+                    done: p().done.toLocaleString(),
+                    total: p().total.toLocaleString()
+                  })}
+                  <Show when={pct() === 100}> · {t('index.finishing')}</Show>
                 </span>
               )}
             </Show>
           </div>
 
-          <p class="index-note">
-            The window stays locked until this finishes. A 280k-file library takes about a
-            minute the first time and a few seconds after that.
-          </p>
+          <p class="index-note">{t('index.note')}</p>
         </div>
       </div>
     </Show>

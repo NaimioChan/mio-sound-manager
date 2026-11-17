@@ -2,6 +2,7 @@ import { Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import {
   api,
   type AppStatus,
+  type EditKind,
   type Facet,
   type FolderNode,
   type IndexProgress,
@@ -15,6 +16,7 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
 import { SettingsDialog, loadSettings, saveSettings, type Settings } from './SettingsDialog'
 import { IndexOverlay } from './IndexOverlay'
+import { UNCATEGORIZED, editKindName, t } from './i18n'
 import { ICON } from './icons'
 import { applyTheme, loadThemeId } from './theme'
 
@@ -119,7 +121,7 @@ export function App() {
   )
   const [categoryDialog, setCategoryDialog] = createSignal<SoundRow[] | null>(null)
   const [settingsOpen, setSettingsOpen] = createSignal(false)
-  const [history, setHistory] = createSignal<{ undo: string | null; redo: string | null }>({
+  const [history, setHistory] = createSignal<{ undo: EditKind | null; redo: EditKind | null }>({
     undo: null,
     redo: null
   })
@@ -268,7 +270,7 @@ export function App() {
   const loadHistory = async () => {
     try {
       const state = await api.history()
-      setHistory({ undo: state.undoLabel, redo: state.redoLabel })
+      setHistory({ undo: state.undoKind, redo: state.redoKind })
     } catch {
       setHistory({ undo: null, redo: null })
     }
@@ -352,10 +354,10 @@ export function App() {
       target = picked
     }
 
-    setIndexing({ label: 'Indexing library…', progress: null })
+    setIndexing({ label: t('index.indexing'), progress: null })
     try {
       await api.addLibrary(target, (progress) => {
-        setIndexing({ label: 'Indexing library…', progress })
+        setIndexing({ label: t('index.indexing'), progress })
       })
       setSettingsOpen(false)
       await refresh()
@@ -373,10 +375,10 @@ export function App() {
    * acts on whichever library was right-clicked, which may be in the background.
    */
   const reindexLibrary = async (root: string, full: boolean) => {
-    setIndexing({ label: full ? 'Full reindex…' : 'Reindexing…', progress: null })
+    setIndexing({ label: full ? t('index.fullReindex') : t('index.reindexing'), progress: null })
     try {
       await api.reindexLibrary(root, (progress) => {
-        setIndexing({ label: full ? 'Full reindex…' : 'Reindexing…', progress })
+        setIndexing({ label: full ? t('index.fullReindex') : t('index.reindexing'), progress })
       }, full)
       await refresh()
     } catch (e) {
@@ -487,7 +489,7 @@ export function App() {
     try {
       const paths = await api.matchingPaths(request())
       setSelection(paths)
-      setNotice(`${paths.length.toLocaleString()} selected`)
+      setNotice(t('notice.selected', { count: paths.length.toLocaleString() }))
     } catch (e) {
       setNotice(String(e))
     }
@@ -506,9 +508,9 @@ export function App() {
 
   const undo = async () => {
     try {
-      const label = await api.undo()
-      if (!label) return
-      setNotice(`Undid ${label.toLowerCase()}`)
+      const kind = await api.undo()
+      if (!kind) return
+      setNotice(t('notice.undid', { label: editKindName(kind) }))
       await Promise.all([loadSidebar(), runSearch(), loadHistory()])
     } catch (e) {
       setNotice(String(e))
@@ -517,9 +519,9 @@ export function App() {
 
   const redo = async () => {
     try {
-      const label = await api.redo()
-      if (!label) return
-      setNotice(`Redid ${label.toLowerCase()}`)
+      const kind = await api.redo()
+      if (!kind) return
+      setNotice(t('notice.redid', { label: editKindName(kind) }))
       await Promise.all([loadSidebar(), runSearch(), loadHistory()])
     } catch (e) {
       setNotice(String(e))
@@ -546,7 +548,11 @@ export function App() {
 
   const copyPaths = (targets: SoundRow[]) => {
     void navigator.clipboard.writeText(targets.map((r) => r.path).join('\n'))
-    setNotice(`${targets.length} path${targets.length === 1 ? '' : 's'} copied`)
+    setNotice(
+      targets.length === 1
+        ? t('notice.pathCopied')
+        : t('notice.pathsCopied', { count: targets.length })
+    )
   }
 
   const menuItems = (): MenuItem[] => {
@@ -554,13 +560,13 @@ export function App() {
     if (!current) return []
     const targets = current.targets
     const one = targets.length === 1 ? targets[0] : null
-    const many = (label: string) => (one ? label : `${label} (${targets.length})`)
+    const many = (label: string) => (one ? label : t('menu.withCount', { label, count: targets.length }))
     const allStarred = targets.every((r) => r.favorite)
 
     return [
       {
         id: 'play',
-        label: 'Play',
+        label: t('menu.play'),
         shortcut: 'Space',
         disabled: !one,
         onSelect: () => one && void play(one)
@@ -568,18 +574,18 @@ export function App() {
       { id: 'd1', label: '', divider: true },
       {
         id: 'favorite',
-        label: many(allStarred ? 'Remove from Favorites' : 'Add to Favorites'),
+        label: many(allStarred ? t('edit.unfavorite') : t('edit.favorite')),
         onSelect: toggleFavoriteSelection
       },
       {
         id: 'category',
-        label: many('Set Category…'),
+        label: many(t('menu.setCategory')),
         onSelect: () => setCategoryDialog(targets)
       },
       {
         id: 'clear-category',
-        label: many('Clear Category'),
-        disabled: targets.every((r) => r.category === 'Uncategorized' && !r.categoryManual),
+        label: many(t('menu.clearCategory')),
+        disabled: targets.every((r) => r.category === UNCATEGORIZED && !r.categoryManual),
         onSelect: () =>
           void editThenRefresh(
             targets.map((r) => r.path),
@@ -589,13 +595,13 @@ export function App() {
       { id: 'd2', label: '', divider: true },
       {
         id: 'reveal',
-        label: 'Reveal in File Manager',
+        label: t('menu.reveal'),
         disabled: !one,
         onSelect: () => one && reveal(one)
       },
       {
         id: 'show-folder',
-        label: 'Show in Folders',
+        label: t('menu.showInFolders'),
         disabled: !one,
         onSelect: () => {
           if (!one) return
@@ -609,17 +615,17 @@ export function App() {
       },
       {
         id: 'copy-path',
-        label: one ? 'Copy Path' : `Copy ${targets.length} Paths`,
+        label: one ? t('menu.copyPath') : t('menu.copyPaths', { count: targets.length }),
         onSelect: () => copyPaths(targets)
       },
       { id: 'd3', label: '', divider: true },
       {
         id: 'drag',
-        label: one ? 'Drag to DAW' : `Drag ${targets.length} to DAW`,
+        label: one ? t('menu.dragToDaw') : t('menu.dragToDawMany', { count: targets.length }),
         disabled: true,
         // Dragging is done with the mouse; the menu entry exists so the feature is
         // discoverable, and it says how rather than pretending to be clickable.
-        shortcut: 'drag a row'
+        shortcut: t('menu.dragHint')
       }
     ]
   }
@@ -640,32 +646,32 @@ export function App() {
     return [
       {
         id: 'switch',
-        label: 'Switch to this library',
+        label: t('libMenu.switch'),
         disabled: library.active,
         onSelect: () => void switchLibrary(library.root)
       },
       { id: 'd1', label: '', divider: true },
       {
         id: 'reindex',
-        label: 'Reindex',
+        label: t('libMenu.reindex'),
         disabled: busy,
         onSelect: () => void reindexLibrary(library.root, false)
       },
       {
         id: 'reindex-full',
-        label: 'Full reindex',
+        label: t('libMenu.fullReindex'),
         disabled: busy,
         onSelect: () => void reindexLibrary(library.root, true)
       },
       { id: 'd2', label: '', divider: true },
       {
         id: 'reveal',
-        label: 'Reveal in File Manager',
+        label: t('menu.reveal'),
         onSelect: () => api.revealInFolder(library.root).catch((e) => setNotice(String(e)))
       },
       {
         id: 'close',
-        label: 'Close library',
+        label: t('libMenu.close'),
         onSelect: () => void removeLibrary(library.root)
       }
     ]
@@ -809,7 +815,7 @@ export function App() {
     }
     if (favoritesOnly()) {
       chips.push({
-        label: 'Favorites',
+        label: t('search.favorites'),
         clear: () => {
           setFavoritesOnly(false)
           void runSearch()
@@ -824,7 +830,7 @@ export function App() {
       <header class="topbar">
         <div class="brand">
           <span class="brand-name">Mio Sound Manager</span>
-          <span class="brand-sub">samples</span>
+          <span class="brand-sub">{t('app.subtitle')}</span>
         </div>
 
         <Show when={activeLibrary()}>
@@ -843,8 +849,8 @@ export function App() {
             size="16"
             variant="tertiary"
             icon={ICON.undo}
-            title={`Undo ${history().undo} (Ctrl+Z)`}
-            aria-label="Undo"
+            title={t('topbar.undo', { label: editKindName(history().undo!) })}
+            aria-label={t('topbar.undoLabel')}
             onClick={() => void undo()}
           />
         </Show>
@@ -854,14 +860,14 @@ export function App() {
             size="16"
             variant="tertiary"
             icon={ICON.redo}
-            title={`Redo ${history().redo} (Ctrl+Shift+Z)`}
-            aria-label="Redo"
+            title={t('topbar.redo', { label: editKindName(history().redo!) })}
+            aria-label={t('topbar.redoLabel')}
             onClick={() => void redo()}
           />
         </Show>
 
         <Show when={notice()}>
-          <button class="notice" onClick={() => setNotice(null)} title="dismiss">
+          <button class="notice" onClick={() => setNotice(null)} title={t('common.dismiss')}>
             {notice()}
           </button>
         </Show>
@@ -871,8 +877,8 @@ export function App() {
           size="16"
           variant="tertiary"
           icon={ICON.settings}
-          title="Settings (Ctrl+,)"
-          aria-label="Settings"
+          title={t('topbar.settings')}
+          aria-label={t('topbar.settingsLabel')}
           onClick={() => setSettingsOpen(true)}
         />
       </header>
@@ -904,7 +910,7 @@ export function App() {
             onOpenSettings={() => setSettingsOpen(true)}
             onLibraryMenu={(library, x, y) => setLibMenu({ library, x, y })}
           />
-          <div class="rail-resize" onPointerDown={startResize} title="Drag to resize" />
+          <div class="rail-resize" onPointerDown={startResize} title={t('side.resize')} />
         </div>
 
         <main class="main">
@@ -912,7 +918,7 @@ export function App() {
             <div class="search">
               <ix-input
                 id="search-input"
-                placeholder="Search samples…"
+                placeholder={t('search.placeholder')}
                 value={query()}
                 on:valueChange={(e: CustomEvent<string>) => {
                   setQuery(e.detail)
@@ -941,16 +947,18 @@ export function App() {
             <div class="spacer" />
             <Show when={matching() > 0}>
               <span class="dim small">
-                {matching().toLocaleString()} match{matching() === 1 ? '' : 'es'}
+                {matching() === 1
+                  ? t('search.matchesOne')
+                  : t('search.matches', { count: matching().toLocaleString() })}
               </span>
             </Show>
             <ix-button
               variant="secondary"
               icon={ICON.folderOpen}
               onClick={() => void addLibrary()}
-              title="Add a library (Ctrl+O)"
+              title={t('topbar.addLibrary')}
             >
-              Add library
+              {t('search.addLibrary')}
             </ix-button>
           </div>
 
@@ -959,19 +967,15 @@ export function App() {
             fallback={
               <div class="empty">
                 <ix-icon name={bootError() ? ICON.error : ICON.database} size="48" />
-                <h1>{bootError() ? 'Backend error' : 'No library open'}</h1>
+                <h1>{bootError() ? t('empty.backendError') : t('empty.noLibrary')}</h1>
                 <Show when={bootError()}>
                   <p class="bad">{bootError()}</p>
                 </Show>
                 <Show when={!bootError()}>
-                  <p>
-                    Point Mio at a folder of samples. The first pass indexes every file it
-                    finds, which takes about a minute for 280k files and a few seconds after
-                    that.
-                  </p>
+                  <p>{t('empty.body')}</p>
                 </Show>
                 <ix-button variant="primary" icon={ICON.folderOpen} onClick={() => void addLibrary()}>
-                  Open library…
+                  {t('empty.open')}
                 </ix-button>
               </div>
             }
@@ -1021,7 +1025,7 @@ export function App() {
       <footer class="statusbar">
         <Show
           when={status()?.audioAvailable}
-          fallback={<span class="bad">{status()?.audioError ?? 'audio device unavailable'}</span>}
+          fallback={<span class="bad">{status()?.audioError ?? t('status.noDevice')}</span>}
         >
           <span class="good">●</span>
           <span class="backend-tag">{status()?.backend}</span>
@@ -1029,23 +1033,28 @@ export function App() {
           <span class="dim">
             {status()?.sampleRate} Hz · {status()?.channels} ch · {status()?.sampleFormat}
           </span>
-          <span class="dim">engine period {status()?.enginePeriodMs?.toFixed(2)} ms</span>
+          <span class="dim">
+            {t('status.enginePeriod', { ms: status()?.enginePeriodMs?.toFixed(2) ?? '—' })}
+          </span>
         </Show>
 
         <div class="spacer" />
 
         <Show when={selection().length > 1}>
-          <span class="dim">{selection().length.toLocaleString()} selected</span>
+          <span class="dim">{t('status.selected', { count: selection().length.toLocaleString() })}</span>
         </Show>
 
         <Show when={libraries().length > 0}>
           <span class="dim">
-            {rows().length.toLocaleString()} of {matching().toLocaleString()} loaded
+            {t('status.loaded', {
+              loaded: rows().length.toLocaleString(),
+              matching: matching().toLocaleString()
+            })}
           </span>
         </Show>
 
         <Show when={waveMs()}>
-          {(ms) => <span class="dim">waveform {ms().toFixed(1)} ms</span>}
+          {(ms) => <span class="dim">{t('status.waveform', { ms: ms().toFixed(1) })}</span>}
         </Show>
       </footer>
 

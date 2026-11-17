@@ -17,7 +17,15 @@ if (!page) {
   console.error('no page on the debugger')
   process.exit(1)
 }
+// Layout does not depend on the language, but the dock's AUTO PLAY label does, and
+// a longer translation would shift the cluster this script measures. Pin English so
+// the numbers mean the same thing on every machine.
+await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
+await page.reload()
 await page.waitForSelector('.app', { timeout: 20_000 })
+// The table is populated by an async search, so waiting on `.app` alone measures an
+// empty list: the column-track comparison needs a real row.
+await page.waitForSelector('.row', { timeout: 30_000 }).catch(() => {})
 await page.waitForTimeout(800)
 
 const report = await page.evaluate(() => {

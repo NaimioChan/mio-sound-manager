@@ -21,6 +21,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mio_app::EditKind;
 use mio_app::AppState;
 use mio_app::SearchRequest;
 
@@ -379,7 +380,6 @@ fn opening_a_library_indexes_it_before_returning_and_search_finds_the_rows() {
         .expect("gunshot row");
     assert_eq!(gunshot.category, "Weapons");
     assert_eq!(gunshot.subcategory.as_deref(), Some("Firearms"));
-    assert_eq!(gunshot.channel_label, "Stereo");
     assert_eq!(gunshot.duration_label, "0:00.20");
     assert_eq!(gunshot.sample_rate, Some(44_100));
     assert!(!gunshot.favorite);
@@ -827,30 +827,30 @@ fn undo_restores_a_favorite_and_redo_puts_it_back() {
     let paths = vec![row.path.clone()];
 
     state.set_favorite(&paths, true).expect("favorite");
-    let (undo_label, redo_label) = state.history_state();
-    assert_eq!(undo_label.as_deref(), Some("Add to Favorites"));
-    assert_eq!(redo_label, None);
+    let (undo_kind, redo_kind) = state.history_state();
+    assert_eq!(undo_kind, Some(EditKind::Favorite));
+    assert_eq!(redo_kind, None);
 
-    // Undo takes the star off, and the label it reports is the edit it reversed.
+    // Undo takes the star off, and the kind it reports is the edit it reversed.
     let undone = state.undo().expect("undo").expect("something to undo");
-    assert_eq!(undone, "Add to Favorites");
+    assert_eq!(undone, EditKind::Favorite);
     let (favorites, _) = state.library().unwrap().summary().unwrap();
     assert_eq!(favorites, 0, "the star is gone again");
 
     // Redo puts it back, and the stacks swap.
-    let (undo_label, redo_label) = state.history_state();
-    assert_eq!(undo_label, None);
-    assert_eq!(redo_label.as_deref(), Some("Add to Favorites"));
+    let (undo_kind, redo_kind) = state.history_state();
+    assert_eq!(undo_kind, None);
+    assert_eq!(redo_kind, Some(EditKind::Favorite));
 
     let redone = state.redo().expect("redo").expect("something to redo");
-    assert_eq!(redone, "Add to Favorites");
+    assert_eq!(redone, EditKind::Favorite);
     let (favorites, _) = state.library().unwrap().summary().unwrap();
     assert_eq!(favorites, 1);
 
     // With nothing left, both return `None` rather than failing.
-    assert_eq!(state.undo().expect("undo"), Some("Add to Favorites".into()));
+    assert_eq!(state.undo().expect("undo"), Some(EditKind::Favorite));
     assert_eq!(state.undo().expect("undo again"), None);
-    assert_eq!(state.redo().expect("redo"), Some("Add to Favorites".into()));
+    assert_eq!(state.redo().expect("redo"), Some(EditKind::Favorite));
 
     drop(root);
 }
@@ -876,7 +876,7 @@ fn undo_restores_the_previous_category_not_just_the_previous_flag() {
     state
         .set_category(&paths, "Undo Check", Some("Temp"))
         .expect("set category");
-    assert_eq!(state.history_state().0.as_deref(), Some("Set Category"));
+    assert_eq!(state.history_state().0, Some(EditKind::SetCategory));
 
     state.undo().expect("undo").expect("entry");
 
