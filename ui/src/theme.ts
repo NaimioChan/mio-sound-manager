@@ -41,13 +41,11 @@ export interface Palette {
 export interface Theme {
   id: string
   /**
-   * Message keys, not text. A theme's name and its one-line description are UI
-   * copy like any other label, so they live in `locales/` and are resolved by the
-   * picker; `theme.ts` owns palettes, not words.
+   * Message key, not text. A theme's name is UI copy like any other label, so it
+   * lives in `locales/` and is resolved by the picker; `theme.ts` owns palettes,
+   * not words.
    */
   labelKey: MessageKey
-  /** Says what the theme is for, not what it looks like. */
-  hintKey: MessageKey
   schema: 'dark' | 'light'
   /** `null` means "iX's own classic palette, untouched". */
   palette: Palette | null
@@ -288,21 +286,18 @@ export const THEMES: Theme[] = [
   {
     id: 'classic-dark',
     labelKey: 'theme.classicDark',
-    hintKey: 'theme.classicDarkHint',
     schema: 'dark',
     palette: null
   },
   {
     id: 'classic-light',
     labelKey: 'theme.classicLight',
-    hintKey: 'theme.classicLightHint',
     schema: 'light',
     palette: null
   },
   {
     id: 'studio-dark',
     labelKey: 'theme.studioDark',
-    hintKey: 'theme.studioDarkHint',
     schema: 'dark',
     palette: {
       bg: '#101014',
@@ -320,7 +315,6 @@ export const THEMES: Theme[] = [
   {
     id: 'studio-light',
     labelKey: 'theme.studioLight',
-    hintKey: 'theme.studioLightHint',
     schema: 'light',
     palette: {
       bg: '#ffffff',
@@ -338,7 +332,6 @@ export const THEMES: Theme[] = [
   {
     id: 'amber-console',
     labelKey: 'theme.amber',
-    hintKey: 'theme.amberHint',
     schema: 'dark',
     palette: {
       bg: '#0d0b08',
@@ -356,7 +349,6 @@ export const THEMES: Theme[] = [
   {
     id: 'frost-dark',
     labelKey: 'theme.frost',
-    hintKey: 'theme.frostHint',
     schema: 'dark',
     palette: {
       bg: '#12171d',

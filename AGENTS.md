@@ -2,7 +2,7 @@
 
 Mio Sound Manager: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9 及之后不做。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。
+Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9（BPM 排序、tag 多选、文件夹自绘菜单、去掉副标题）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。
 
 ## Stack (decided)
 
@@ -31,6 +31,7 @@ Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + s
 - **The theme has one owner.** `ui/src/theme.ts` writes `mio:theme`; it must not also live in the settings blob — two writers made a reload fall back to the default.
 - **Volume is engine state, not renderer state.** `set_gain` writes one atomic the render callback reads; the slider's signal is a mirror. A volume control that only updated the UI would pass a DOM check and do nothing.
 - **Nothing user-facing is written as a literal string.** Every label goes through `t()`; the backend sends *kinds* (`EditKind`), never English prose for the renderer to display — a string born in Rust can never be translated. Category names, file names and sample rates are data and stay untranslated; `Uncategorized` is the one exception, because it is a schema sentinel rather than a classifier guess.
+- **No subtitles.** Nothing under a heading, a brand, a modal title or a settings group. 标题本身就是完整信息；副标题是不承载信息的一行小字，只会把版式撑高。文案层面同理：不要为标题补一句解释性的第二行。要解释就写进正文或 `helperText`，那不是 subtitle。
 - **Gapless decoding is mandatory, not an optimisation.** With `FormatOptions::enable_gapless` off, MP3 keeps 25.1ms of LAME encoder delay at the head; MP4/AAC keeps 1024 priming frames (23.2ms) because symphonia's isomp4 parses `elst` but never surfaces it. Both are the same order of magnitude as the entire device path, so a missing trim is felt as a late trigger.
 
 ## Commands
@@ -55,7 +56,8 @@ cargo run --release -p mio-cli -- probe-bench <folder> --limit 20000    # per-fo
 # The desktop shell. Two steps: bundle the webview, then the exe embeds it.
 (cd ui && npm install && npm run build)
 cargo build -p mio-app --release
-./tools/build-app.sh --asio             # 同上，加 ASIO（检查 SDK 与 libclang 后带 feature 构建）
+./tools/build-app.sh                     # 产品构建：WASAPI + ASIO（检查 SDK 与 libclang 后带 feature 构建）
+./tools/build-app.sh --no-asio           # 纯 WASAPI 的开发构建，不需要 ASIO SDK
 ./tools/run-app.sh                      # launches with the webview debugger on :9223
 ./tools/kill-app.sh                     # Windows won't replace a mapped exe
 ```
@@ -72,6 +74,7 @@ node tools/check-themes.mjs         # 六套主题应用、重载保留、WCAG �
 node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音，重载
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
+node tools/check-tags.mjs           # 分类/文件夹切换按钮的边框、设置弹窗重开、BPM 列与排序、tag 多选、文件夹右键菜单、无副标题
 node tools/shot.mjs [out.png]       # 截图（给人看）
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 ```
@@ -98,6 +101,7 @@ The four `check-*.mjs` drive a real window, so they assert on English copy and p
 | 外壳与 IPC 细节 | `docs/app.md` |
 | 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
 | 外壳的 CDP 驱动与检查脚本 | `tools/` |
+| BPM 解析（只从文件名取，不从音频推断） | `crates/mio-index/src/bpm.rs` |
 | 分类词表（改这里，再跑生成器） | `tools/taxonomy.py` |
 | 分类词典生成器（勿手改 `dictionary.rs`） | `tools/gen-category-dict.py` |
 | Handoff log | `docs/agent-log.md` |

@@ -6,6 +6,7 @@ import './styles.css'
 import { App } from './App'
 import { LOCALES, locale } from './i18n'
 import { applyTheme, installThemeDebugHook, loadThemeId } from './theme'
+import { installZoomDebugHook } from './zoom'
 
 // iX is a set of web components: the CSS alone renders nothing, the element
 // definitions have to be registered before the first `<ix-…>` tag is upgraded.
@@ -26,6 +27,9 @@ if (entry) document.documentElement.lang = entry.htmlLang
 // Exposes `window.__mioApplyTheme` for the CDP theme check. One assignment, no
 // behaviour change: the settings dialog calls `applyTheme` directly.
 installThemeDebugHook()
+// Same for the interface scale: `check-tags.mjs` measures `innerWidth` at two
+// factors rather than trusting the select's own value.
+installZoomDebugHook()
 
 const root = document.getElementById('root')
 if (!root) throw new Error('#root is missing from index.html')

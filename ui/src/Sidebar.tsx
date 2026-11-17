@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js'
 import { UNCATEGORIZED, categoryName, t } from './i18n'
-import type { Facet, FolderNode, LibraryStatus } from './ipc'
+import type { Facet, FolderMenuRequest, FolderNode, LibraryStatus } from './ipc'
 import { ICON } from './icons'
 
 /**
@@ -16,6 +16,11 @@ import { ICON } from './icons'
  * `D:\Samples\Bought\Epic Stock Media 202GB\052 Epic.Stock.Media.Card.Game`, and
  * the distinguishing part of a library path is its last segment. The full path is
  * the tooltip and the settings dialog.
+ *
+ * Category and subcategory rows are multi-select. A plain click replaces the
+ * selection, Ctrl+click adds or removes one row, and a click on the only lit row
+ * clears the filter. The index ORs categories and intersects them with
+ * subcategories, so several lit rows are one query.
  */
 type Mode = 'categories' | 'folders'
 
@@ -50,17 +55,23 @@ interface Props {
   favorites: number
   total: number
   folders: FolderNode | null
-  category: string | null
-  subcategory: string | null
+  /** Lit category rows. */
+  categories: string[]
+  /** Lit subcategory rows, each remembering its parent category. */
+  subcategories: { category: string; sub: string }[]
   folder: string | null
   favoritesOnly: boolean
   onActivate: (root: string) => void
-  onCategory: (category: string | null, subcategory: string | null) => void
+  /** `additive` is true when Ctrl (or Cmd) was held. */
+  onCategory: (category: string | null, additive: boolean) => void
+  onSubcategory: (category: string, subcategory: string, additive: boolean) => void
   onFolder: (folder: string | null) => void
   onToggleFavorites: () => void
   onOpenSettings: () => void
   /** Right-click on a library header: the per-library management menu. */
   onLibraryMenu: (library: LibraryStatus, x: number, y: number) => void
+  /** Right-click on a folder row: reveal, filter, copy path. */
+  onFolderMenu: (request: FolderMenuRequest) => void
 }
 
 /** One category with its subcategories, aggregated from the flat facet list. */
@@ -68,6 +79,11 @@ interface CategoryGroup {
   name: string
   count: number
   children: { name: string; count: number }[]
+}
+
+/** Ctrl on Windows and Linux, Cmd elsewhere. Matches the table's selection. */
+function additiveOf(event: MouseEvent): boolean {
+  return event.ctrlKey || event.metaKey
 }
 
 export function Sidebar(props: Props) {
@@ -162,21 +178,9 @@ export function Sidebar(props: Props) {
     return list
   })
 
-  const clickCategory = (name: string) => {
-    if (props.category === name && props.subcategory === null) {
-      props.onCategory(null, null)
-    } else {
-      props.onCategory(name, null)
-    }
-  }
-
-  const clickSubcategory = (category: string, subcategory: string) => {
-    if (props.category === category && props.subcategory === subcategory) {
-      props.onCategory(category, null)
-    } else {
-      props.onCategory(category, subcategory)
-    }
-  }
+  const categoryLit = (name: string) => props.categories.includes(name)
+  const subcategoryLit = (category: string, sub: string) =>
+    props.subcategories.some((entry) => entry.category === category && entry.sub === sub)
 
   const renderFolder = (node: FolderNode, depth: number) => {
     const hasChildren = () => node.children.length > 0
@@ -185,12 +189,25 @@ export function Sidebar(props: Props) {
       <div class="folder-node">
         <div
           class={props.folder === node.path ? 'folder selected' : 'folder'}
+          data-folder={node.path}
           style={{ 'padding-left': `${4 + depth * 12}px` }}
           title={node.path}
           onClick={() => props.onFolder(props.folder === node.path ? null : node.path)}
           // Double-click toggles, the way the reference implementation does it;
           // the twisty is the discoverable affordance, this is the fast one.
           onDblClick={() => hasChildren() && toggleFolder(node.path)}
+          // The same hand-drawn menu the sound rows use. A native menu here was
+          // the one place the window fell back to Explorer's default panel, which
+          // does not follow the theme and cannot carry an action of ours.
+          onContextMenu={(event) => {
+            event.preventDefault()
+            props.onFolderMenu({
+              path: node.path,
+              name: node.name,
+              x: event.clientX,
+              y: event.clientY
+            })
+          }}
         >
           <span
             class={hasChildren() ? 'twisty' : 'twisty spacer'}
@@ -289,11 +306,13 @@ export function Sidebar(props: Props) {
                       </button>
                       <button
                         class={
-                          props.category === null && !props.favoritesOnly
+                          props.categories.length === 0 && !props.favoritesOnly
                             ? 'facet selected'
                             : 'facet'
                         }
-                        onClick={() => props.onCategory(null, null)}
+                        data-category=""
+                        onClick={() => props.onCategory(null, false)}
+                        title={t('side.allSounds')}
                       >
                         <span class="facet-name">{t('side.allSounds')}</span>
                         <span class="count">{props.total.toLocaleString()}</span>
@@ -303,12 +322,9 @@ export function Sidebar(props: Props) {
                         {(group) => (
                           <>
                             <button
-                              class={
-                                props.category === group.name && props.subcategory === null
-                                  ? 'facet selected'
-                                  : 'facet'
-                              }
-                              onClick={() => clickCategory(group.name)}
+                              class={categoryLit(group.name) ? 'facet selected' : 'facet'}
+                              data-category={group.name}
+                              onClick={(event) => props.onCategory(group.name, additiveOf(event))}
                               title={`${group.name} (${group.count.toLocaleString()})`}
                             >
                               <span
@@ -334,12 +350,19 @@ export function Sidebar(props: Props) {
                                 {(child) => (
                                   <button
                                     class={
-                                      props.category === group.name &&
-                                      props.subcategory === child.name
+                                      subcategoryLit(group.name, child.name)
                                         ? 'facet sub selected'
                                         : 'facet sub'
                                     }
-                                    onClick={() => clickSubcategory(group.name, child.name)}
+                                    data-category={group.name}
+                                    data-subcategory={child.name}
+                                    onClick={(event) =>
+                                      props.onSubcategory(
+                                        group.name,
+                                        child.name,
+                                        additiveOf(event)
+                                      )
+                                    }
                                     title={`${group.name} / ${child.name}`}
                                   >
                                     <span class="facet-name">{categoryName(child.name)}</span>

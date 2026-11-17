@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Main window. Every command in this app is a plain #[tauri::command] guarded by the invoke handler, so the ACL only needs core defaults; the drag plugin is here because drag-out to a DAW is a product feature (P0), dialog because the library is opened with the native folder picker, and opener for Reveal in File Manager.",
   "windows": ["main"],
-  "permissions": ["core:default", "drag:default", "dialog:default", "opener:default"]
+  "permissions": [
+    "core:default",
+    "drag:default",
+    "dialog:default",
+    "opener:default",
+    "core:webview:allow-set-webview-zoom"
+  ]
 }

@@ -2,6 +2,44 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-17 22:10 · hermes · 删设置页说明小字、加界面缩放、产品构建默认带 ASIO
+
+- 改: `ui/src/SettingsDialog.tsx`（删 7 处 `.setting-hint` 解释行、删主题卡片的描述行、`ThemeCard` 的 tooltip 改用名字、加「界面缩放」行）、`ui/src/zoom.ts`（新增：`loadZoom` / `applyZoom` / `ZOOM_STEPS` / CDP 调试钩子）、`ui/src/{App,main}.tsx`（zoom 信号 + `onMount` 里 `applyZoom` + `changeZoom` 回调）、`ui/src/theme.ts`（`Theme.hintKey` 移除）、`ui/src/styles.css`（删 `.theme-card-hint`）、`ui/src/locales/{en,zh,ja}.ts`（删 13 个 hint / currentTheme 键、加 `settings.zoom`、`settings.asioMissing` 改成一句话）、`crates/mio-app/capabilities/default.json`（加 `core:webview:allow-set-webview-zoom`）、`tools/build-app.sh`（ASIO 改为默认，`--no-asio` 反向开关，SDK 路径从 `%TEMP%` 改 `%LOCALAPPDATA%\mio\asio_sdk`）、`tools/check-tags.mjs`（加 8 项：hint 只剩状态、主题卡无描述、缩放行存在、150% 真的缩小 CSS 像素）、`AGENTS.md`、`docs/{app,engine}.md`
+- 验证: `cargo test --release` 全部通过；`tsc --noEmit` 干净；`check-i18n.mjs` 三语各 138 键齐平；`check-tags.mjs` 45 项全通过（含新增 8 项）；`check-interactions.mjs` / `check-layout.mjs` / `check-volume.mjs` / `check-themes.mjs` 全通过；`./tools/build-app.sh`（无 flag）构建成功且编译了 `asio-sys`，窗口内 `asio_compiled` 返回 true、设备表里有一个 ASIO 驱动（TOPPING Pro USB Audio Device）；缩放实测 100% → `innerWidth` 1280，150% → 853，125% 重载后仍是 1024 且 `mio:zoom` 保留
+- 遗留: 主题卡片删掉描述后只剩名字与色板，六个主题「用在什么场合」的说明不再存在于任何地方（用户要求删，不补）
+- 下一步: 无
+
+### 三条要求各自的落地方式
+
+**一、设置里的说明小字全删。** 删掉的是 `rowsPerPageHint` / `showCategoryHint` / `autoPlayHint` / `infiniteScrollHint` / `themeHint` / `currentTheme` / `languageHint` 七句加六个 `theme.*Hint`，三语同步删。留下的 `.setting-hint` 只剩四种，且都是控件说不出来的**状态**而不是对控件的解释：设备打不开的原因、当前实际打开的格式与周期、库的条数与路径、未打开库。`Theme.hintKey` 一并从接口里删掉——留着字段却没有消费者，下一个人会以为它还该渲染。
+
+**二、界面缩放。** 走 `getCurrentWebview().setZoom(0.8–1.5)` 而不是 CSS：WebView2 的 `SetZoomFactor` 连布局、命中区域、波形画布一起重排，CSS `zoom` 或 `rem` 倍率会让画布留在设备像素上。该能力不在 `core:default` 里，`capabilities/default.json` 必须显式加 `core:webview:allow-set-webview-zoom`，否则 ACL 直接拒绝，界面上只表现为「选了没反应」。六个档位 80/90/100/110/125/150，存 `mio:zoom`，`applyZoom` 返回实际生效的值，失败时选择器会弹回而不是显示一个窗口没有的值。
+
+**三、构建默认为产品构建。** `tools/build-app.sh` 不带参数即 WASAPI + ASIO，`--no-asio` 反向开关。SDK 从 `%TEMP%\asio_sdk` 挪到 `%LOCALAPPDATA%\mio\asio_sdk`——Windows 会清临时目录，构建前提不能是被随时回收的东西。
+
+**关于 `reslip-test-library`。** 它不是构建标记、不是 dev-only 字符串，是 `%APPDATA%\com.naimio.miosound\session.json` 里记的上次打开的库文件夹名，出现在顶栏的库 chip 和侧栏的库条目上。exe 与打包后的 JS 里都搜不到该字符串（`grep -c reslip` 两处均为 0）——实测把 session 挪走再启动，空态里没有任何 `reslip` 字样。换成正常库后它自然消失；发给别人的话对方机器上没有这个 session，第一次启动就是「未打开任何库」。
+
+## 2026-11-17 19:35 · hermes · BPM 排序、tag 多选、文件夹自绘菜单、去副标题、修两个 UI bug
+
+- 改: `crates/mio-index/src/bpm.rs`（新增，文件名 → BPM）、`crates/mio-index/src/db.rs`（`bpm` 列 + `SortColumn::Bpm` + `categories`/`subcategories` 数组筛选 + 升级回填 + 两个测试）、`crates/mio-index/src/lib.rs`（导出 `bpm`）、`crates/mio-app/src/{commands,library}.rs`（`SearchRequest` 改数组、`SoundDto.bpm`、`bpm` 排序白名单）、`crates/mio-app/tests/ipc.rs`（跟随字段改名）、`ui/src/{ipc,Sidebar,App,SoundTable,SettingsDialog,CategoryDialog}.tsx/.ts`、`ui/src/styles.css`（分段控件拼缝）、`ui/src/locales/{en,zh,ja}.ts`（删 3 个副标题键、加 `col.bpm` / `folderMenu.*`）、`tools/check-tags.mjs`（新增，36 项）、`AGENTS.md`（铁律「No subtitles」+ 命令 + 模块导航）、`docs/{app,index}.md`
+- 验证: `cargo test --release` 105 个通过（engine 13 / index 61 / app lib 18 / ipc 25）；`tsc --noEmit` 干净；`check-tags.mjs` 36 项全通过；`check-interactions.mjs` / `check-layout.mjs` / `check-themes.mjs` / `check-volume.mjs` / `check-i18n.mjs`（三语各 150 键）全部通过；真实 271,350 条库上 BPM 回填出 21,814 条非空（占文件名含 `bpm` 的 21,818 条中的 99.98%）
+- 遗留: ① 剩下的 4 个 BPM 没解出来的是 `9_bpm_approx120`（「大约」不是断言）、`DS_MTS_150_..._rebelbpm`、`Em600bpm`（标记粘在单词里）——都按无数据处理，符合规则；② 回填是一次性升级行为，磁盘上没有 `meta.bpm_backfilled` 的库会在下次启动时补做
+- 下一步: 无
+
+### 六条要求各自的落地方式
+
+**一、切换按钮左侧缺边框。** 两半分段控件用 `border-left: none` 拼缝，选中态把边框刷成强调色，被去掉的那条就是缺口。改成 `margin-left: -1px` 共用一条边，并给 `.on` 加 `position: relative; z-index: 1`，否则邻边会盖住共用边。
+
+**二、设置点 × 后再也打不开。** iX 的 `modal-header` 在 × 上直接调 `parentDialog.dismissModal()`，Escape 走 `dialog` 的 `cancel`，两条路都不经过我们自己的 `close()`。于是 `settingsOpen` 一直是 `true`，下次点齿轮是把同一个值赋给同一个信号，什么都不渲染。`SettingsDialog` 与 `CategoryDialog` 都监听 `on:dialogClose` / `on:dialogDismiss`，状态跟着实际关闭走。
+
+**三、BPM 排序。** 只从文件名取，只认显式 `bpm` 标记，范围 20–300，空值两个方向都排最后。不做 tag：连续值做成筛选行只会多出一排没人点的行。旧库靠 `open` 时的一次性回填补值——增量索引会按 `(mtime, size)` 跳过所有未变文件，靠重新索引补不出来。
+
+**四、tag 多选。** 点击替换、Ctrl+点击增删、再点唯一的选中行则清空。SQL 从 `category = ?` 改成 `IN (?, ?, …)`，占位符数量由列表长度生成、值仍走绑定参数。分类之间 OR，分类与子分类之间 AND；点子分类会同时点亮父分类，否则两个条件相交是空集而界面上看不出原因。每个已选行各有一个可单独关掉的 chip。
+
+**五、去掉所有副标题。** 品牌下的 `samples`、设置弹窗的 `Device, library, appearance`、分类弹窗的 `N sounds` 三处删掉（`N sounds` 移到正文第一行，它说的是操作范围）。铁律写进 `AGENTS.md`：标题下不加大字小字第二行，要解释就写正文。
+
+**六、文件夹右键换自绘菜单。** 复用行菜单与库菜单的 `ContextMenu`，条目是在文件管理器中显示 / 只看此文件夹 / 复制文件夹路径。同时删掉行菜单里的「拖进 DAW」——拖拽是鼠标动作，禁用态条目只能写一句点不动的说明。文件夹行与分类行补了 `data-folder` / `data-category`，检查脚本不再依赖翻译后的文案。
+
 ## 2026-11-17 17:40 · hermes · 修图标、修设置页 Device 对齐、加中英日三语
 
 - 改: `ui/src/assets/icons/*.svg`（新增 11 个，从 `@siemens/ix-icons/svg/` 复制）、`ui/src/icons.ts`（改为导入本地 SVG → data URL）、`ui/src/i18n.ts` + `ui/src/locales/{en,zh,ja}.ts`（新增，151 键）、`ui/src/styles.css`（`.setting ix-select/ix-input` 拉满）、`ui/src/{App,SoundTable,Sidebar,WaveformDock,CategoryDialog,SettingsDialog,IndexOverlay,theme,main,ipc}.tsx?`（全部文案接 `t()`）、`crates/mio-app/src/{history,state,commands}.rs`（undo/redo 由英文 label 改为 `EditKind` 枚举；删 `SoundDto.channel_label`）、`tools/check-i18n.mjs`（新增）、四个 `check-*.mjs`（固定英文 locale + 改用 `data-sort-key`/`data-menu-id` 选元素）、`docs/app.md`（新增「多语言」节、图标与 ix-select 两个坑）

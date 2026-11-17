@@ -268,6 +268,7 @@ pub fn sort_column(name: &str) -> Option<SortColumn> {
         "filename" => SortColumn::Filename,
         "category" => SortColumn::Category,
         "duration" => SortColumn::Duration,
+        "bpm" => SortColumn::Bpm,
         "channels" => SortColumn::Channels,
         "sample_rate" => SortColumn::SampleRate,
         "filesize" => SortColumn::Filesize,

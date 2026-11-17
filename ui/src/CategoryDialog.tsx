@@ -65,18 +65,24 @@ export function CategoryDialog(props: Props) {
     then?.()
   }
 
+  /**
+   * iX dismisses itself on the header's × and on Escape. Without this the parent
+   * keeps `categoryDialog` set, and the next right-click on a row would render a
+   * dialog whose element is already dismissed.
+   */
+  const onDialogClosed = () => props.onClose()
+
   return (
-    <ix-modal ref={open} size="480">
-      <ix-modal-header
-        heading={t('category.heading')}
-        subHeading={
-          props.count > 1
-            ? t('category.nSounds', { count: props.count })
-            : t('category.oneSound')
-        }
-      />
+    <ix-modal
+      ref={open}
+      size="480"
+      on:dialogClose={onDialogClosed}
+      on:dialogDismiss={onDialogClosed}
+    >
+      <ix-modal-header heading={t('category.heading')} />
       <ix-modal-content>
         <div class="modal-form">
+          <div class="setting-hint">{t('category.selected', { count: props.count })}</div>
           <label class="field">
             <span class="field-label">{t('category.label')}</span>
             <ix-input

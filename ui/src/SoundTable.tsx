@@ -23,6 +23,7 @@ export type SortKey =
   | 'filename'
   | 'category'
   | 'durationS'
+  | 'bpm'
   | 'channels'
   | 'sampleRate'
   | 'filesize'
@@ -44,6 +45,7 @@ export const SORT_WIRE: Record<SortKey, string> = {
   filename: 'filename',
   category: 'category',
   durationS: 'duration',
+  bpm: 'bpm',
   channels: 'channels',
   sampleRate: 'sample_rate',
   filesize: 'filesize'
@@ -62,6 +64,7 @@ const COLUMNS: Column[] = [
   { key: 'filename', label: () => t('col.name'), width: 'minmax(180px, 2fr)' },
   { key: 'category', label: () => t('col.category'), width: 'minmax(140px, 1fr)' },
   { key: 'durationS', label: () => t('col.length'), width: '84px', numeric: true },
+  { key: 'bpm', label: () => t('col.bpm'), width: '56px', numeric: true },
   { key: 'channels', label: () => t('col.channels'), width: '64px' },
   { key: 'sampleRate', label: () => t('col.rate'), width: '78px', numeric: true },
   { key: 'filesize', label: () => t('col.size'), width: '84px', numeric: true }
@@ -76,6 +79,7 @@ export const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   filename: 'asc',
   category: 'asc',
   durationS: 'desc',
+  bpm: 'desc',
   channels: 'desc',
   sampleRate: 'desc',
   filesize: 'desc'
@@ -87,6 +91,16 @@ function formatBytes(bytes: number | null): string {
   const kb = bytes / 1024
   if (kb < 1024) return `${kb.toFixed(0)} KB`
   return `${(kb / 1024).toFixed(1)} MB`
+}
+
+/**
+ * `128`, or `126.5` for the packs that write half tempos, or an em dash when the
+ * name states none. The column is 56px wide, so more than one decimal would clip
+ * and more than one decimal is never a real tempo.
+ */
+function formatBpm(bpm: number | null): string {
+  if (bpm === null) return '—'
+  return Number.isInteger(bpm) ? String(bpm) : bpm.toFixed(1)
 }
 
 function formatRate(rate: number | null): string {
@@ -419,6 +433,7 @@ export function SoundTable(props: Props) {
                     </span>
                   </Show>
                   <span class="cell numeric">{row.durationLabel}</span>
+                  <span class="cell numeric dim">{formatBpm(row.bpm)}</span>
                   <span class="cell dim">{channelLabel(row.channels)}</span>
                   <span class="cell numeric dim">{formatRate(row.sampleRate)}</span>
                   <span class="cell numeric dim">{formatBytes(row.filesize)}</span>

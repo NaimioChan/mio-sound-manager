@@ -10,8 +10,6 @@
 // sample rates and other data. Those are values, not messages.
 
 export const en = {
-  'app.subtitle': 'samples',
-
   'common.cancel': 'Cancel',
   'common.save': 'Save',
   'common.done': 'Done',
@@ -60,10 +58,12 @@ export const en = {
   'menu.showInFolders': 'Show in Folders',
   'menu.copyPath': 'Copy Path',
   'menu.copyPaths': 'Copy {count} Paths',
-  'menu.dragToDaw': 'Drag to DAW',
-  'menu.dragToDawMany': 'Drag {count} to DAW',
-  'menu.dragHint': 'drag a row',
   'menu.withCount': '{label} ({count})',
+
+  // ------------------------------------------------------------- folder menu
+  'folderMenu.reveal': 'Reveal in File Manager',
+  'folderMenu.filter': 'Filter this folder',
+  'folderMenu.copyPath': 'Copy Folder Path',
 
   // ---------------------------------------------------------- library menu
   'libMenu.switch': 'Switch to this library',
@@ -100,6 +100,7 @@ export const en = {
   'col.name': 'Name',
   'col.category': 'Category',
   'col.length': 'Length',
+  'col.bpm': 'BPM',
   'col.channels': 'Ch',
   'col.rate': 'Rate',
   'col.size': 'Size',
@@ -121,6 +122,7 @@ export const en = {
   'side.allFolders': 'All folders',
   'side.resize': 'Drag to resize',
   'side.uncategorized': 'Uncategorized',
+  'side.tagsHint': 'Ctrl+click to combine',
 
   // -------------------------------------------------------------------- dock
   'dock.outputLevel': 'Output level',
@@ -140,11 +142,9 @@ export const en = {
 
   // ---------------------------------------------------------------- settings
   'settings.heading': 'Settings',
-  'settings.subHeading': 'Device, library, appearance',
   'settings.outputDevice': 'Output device',
   'settings.device': 'Device',
-  'settings.asioMissing':
-    'ASIO is not compiled into this build. Rebuild with ./tools/build-app.sh --asio to offer ASIO drivers.',
+  'settings.asioMissing': 'This build has no ASIO backend.',
   'settings.library': 'Library',
   'settings.noLibrary': 'No library is open.',
   'settings.soundCount': '{count} sounds',
@@ -153,28 +153,17 @@ export const en = {
   'settings.addLibrary': 'Add another library',
   'settings.openLibrary': 'Open library…',
   'settings.rowsPerPage': 'Rows per page',
-  'settings.rowsPerPageHint':
-    'How many rows one search returns. Larger pages scroll further between fetches.',
   'settings.showCategory': 'Show the category column',
-  'settings.showCategoryHint':
-    'Turn it off for a denser list. Filtering by category still works from the rail.',
   'settings.behaviour': 'Behaviour',
   'settings.autoPlay': 'Auto-play on select',
-  'settings.autoPlayHint': 'Clicking a row auditions it. The same switch as AUTO PLAY in the dock.',
   'settings.infiniteScroll': 'Infinite scroll',
-  'settings.infiniteScrollHint':
-    'Fetch the next page as the list nears its end, instead of showing one page.',
   'settings.appearance': 'Appearance',
-  'settings.themeHint':
-    'Themes repaint the Siemens iX token set, so every control, panel and the waveform follow the same palette.',
-  'settings.currentTheme': 'Current: {name}',
+  'settings.zoom': 'Interface scale',
   'settings.language': 'Language',
-  'settings.languageHint': 'Applies immediately and is remembered on this machine.',
 
   // ---------------------------------------------------------- category dialog
   'category.heading': 'Set category',
-  'category.oneSound': '1 sound',
-  'category.nSounds': '{count} sounds',
+  'category.selected': '{count} selected',
   'category.label': 'Category',
   'category.placeholder': 'e.g. Weapons',
   'category.subLabel': 'Subcategory (optional)',
@@ -186,17 +175,11 @@ export const en = {
 
   // ----------------------------------------------------------------- themes
   'theme.classicDark': 'Classic Dark',
-  'theme.classicDarkHint': 'Siemens iX, as shipped',
   'theme.classicLight': 'Classic Light',
-  'theme.classicLightHint': 'Siemens iX, inverted',
   'theme.studioDark': 'Studio Dark',
-  'theme.studioDarkHint': 'Graphite and violet, for long sessions',
   'theme.studioLight': 'Studio Light',
-  'theme.studioLightHint': 'Paper and indigo, for daylight',
   'theme.amber': 'Amber Console',
-  'theme.amberHint': 'Near-black with an amber trace, for dim rooms',
   'theme.frost': 'Frost',
-  'theme.frostHint': 'Cool blue-grey, low glare',
 
   // ------------------------------------------------------- channel labels
   'channel.mono': 'Mono',

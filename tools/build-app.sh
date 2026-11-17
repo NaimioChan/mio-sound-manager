@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Build the desktop shell, optionally with ASIO.
+# Build the desktop shell. ASIO is part of the product build, so it is on by default.
 #
-#   ./tools/build-app.sh                 # WASAPI only (default, no SDK needed)
-#   ./tools/build-app.sh --asio          # add the ASIO backend
+#   ./tools/build-app.sh                 # WASAPI + ASIO (the shipping build)
+#   ./tools/build-app.sh --no-asio       # WASAPI only, for a machine without the SDK
 #
 # Two steps either way: bundle the webview, then build the exe that embeds it.
 #
 # The ASIO build needs two things the WASAPI build does not, because the
 # Steinberg SDK is proprietary and cannot be vendored here:
 #
-#   1. The ASIO SDK sources, extracted to `%TEMP%\asio_sdk` (the layout the SDK
-#      zip has: `asio/common`, `asio/host`, ...). `asio-sys` also accepts
-#      `CPAL_ASIO_DIR`; the default is fine.
+#   1. The ASIO SDK sources, extracted to `%LOCALAPPDATA%\mio\asio_sdk` (the
+#      layout the SDK zip has: `asio/common`, `asio/host`, ...). It lives under
+#      `LOCALAPPDATA` rather than `%TEMP%` because Windows cleans the temp
+#      directory, and a release build that breaks because the SDK was garbage
+#      collected is not a reproducible build. `CPAL_ASIO_DIR` overrides it.
 #   2. A `libclang.dll` for bindgen, located through `LIBCLANG_PATH`. The pip
 #      `libclang` wheel ships one; so does a full LLVM install.
 #
@@ -21,20 +23,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-WITH_ASIO=0
+WITH_ASIO=1
 for arg in "$@"; do
   case "$arg" in
     --asio) WITH_ASIO=1 ;;
-    *) echo "unknown flag $arg; expected --asio" >&2; exit 1 ;;
+    --no-asio) WITH_ASIO=0 ;;
+    *) echo "unknown flag $arg; expected --asio or --no-asio" >&2; exit 1 ;;
   esac
 done
 
 if [ "$WITH_ASIO" = "1" ]; then
-  sdk="${CPAL_ASIO_DIR:-${TEMP:-$LOCALAPPDATA/Temp}/asio_sdk}"
+  sdk="${CPAL_ASIO_DIR:-$LOCALAPPDATA/mio/asio_sdk}"
   if [ ! -f "$sdk/common/asio.h" ]; then
     echo "ASIO SDK not found at $sdk" >&2
     echo "  download it from https://www.steinberg.net/asiosdk and extract so that" >&2
     echo "  $sdk/common/asio.h exists, or set CPAL_ASIO_DIR to where it is." >&2
+    echo "  (./tools/build-app.sh --no-asio builds without it.)" >&2
     exit 1
   fi
   export CPAL_ASIO_DIR="$sdk"

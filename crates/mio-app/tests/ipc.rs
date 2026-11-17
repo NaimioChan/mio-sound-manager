@@ -576,7 +576,7 @@ fn a_hand_set_category_survives_a_reindex_and_clearing_it_does_not() {
     // setter forgot it, a reindex would silently undo the user's work.
     let manual = state
         .search(SearchRequest {
-            category: Some("Ambience".into()),
+            categories: vec!["Ambience".into()],
             ..Default::default()
         })
         .expect("search by new category");

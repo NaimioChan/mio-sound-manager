@@ -14,8 +14,6 @@ import type { MessageKey } from './en'
 // - Numbers and units stay in Latin digits: 128 Hz, 24 ch.
 
 export const zh: Record<MessageKey, string> = {
-  'app.subtitle': '采样',
-
   'common.cancel': '取消',
   'common.save': '保存',
   'common.done': '完成',
@@ -59,10 +57,11 @@ export const zh: Record<MessageKey, string> = {
   'menu.showInFolders': '在文件夹中定位',
   'menu.copyPath': '复制路径',
   'menu.copyPaths': '复制 {count} 个路径',
-  'menu.dragToDaw': '拖到 DAW',
-  'menu.dragToDawMany': '拖 {count} 项到 DAW',
-  'menu.dragHint': '拖动行',
   'menu.withCount': '{label}（{count}）',
+
+  'folderMenu.reveal': '在文件管理器中显示',
+  'folderMenu.filter': '只看此文件夹',
+  'folderMenu.copyPath': '复制文件夹路径',
 
   'libMenu.switch': '切换到此库',
   'libMenu.reindex': '重新索引',
@@ -92,6 +91,7 @@ export const zh: Record<MessageKey, string> = {
   'col.name': '名称',
   'col.category': '分类',
   'col.length': '时长',
+  'col.bpm': 'BPM',
   'col.channels': '声道',
   'col.rate': '采样率',
   'col.size': '大小',
@@ -112,6 +112,7 @@ export const zh: Record<MessageKey, string> = {
   'side.allFolders': '全部文件夹',
   'side.resize': '拖动调整宽度',
   'side.uncategorized': '未分类',
+  'side.tagsHint': 'Ctrl+点击可多选',
 
   'dock.outputLevel': '输出音量',
   'dock.mute': '静音',
@@ -129,11 +130,9 @@ export const zh: Record<MessageKey, string> = {
   'dock.decoding': '正在解码…',
 
   'settings.heading': '设置',
-  'settings.subHeading': '设备、库、外观',
   'settings.outputDevice': '输出设备',
   'settings.device': '设备',
-  'settings.asioMissing':
-    '此构建未编译 ASIO。用 ./tools/build-app.sh --asio 重新构建后即可选择 ASIO 驱动。',
+  'settings.asioMissing': '此构建不含 ASIO 后端。',
   'settings.library': '音色库',
   'settings.noLibrary': '未打开任何库。',
   'settings.soundCount': '{count} 个声音',
@@ -142,24 +141,16 @@ export const zh: Record<MessageKey, string> = {
   'settings.addLibrary': '添加另一个库',
   'settings.openLibrary': '打开库…',
   'settings.rowsPerPage': '每页行数',
-  'settings.rowsPerPageHint': '一次搜索返回多少行。页越大，两次拉取之间滚动得越远。',
   'settings.showCategory': '显示分类列',
-  'settings.showCategoryHint': '关闭后列表更紧凑。仍可从左侧栏按分类筛选。',
   'settings.behaviour': '行为',
   'settings.autoPlay': '选中即播放',
-  'settings.autoPlayHint': '点击行即试听。与底部 dock 的 AUTO PLAY 是同一个开关。',
   'settings.infiniteScroll': '无限滚动',
-  'settings.infiniteScrollHint': '列表接近底部时自动拉取下一页，而不是只显示一页。',
   'settings.appearance': '外观',
-  'settings.themeHint':
-    '主题重绘整套西门子 iX token，因此每个控件、面板与波形都跟随同一套配色。',
-  'settings.currentTheme': '当前：{name}',
+  'settings.zoom': '界面缩放',
   'settings.language': '语言',
-  'settings.languageHint': '立即生效，并记住在本机。',
 
   'category.heading': '设置分类',
-  'category.oneSound': '1 个声音',
-  'category.nSounds': '{count} 个声音',
+  'category.selected': '已选 {count} 项',
   'category.label': '分类',
   'category.placeholder': '例如 武器',
   'category.subLabel': '子分类（可选）',
@@ -170,17 +161,11 @@ export const zh: Record<MessageKey, string> = {
   'category.clear': '清除分类',
 
   'theme.classicDark': '经典深色',
-  'theme.classicDarkHint': '西门子 iX 原样',
   'theme.classicLight': '经典浅色',
-  'theme.classicLightHint': '西门子 iX 反色',
   'theme.studioDark': '工作室深色',
-  'theme.studioDarkHint': '石墨与紫罗兰，适合长时间使用',
   'theme.studioLight': '工作室浅色',
-  'theme.studioLightHint': '纸白与靛蓝，适合白天',
   'theme.amber': '琥珀终端',
-  'theme.amberHint': '近黑配琥珀色描线，适合暗房',
   'theme.frost': '霜',
-  'theme.frostHint': '冷蓝灰，低眩光',
 
   'channel.mono': '单声道',
   'channel.stereo': '立体声',

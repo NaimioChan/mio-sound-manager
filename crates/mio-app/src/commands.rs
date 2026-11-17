@@ -140,6 +140,9 @@ pub struct SoundDto {
     pub favorite: bool,
     pub category_manual: bool,
     pub folder: Option<String>,
+    /// Tempo stated in the file name. `None` when the name states none; the table
+    /// renders it as an empty cell, and sorting puts unmarked rows last.
+    pub bpm: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -159,8 +162,9 @@ pub struct SearchRequest {
     pub query: String,
     pub max_duration: Option<f64>,
     pub channels: Option<u32>,
-    pub category: Option<String>,
-    pub subcategory: Option<String>,
+    /// Several categories are OR-ed. Empty means "any category".
+    pub categories: Vec<String>,
+    pub subcategories: Vec<String>,
     pub folder: Option<String>,
     pub min_confidence: Option<f64>,
     pub favorite_only: bool,
@@ -187,8 +191,8 @@ impl SearchRequest {
             query: self.query,
             max_duration: self.max_duration,
             channels: self.channels,
-            category: self.category,
-            subcategory: self.subcategory,
+            categories: self.categories,
+            subcategories: self.subcategories,
             folder: self.folder,
             min_confidence: self.min_confidence,
             favorite_only: self.favorite_only,
@@ -217,6 +221,7 @@ impl From<Sound> for SoundDto {
             favorite: s.favorite,
             category_manual: s.category_manual,
             folder: s.folder,
+            bpm: s.bpm,
         }
     }
 }

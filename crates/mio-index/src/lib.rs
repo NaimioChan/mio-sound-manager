@@ -19,6 +19,7 @@
 //! section 5 live in `docs/agent-log.md`; the design reasoning is in
 //! `docs/index.md`.
 
+pub mod bpm;
 pub mod classify;
 pub mod db;
 pub mod error;

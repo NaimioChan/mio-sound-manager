@@ -128,7 +128,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `remove_library(root)` | `LibraryStatus[]` | 关掉一个库，活跃的自动落到下一个 |
 | `set_active_library(root)` | `LibraryStatus[]` | 切换显示哪个库 |
 | `reindex_library(root?, full?, onProgress)` | `LibraryStatus` | **阻塞**，同上；`root` 缺省是活跃库 |
-| `search(request)` | `SoundDto[]` | 同 `mio-index` 的过滤条件，上限 5000 行 |
+| `search(request)` | `SoundDto[]` | 同 `mio-index` 的过滤条件，上限 5000 行。`categories` / `subcategories` 是数组：分类之间 OR，分类与子分类之间 AND |
 | `count_matching(request)` | `u64` | 当前过滤命中总数，表尾的 "500 of 27,525" |
 | `list_matching_paths(request)` | `string[]` | 全选用的纯路径列表，不受 5000 行上限 |
 | `list_folders` | `FolderNodeDto` | 从索引构建的树，不读 `readdir` |
@@ -165,15 +165,27 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **库条目在视觉上高于它下面的树。** 库头部是 650 字重、带底色块、顶部一条分隔线，活跃库另有左侧强调条；树行是 400 字重、无底色。这不是装饰：库条目带自己的右键菜单，看起来像树的一行会让人想不到那里能右键。
 
-**设置页三节：Audio / Playback / List。** Audio 是输出设备选择（WASAPI 端点与 ASIO 驱动合成一个下拉，ASIO 选中时多一个缓冲大小下拉）加一行当前格式与周期。Playback 只有 `Play on click`。List 是滚动加载、每页行数、分类列。库的管理动作不在这里——见「多库」。
+**设置页四节：Audio / Library / Behaviour / Appearance。** Audio 是输出设备选择（WASAPI 端点与 ASIO 驱动合成一个下拉）加一行当前格式与周期。Library 是当前库、显示索引、添加库、每页行数、分类列。Behaviour 是选中即播放与无限滚动。Appearance 是主题卡片、界面缩放与语言。库的管理动作（切库、重建索引、关闭）不在这里——见「多库」。
 
-**说明性副标题一律去掉。** 设置项下面只留两种文字：设备打不开的原因，和当前格式那一行。工具里没有需要先读一段话才能用的设置。
+**设置项不解释自己。** 一行就是标签加控件；唯一的第二行文字是控件说不出来的状态：设备打不开的原因、当前实际打开的格式与周期、某个动作会作用到多少条。主题卡片只保留名字与色板，原来那六句「适合长时间使用」之类的说明删掉了，`Theme` 上也不再带 `hintKey`。产品名下面那句 `samples`、设置弹窗标题下的 `Device, library, appearance`、分类弹窗的 `N sounds` 同样删掉了；`N sounds` 改到正文第一行，因为它说的是这次操作的范围，不是标题的注解。
+
+**界面缩放走 webview 的 zoom factor，不是 CSS。** `zoom.ts` 调 `getCurrentWebview().setZoom(0.8…1.5)`，WebView2 的 `SetZoomFactor` 把布局、文字、图片一起重排，命中区域和波形画布都跟着变；换成 CSS `zoom` 或 `rem` 倍率会让画布留在设备像素上、表格那套 px 几何也留在原处。该能力不在 `core:default` 里，`capabilities/default.json` 必须显式加 `core:webview:allow-set-webview-zoom`，否则命令被 ACL 拒绝而界面上只表现为「选了没反应」。存储键 `mio:zoom`，取值就是百分比，选择器显示什么就存什么。
 
 **排序名和行字段名是两套。** 渲染层按行字段排序（`durationS`、`sampleRate`），索引层白名单用的是 SQL 列名（`duration`、`sample_rate`）。`SORT_WIRE`（`SoundTable.tsx`）是唯一做这个翻译的地方。第一版把行字段名直接当 `sortBy` 发出去，`search` 报 `unknown sort column durationS`；而且因为失败那次之后排序值没变，后续每次搜索都带着同一个坏名字，于是点一次 Length 之后分类和文件夹筛选也一起失效——直到用户改去点 Name。
 
 **第一页查询在进行中时 `data-querying="true"`。** 列表不阻塞：旧行还在、还能点，但查询落地时要整批换掉。这个标志既是表尾的 `searching…`，也是 `tools/` 里 CDP 脚本等待的信号——之前脚本靠 sleep 猜，猜早了点在即将被卸载的行上，选中跟着丢，看起来像点击处理器坏了。
 
 **文件夹树按需挂载，展开状态按库持久化。** 子节点只在展开时进 DOM：真实库有 27 万个文件，全量渲染一遍再靠 CSS 隐藏，每次侧栏重绘都要建几千个节点。展开集合存在 `localStorage` 的 `mio:folders-expanded:<root>` 里，切库时跟着换——不存的话每次重绘都折叠回根，深目录根本点不进去。`.twisty` 是可点的 12px 方块（3px 宽的三角点不中），行本身点击是选筛选，双击是展开/折叠。
+
+**分类与子分类可多选。** 点击替换、Ctrl+点击增删、再点唯一已选中的那行则清空。两侧的筛选语义不同：分类之间是 `IN (…)`（或），分类与子分类之间是 AND。这也是为什么点一个子分类会同时点亮它的父分类——只亮子行而不亮父行，两个筛选条件相交就是空集，界面上却看不出原因。行上带 `data-category` / `data-subcategory` / `data-folder`，选择器不依赖翻译过的文案。
+
+**分类/文件夹切换按钮是拼接的分段控件。** 两半共用一条边（第二个 `margin-left: -1px`，不是 `border-left: none`）。去掉左边框的写法让选中态缺一条边：`on` 把边框刷成强调色，缺的那条就是半个高亮框。`on` 另外加 `position: relative; z-index: 1`，否则邻边的边框会盖住共用的那条。
+
+**文件夹行有自己的右键菜单。** 面板与行菜单、库菜单是同一个 `ContextMenu`；条目是「在文件管理器中显示」「只看此文件夹」「复制文件夹路径」。根行（All folders）没有菜单——它代表整个库，三个动作都无从谈起。
+
+**右键菜单里不再有「拖进 DAW」。** 拖拽是鼠标动作，菜单条目只能写一句说明、点不动；把一条禁用的说明放在动作中间，读起来像功能坏了。拖拽本身仍在（行 `draggable` → `startDrag`）。
+
+**BPM 是排序列，不是 tag。** 值只从文件名取（`crates/mio-index/src/bpm.rs`），文件名里没有 `bpm` 标记就是空值——`Snare_120.wav` 里的 120 是条号也可能是速度，猜错一个还会自信地参与排序。范围的上下限是 20–300，`126-5 BPM` 这种半速写法按一位小数读。空值在正反两个方向都排在最后（`ORDER BY s.bpm IS NULL`），和 duration 同一个约定。BPM 不参与侧栏筛选：它连续、取值多，做成 tag 只会多出一排没人点的行。
 
 **类名不要用 `.empty`。** 它是整窗空状态（`padding: 40px`、`height: 100%`），任何 `.foo.empty` 都会连带命中。叶子节点那个占位 twisty 因此叫 `.twisty.spacer`。
 
@@ -192,6 +204,8 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 **iX 元素在 Solid 里需要类型声明。** `src/ix-elements.d.ts` 给用到的每个标签声明了属性；基础类型继承 `JSX.DOMAttributes<HTMLElement>`，否则连 `onClick` 都不认。`children` 也要显式声明——Solid 的 JSX 不自动加。
 
 **modal 是命令式打开的。** 渲染出 `ix-modal` 之后调 `showModal()`（内部 `dialog.showModal()` 加动画）。host 在 `.visible` 之前是 `display: none`，而内层 `dialog` 是 `position: fixed`，所以**量 host 的 `getBoundingClientRect()` 永远是 0×0**，检查要量 shadow root 里的 `dialog`。
+
+**iX 会自己关掉对话框，所以状态要跟事件走。** 标题栏的 × 和 Escape 都不经过我们自己的 `close()`：iX 的 `modal-header` 调 `parentDialog.dismissModal()`，`dialog` 的 `cancel` 也走同一条路。只在自己的按钮里清信号，结果是 × 关掉之后父组件仍以为对话框开着——`settingsOpen` 一直是 `true`，下次点齿轮是把同一个值赋给同一个信号，什么都不渲染，看起来就是「设置再也打不开，只能重启」。`SettingsDialog` 与 `CategoryDialog` 都监听 `on:dialogClose` / `on:dialogDismiss` 并调 `props.onClose()`，状态因此跟着实际关闭走。
 
 **图标必须是 data URL 或本地文件，不能用名字。** `ix-icon` 拿到名字时不是查注册表，而是拼出 `svg/<name>.svg` 去 fetch——那个目录不在打包产物里，于是每个图标都 fetch 失败、回退成 iX 的错误符号（一个带叉的方块）。iX 自己的组件为什么没事：它们从 `@siemens/ix-icons/icons` 导入 data URL。
 
@@ -224,7 +238,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 `ui/src/theme.ts`。一个主题由**八个颜色**描述（背景、前景中性色、两个强调色、对比色、success/warning/alarm/info/neutral），其余两百多个 token 由它们推导：中性 ramp 从背景混到前景，ghost 与 component 填充是前景色带 alpha，选中态是强调色带 alpha，语义色的 hover/active 是向黑白各混一点。
 
-**主题的名字与说明是文案，不是调色板。** `Theme` 上存的是 `labelKey` / `hintKey`，由选择器 `t()` 出来；`theme.ts` 只管颜色。
+**主题的名字是文案，不是调色板。** `Theme` 上存的是 `labelKey`，由选择器 `t()` 出来；`theme.ts` 只管颜色。
 
 **为什么不逐个主题手写 token 表。** 六套主题各写一份两百行 token 是六次写错 hover 与 base 不匹配的机会。推导保证六套主题的对比节奏一致。
 

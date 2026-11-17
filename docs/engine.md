@@ -70,9 +70,9 @@ src/asio.rs
   list_devices()   // 枚举 + 逐个探测（通道、首选缓冲、采样率）
 ```
 
-**为什么是 feature。** ASIO SDK 是 Steinberg 专有许可，不能随 GPL 二进制分发；`asio-sys` 用 bindgen 构建它，需要 `libclang.dll`。默认构建因此完全不碰它，`tools/build-app.sh --asio` 负责检查 SDK 与 libclang 并打开 feature。
+**为什么是 feature。** ASIO SDK 是 Steinberg 专有许可，不能随 GPL 二进制分发；`asio-sys` 用 bindgen 构建它，需要 `libclang.dll`。crate 的默认 feature 因此完全不碰它（裸 `cargo build` / `cargo test` 不需要 SDK），产品构建走 `./tools/build-app.sh`，它默认就带 ASIO；`--no-asio` 才构建纯 WASAPI 的开发版。
 
-**构建前提。** SDK 解压到 `%TEMP%\asio_sdk`（`CPAL_ASIO_DIR` 可覆盖），`LIBCLANG_PATH` 指向含 `libclang.dll` 的目录（pip 的 `libclang` wheel 就带一个）。
+**构建前提。** SDK 解压到 `%LOCALAPPDATA%\mio\asio_sdk`（`CPAL_ASIO_DIR` 可覆盖；放在 `LOCALAPPDATA` 而不是 `%TEMP%`，因为 Windows 会清临时目录，构建前提不能是被随时回收的东西），`LIBCLANG_PATH` 指向含 `libclang.dll` 的目录（pip 的 `libclang` wheel 就带一个）。`./tools/build-app.sh` 默认就带 ASIO；`--no-asio` 才构建纯 WASAPI 的开发版。
 
 **COM 单元是 STA，不是 MTA。** 这是本项目唯一一个只有实测才能发现的坑。ASIO 驱动对象由 `CoCreateInstance` 创建（SDK 的 `asiolist.cpp` 里的 `asioOpenDriver`），而 TOE 驱动只从单线程套间交出对象。本机实测：
 

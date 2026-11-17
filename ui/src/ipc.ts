@@ -83,6 +83,8 @@ export interface SoundRow {
   favorite: boolean
   categoryManual: boolean
   folder: string | null
+  /** Tempo stated in the file name; `null` when the name states none. */
+  bpm: number | null
 }
 
 export interface FolderNode {
@@ -90,6 +92,15 @@ export interface FolderNode {
   path: string
   count: number
   children: FolderNode[]
+}
+
+/** A right-click on a folder row in the rail. */
+export interface FolderMenuRequest {
+  path: string
+  /** Last path segment, for the menu's own label. */
+  name: string
+  x: number
+  y: number
 }
 
 export interface Facet {
@@ -122,8 +133,10 @@ export interface SearchRequest {
   query?: string
   maxDuration?: number
   channels?: number
-  category?: string
-  subcategory?: string
+  /** Several categories are OR-ed; empty means no category filter. */
+  categories?: string[]
+  /** Intersects with `categories`, which is what the rail's lit rows mean. */
+  subcategories?: string[]
   folder?: string
   minConfidence?: number
   favoriteOnly?: boolean

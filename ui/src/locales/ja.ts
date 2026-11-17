@@ -17,8 +17,6 @@ import type { MessageKey } from './en'
 // - 「ライブラリ」 for the library. 「音源」 would mean an instrument.
 
 export const ja: Record<MessageKey, string> = {
-  'app.subtitle': 'サンプル',
-
   'common.cancel': 'キャンセル',
   'common.save': '保存',
   'common.done': '完了',
@@ -62,10 +60,11 @@ export const ja: Record<MessageKey, string> = {
   'menu.showInFolders': 'フォルダ内で表示',
   'menu.copyPath': 'パスをコピー',
   'menu.copyPaths': '{count} 件のパスをコピー',
-  'menu.dragToDaw': 'DAW へドラッグ',
-  'menu.dragToDawMany': '{count} 件を DAW へドラッグ',
-  'menu.dragHint': '行をドラッグ',
   'menu.withCount': '{label} ({count})',
+
+  'folderMenu.reveal': 'エクスプローラーで表示',
+  'folderMenu.filter': 'このフォルダで絞り込む',
+  'folderMenu.copyPath': 'フォルダのパスをコピー',
 
   'libMenu.switch': 'このライブラリに切り替え',
   'libMenu.reindex': '再インデックス',
@@ -96,6 +95,7 @@ export const ja: Record<MessageKey, string> = {
   'col.name': '名前',
   'col.category': 'カテゴリ',
   'col.length': '長さ',
+  'col.bpm': 'BPM',
   'col.channels': 'ch',
   'col.rate': 'レート',
   'col.size': 'サイズ',
@@ -116,6 +116,7 @@ export const ja: Record<MessageKey, string> = {
   'side.allFolders': 'すべてのフォルダ',
   'side.resize': 'ドラッグで幅を変更',
   'side.uncategorized': '未分類',
+  'side.tagsHint': 'Ctrl+クリックで複数選択',
 
   'dock.outputLevel': '出力レベル',
   'dock.mute': 'ミュート',
@@ -133,11 +134,9 @@ export const ja: Record<MessageKey, string> = {
   'dock.decoding': 'デコード中…',
 
   'settings.heading': '設定',
-  'settings.subHeading': 'デバイス・ライブラリ・外観',
   'settings.outputDevice': '出力デバイス',
   'settings.device': 'デバイス',
-  'settings.asioMissing':
-    'このビルドには ASIO が含まれていません。./tools/build-app.sh --asio で再ビルドすると ASIO ドライバを選択できます。',
+  'settings.asioMissing': 'このビルドには ASIO バックエンドがありません。',
   'settings.library': 'ライブラリ',
   'settings.noLibrary': 'ライブラリが開かれていません。',
   'settings.soundCount': '{count} 件のサウンド',
@@ -146,26 +145,16 @@ export const ja: Record<MessageKey, string> = {
   'settings.addLibrary': '別のライブラリを追加',
   'settings.openLibrary': 'ライブラリを開く…',
   'settings.rowsPerPage': '1 ページの行数',
-  'settings.rowsPerPageHint':
-    '1 回の検索で返す行数です。大きいほど次の取得までのスクロールが長くなります。',
   'settings.showCategory': 'カテゴリ列を表示',
-  'settings.showCategoryHint': 'オフにすると一覧が詰まります。カテゴリでの絞り込みは左側で引き続き可能です。',
   'settings.behaviour': '動作',
   'settings.autoPlay': '選択時に自動再生',
-  'settings.autoPlayHint': '行をクリックすると試聴します。ドックの AUTO PLAY と同じスイッチです。',
   'settings.infiniteScroll': '無限スクロール',
-  'settings.infiniteScrollHint':
-    '一覧が末尾に近づくと次のページを取得します。1 ページのみ表示する代わりです。',
   'settings.appearance': '外観',
-  'settings.themeHint':
-    'テーマは Siemens iX のトークン一式を塗り替えるため、各コントロール、パネル、波形が同じ配色に従います。',
-  'settings.currentTheme': '現在: {name}',
+  'settings.zoom': '表示倍率',
   'settings.language': '言語',
-  'settings.languageHint': 'すぐに反映され、このマシンに記憶されます。',
 
   'category.heading': 'カテゴリを設定',
-  'category.oneSound': '1 件のサウンド',
-  'category.nSounds': '{count} 件のサウンド',
+  'category.selected': '{count} 件を選択中',
   'category.label': 'カテゴリ',
   'category.placeholder': '例: 武器',
   'category.subLabel': 'サブカテゴリ (任意)',
@@ -176,17 +165,11 @@ export const ja: Record<MessageKey, string> = {
   'category.clear': 'カテゴリをクリア',
 
   'theme.classicDark': 'クラシック ダーク',
-  'theme.classicDarkHint': 'Siemens iX 標準',
   'theme.classicLight': 'クラシック ライト',
-  'theme.classicLightHint': 'Siemens iX 反転',
   'theme.studioDark': 'スタジオ ダーク',
-  'theme.studioDarkHint': 'グラファイトと紫、長時間作業向け',
   'theme.studioLight': 'スタジオ ライト',
-  'theme.studioLightHint': '紙白と藍、日中向け',
   'theme.amber': 'アンバー コンソール',
-  'theme.amberHint': 'ほぼ黒に琥珀色の線、暗い部屋向け',
   'theme.frost': 'フロスト',
-  'theme.frostHint': '寒色の青灰、まぶしさを抑える',
 
   'channel.mono': 'モノラル',
   'channel.stereo': 'ステレオ',

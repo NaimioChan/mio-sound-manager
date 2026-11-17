@@ -24,7 +24,9 @@ use crate::error::{IndexError, Result};
 use crate::folders::{FolderNode, build_folder_tree, folder_range, relative_folder};
 
 /// Current schema version, stored in `meta`. Bump when a migration is added.
-pub const SCHEMA_VERSION: i64 = 1;
+///
+/// 2 added `bpm`, read from the file name when the indexer sees the file.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// File name of the index inside a library folder. Matches the reference so the
 /// two applications can share (and be compared against) one database.
@@ -46,6 +48,9 @@ pub struct SoundRow {
     /// Folder relative to the library root, `""` at the root.
     pub folder: String,
     pub mtime_ns: i64,
+    /// Tempo stated in the file name, or `None` when it states none. See
+    /// [`crate::bpm`]: this is never guessed from the audio.
+    pub bpm: Option<f64>,
 }
 
 /// A row as read back, including the user-editable state.
@@ -65,6 +70,7 @@ pub struct Sound {
     pub favorite: bool,
     pub category_manual: bool,
     pub folder: Option<String>,
+    pub bpm: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +79,7 @@ pub enum SortColumn {
     Filename,
     Category,
     Duration,
+    Bpm,
     Channels,
     SampleRate,
     Filesize,
@@ -86,6 +93,7 @@ impl SortColumn {
             SortColumn::Filename => "s.filename COLLATE NOCASE",
             SortColumn::Category => "s.category COLLATE NOCASE",
             SortColumn::Duration => "s.duration",
+            SortColumn::Bpm => "s.bpm",
             SortColumn::Channels => "s.channels",
             SortColumn::SampleRate => "s.sample_rate",
             SortColumn::Filesize => "s.filesize",
@@ -106,8 +114,14 @@ pub struct SearchParams {
     pub query: String,
     pub max_duration: Option<f64>,
     pub channels: Option<u32>,
-    pub category: Option<String>,
-    pub subcategory: Option<String>,
+    /// Categories to include. Several are OR-ed, so the rail's tags can be
+    /// combined: `[Kicks, Snares]` finds both. Empty means no category filter.
+    ///
+    /// A category filter and a subcategory filter combine as
+    /// `(category IN (…)) AND (subcategory IN (…))`, which is what a rail listing
+    /// categories and their subcategories means when both rows are lit.
+    pub categories: Vec<String>,
+    pub subcategories: Vec<String>,
     /// Absolute folder path; matches the folder and everything below it.
     pub folder: Option<String>,
     pub min_confidence: Option<f64>,
@@ -276,14 +290,80 @@ impl IndexDb {
             self.conn
                 .execute_batch("ALTER TABLE sounds ADD COLUMN indexed_at INTEGER")?;
         }
+        // An older index has no tempo column. The value comes from the file name,
+        // which has not changed, so an incremental pass would skip every row and
+        // leave the column empty until each file happened to be touched. The
+        // upgrade therefore fills it in once, here, from the names already stored.
+        if !has("bpm") {
+            self.conn
+                .execute_batch("ALTER TABLE sounds ADD COLUMN bpm REAL")?;
+        }
+        // Keyed on `meta` rather than on the column, because adding the column and
+        // filling it can be separated by a build that was interrupted: a database
+        // whose column exists but whose values are all NULL still needs the pass,
+        // and one that has already been through it must not repeat it on every
+        // open.
+        if self.get_meta("bpm_backfilled")?.as_deref() != Some("1") {
+            self.backfill_bpm()?;
+            self.set_meta("bpm_backfilled", "1")?;
+        }
 
         // The incremental-reindex lookup is `WHERE path = ?`, already covered by
         // the UNIQUE index on path. This partial index answers "what changed
         // since" without a scan, which is what the prune pass wants.
         self.conn
             .execute_batch("CREATE INDEX IF NOT EXISTS idx_mtime ON sounds(mtime_ns);")?;
+        self.conn
+            .execute_batch("CREATE INDEX IF NOT EXISTS idx_bpm ON sounds(bpm);")?;
 
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
+        Ok(())
+    }
+
+    /// Fill `bpm` for every existing row from its stored file name.
+    ///
+    /// Runs once, on the schema upgrade. The FTS triggers are suspended for the
+    /// duration: `bpm` is not one of the searchable columns, so the tokenizer has
+    /// nothing to update, and letting `sounds_au` run per row would pay a
+    /// tokenizer pass 280k times over a column FTS does not read.
+    ///
+    /// A name the parser cannot read leaves the column NULL, which is the same
+    /// state a fresh index would produce — unmarked, not zero.
+    fn backfill_bpm(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP TRIGGER IF EXISTS sounds_ai;
+             DROP TRIGGER IF EXISTS sounds_ad;
+             DROP TRIGGER IF EXISTS sounds_au;",
+        )?;
+
+        let tx = self.conn.unchecked_transaction()?;
+        let pairs: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare("SELECT id, filename FROM sounds")?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            out
+        };
+        {
+            let mut stmt = tx.prepare("UPDATE sounds SET bpm = ?1 WHERE id = ?2")?;
+            for (id, filename) in &pairs {
+                match crate::bpm::from_filename(filename) {
+                    Some(bpm) => {
+                        stmt.execute(params![bpm, id])?;
+                    }
+                    None => {
+                        stmt.execute(params![Option::<f64>::None, id])?;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+
+        // `create_fts` is idempotent and recreates the three triggers; the FTS
+        // content is untouched, so no rebuild is needed.
+        self.create_fts()?;
         Ok(())
     }
 
@@ -368,8 +448,8 @@ impl IndexDb {
                 INSERT INTO sounds
                     (path, filename, duration, channels, sample_rate, filesize,
                      category, subcategory, confidence, matched_terms, folder,
-                     mtime_ns, indexed_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                     mtime_ns, indexed_at, bpm)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                 ON CONFLICT(path) DO UPDATE SET
                     filename = excluded.filename,
                     folder = excluded.folder,
@@ -379,6 +459,7 @@ impl IndexDb {
                     filesize = excluded.filesize,
                     mtime_ns = excluded.mtime_ns,
                     indexed_at = excluded.indexed_at,
+                    bpm = excluded.bpm,
                     category = CASE WHEN sounds.category_manual = 1
                                     THEN sounds.category ELSE excluded.category END,
                     subcategory = CASE WHEN sounds.category_manual = 1
@@ -407,6 +488,7 @@ impl IndexDb {
                     row.folder,
                     row.mtime_ns,
                     now,
+                    row.bpm,
                 ])?;
             }
         }
@@ -480,7 +562,8 @@ impl IndexDb {
              DROP INDEX IF EXISTS idx_category_subcategory;
              DROP INDEX IF EXISTS idx_confidence;
              DROP INDEX IF EXISTS idx_favorite;
-             DROP INDEX IF EXISTS idx_mtime;",
+             DROP INDEX IF EXISTS idx_mtime;
+             DROP INDEX IF EXISTS idx_bpm;",
         )?;
         self.set_meta("fts_dirty", "1")?;
         Ok(())
@@ -495,7 +578,8 @@ impl IndexDb {
              CREATE INDEX IF NOT EXISTS idx_category_subcategory ON sounds(category, subcategory);
              CREATE INDEX IF NOT EXISTS idx_confidence ON sounds(confidence);
              CREATE INDEX IF NOT EXISTS idx_favorite ON sounds(favorite);
-             CREATE INDEX IF NOT EXISTS idx_mtime ON sounds(mtime_ns);",
+             CREATE INDEX IF NOT EXISTS idx_mtime ON sounds(mtime_ns);
+             CREATE INDEX IF NOT EXISTS idx_bpm ON sounds(bpm);",
         )?;
         self.create_fts()?;
         self.rebuild_fts()?;
@@ -738,13 +822,26 @@ impl IndexDb {
             clauses.push("s.channels = ?".to_string());
             args.push(Value::Integer(ch as i64));
         }
-        if let Some(cat) = &params.category {
-            clauses.push("s.category = ?".to_string());
-            args.push(Value::Text(cat.clone()));
+        // A multi-category filter is `IN (?, ?, ?)`. The placeholders are
+        // generated from the list length, never from the strings themselves; the
+        // values still go through `params_from_iter`.
+        if !params.categories.is_empty() {
+            let holes = std::iter::repeat_n("?", params.categories.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("s.category IN ({holes})"));
+            for cat in &params.categories {
+                args.push(Value::Text(cat.clone()));
+            }
         }
-        if let Some(sub) = &params.subcategory {
-            clauses.push("s.subcategory = ?".to_string());
-            args.push(Value::Text(sub.clone()));
+        if !params.subcategories.is_empty() {
+            let holes = std::iter::repeat_n("?", params.subcategories.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("s.subcategory IN ({holes})"));
+            for sub in &params.subcategories {
+                args.push(Value::Text(sub.clone()));
+            }
         }
         if let Some(folder) = &params.folder {
             if !folder.is_empty() {
@@ -857,7 +954,7 @@ impl IndexDb {
 /// Column list shared by every read, in the order `read_sound` expects.
 const SOUND_COLUMNS: &str = "s.id, s.path, s.filename, s.duration, s.channels, s.sample_rate, \
      s.filesize, s.category, s.subcategory, s.confidence, s.matched_terms, s.favorite, \
-     s.category_manual, s.folder";
+     s.category_manual, s.folder, s.bpm";
 
 fn read_sound(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sound> {
     let terms_raw: Option<String> = row.get(10)?;
@@ -880,6 +977,7 @@ fn read_sound(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sound> {
         favorite: row.get::<_, i64>(11)? == 1,
         category_manual: row.get::<_, i64>(12)? == 1,
         folder: row.get(13)?,
+        bpm: row.get(14)?,
     })
 }
 
@@ -900,6 +998,10 @@ pub fn row_from_parts(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+    // Read before `filename` is moved into the row. From the name only: a WAV
+    // header carries no tempo, and deriving it from the waveform would mean
+    // decoding every file during the index pass.
+    let bpm = crate::bpm::from_filename(&filename);
     SoundRow {
         folder: relative_folder(&root_str, &path_str),
         path: path_str,
@@ -913,6 +1015,7 @@ pub fn row_from_parts(
         confidence: classification.confidence,
         matched_terms: classification.matched_terms.clone(),
         mtime_ns: meta.mtime_ns,
+        bpm,
     }
 }
 
@@ -936,6 +1039,7 @@ mod tests {
             matched_terms: vec!["door".into()],
             folder: String::new(),
             mtime_ns: 1,
+            bpm: None,
         }
     }
 
@@ -1060,6 +1164,115 @@ mod tests {
             params.sort_dir = Some(dir);
             let hits = db.search(&params).unwrap();
             assert_eq!(hits[1].duration_s, None, "nulls must sort last ({dir:?})");
+        }
+    }
+
+    #[test]
+    fn an_older_index_gets_its_bpm_filled_in_on_open() {
+        // Build a v1-shaped database: no `bpm` column, one row with a tempo in its
+        // name. Opening it has to run the migration and backfill, not wait for a
+        // reindex that the incremental check would skip.
+        let root = std::env::temp_dir().join(format!(
+            "mio-bpm-migrate-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        {
+            let conn = rusqlite::Connection::open(root.join(DB_FILENAME)).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sounds (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     path TEXT UNIQUE NOT NULL,
+                     filename TEXT NOT NULL,
+                     duration REAL, channels INTEGER, sample_rate INTEGER, filesize INTEGER,
+                     category TEXT NOT NULL DEFAULT 'Uncategorized', subcategory TEXT,
+                     confidence REAL NOT NULL DEFAULT 0, matched_terms TEXT,
+                     favorite INTEGER NOT NULL DEFAULT 0,
+                     category_manual INTEGER NOT NULL DEFAULT 0,
+                     folder TEXT, mtime_ns INTEGER, indexed_at INTEGER
+                 );
+                 INSERT INTO sounds (path, filename, category, mtime_ns)
+                 VALUES ('C:/lib/Kick_128BPM.wav', 'Kick_128BPM.wav', 'Drums', 99),
+                        ('C:/lib/Snare_02.wav', 'Snare_02.wav', 'Drums', 99);",
+            )
+            .unwrap();
+        }
+
+        let db = IndexDb::open(&root).expect("open migrates the schema");
+        let kick = db.get_by_path("C:/lib/Kick_128BPM.wav").unwrap().unwrap();
+        assert_eq!(kick.bpm, Some(128.0), "backfilled from the stored file name");
+        let snare = db.get_by_path("C:/lib/Snare_02.wav").unwrap().unwrap();
+        assert_eq!(snare.bpm, None, "a name without a marker stays unmarked");
+        // The upgrade must not cost the user their index or their mtime.
+        assert_eq!(db.count().unwrap(), 2);
+        assert_eq!(kick.path, "C:/lib/Kick_128BPM.wav");
+
+        // The triggers have to be back in place, or edits stop reaching search.
+        db.rebuild_fts().unwrap();
+        let hits = db.search(&SearchParams::new("kick")).unwrap();
+        assert_eq!(hits.len(), 1);
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn several_categories_are_or_ed_and_narrow_by_subcategory() {
+        let mut db = db();
+        let mut a = row("C:/lib/a.wav", "Drums");
+        a.subcategory = Some("Kicks".into());
+        let mut b = row("C:/lib/b.wav", "Bass");
+        b.subcategory = Some("Sub & 808".into());
+        let c = row("C:/lib/c.wav", "Foley");
+        db.upsert_batch(&[a, b, c]).unwrap();
+
+        let mut params = SearchParams::new("");
+        params.categories = vec!["Drums".into(), "Bass".into()];
+        assert_eq!(db.search(&params).unwrap().len(), 2);
+        assert_eq!(db.count_matching(&params).unwrap(), 2);
+
+        // A subcategory filter intersects with the categories rather than
+        // replacing them: the rail can have a category and a subcategory lit.
+        params.subcategories = vec!["Kicks".into()];
+        let hits = db.search(&params).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].filename, "a.wav");
+
+        // Clearing both lists filters nothing.
+        let mut all = SearchParams::new("");
+        all.categories = Vec::new();
+        assert_eq!(db.search(&all).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn bpm_sorts_with_unmarked_rows_last_and_round_trips() {
+        let mut db = db();
+        let mut a = row("C:/lib/Kick_90BPM.wav", "Drums");
+        a.bpm = Some(90.0);
+        let mut b = row("C:/lib/Kick_140BPM.wav", "Drums");
+        b.bpm = Some(140.0);
+        let c = row("C:/lib/Kick_unnamed.wav", "Drums");
+        db.upsert_batch(&[a, b, c]).unwrap();
+
+        let stored = db.get_by_path("C:/lib/Kick_90BPM.wav").unwrap().unwrap();
+        assert_eq!(stored.bpm, Some(90.0));
+
+        for dir in [SortDir::Asc, SortDir::Desc] {
+            let mut params = SearchParams::new("");
+            params.sort_by = Some(SortColumn::Bpm);
+            params.sort_dir = Some(dir);
+            let hits = db.search(&params).unwrap();
+            assert_eq!(hits[2].bpm, None, "unmarked rows sort last ({dir:?})");
+            let first = hits[0].bpm.unwrap();
+            let second = hits[1].bpm.unwrap();
+            match dir {
+                SortDir::Asc => assert!(first < second),
+                SortDir::Desc => assert!(first > second),
+            }
+            assert_eq!(hits.len(), 3);
         }
     }
 

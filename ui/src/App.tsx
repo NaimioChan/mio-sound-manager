@@ -4,6 +4,7 @@ import {
   type AppStatus,
   type EditKind,
   type Facet,
+  type FolderMenuRequest,
   type FolderNode,
   type IndexProgress,
   type LibraryStatus,
@@ -16,9 +17,10 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
 import { SettingsDialog, loadSettings, saveSettings, type Settings } from './SettingsDialog'
 import { IndexOverlay } from './IndexOverlay'
-import { UNCATEGORIZED, editKindName, t } from './i18n'
+import { UNCATEGORIZED, categoryName, editKindName, t } from './i18n'
 import { ICON } from './icons'
 import { applyTheme, loadThemeId } from './theme'
+import { applyZoom, loadZoom } from './zoom'
 
 /**
  * Playhead polling, per `docs/architecture.md` 7.3: read position from
@@ -86,6 +88,14 @@ export function App() {
    * two writers, one of them stale.
    */
   const [theme, setTheme] = createSignal(loadThemeId())
+  /**
+   * The interface scale, as a percentage.
+   *
+   * A signal as well as a webview property because the select mirrors it: the
+   * store is the source of truth (`zoom.ts`), the webview is what actually scales,
+   * and this keeps the two in step when a change fails to apply.
+   */
+  const [zoom, setZoom] = createSignal(loadZoom())
 
   const [status, setStatus] = createSignal<AppStatus | null>(null)
   const [bootError, setBootError] = createSignal<string | null>(null)
@@ -98,8 +108,24 @@ export function App() {
   const [total, setTotal] = createSignal(0)
 
   const [query, setQuery] = createSignal('')
-  const [category, setCategory] = createSignal<string | null>(null)
-  const [subcategory, setSubcategory] = createSignal<string | null>(null)
+  /**
+   * The rail's lit rows, as sets rather than one pair.
+   *
+   * A sample hunt is usually "kicks and snares", not one kind at a time, and the
+   * index filters with `IN (…)`. The two sets intersect — a category and one of
+   * its subcategories lit together narrows to that subcategory — which is what
+   * the rail visually claims.
+   */
+  const [categories, setCategories] = createSignal<string[]>([])
+  /**
+   * Subcategory rows, each keeping the category it belongs to.
+   *
+   * The wire only carries subcategory names, but the rail needs the parent: two
+   * categories can share a subcategory name, and removing a category has to drop
+   * the rows underneath it or the filter intersects with nothing and the list
+   * goes empty for no visible reason.
+   */
+  const [subcategories, setSubcategories] = createSignal<{ category: string; sub: string }[]>([])
   const [folder, setFolder] = createSignal<string | null>(null)
   const [favoritesOnly, setFavoritesOnly] = createSignal(false)
 
@@ -119,6 +145,8 @@ export function App() {
   const [libMenu, setLibMenu] = createSignal<{ library: LibraryStatus; x: number; y: number } | null>(
     null
   )
+  /** A folder row's right-click menu. Third target, same hand-drawn panel. */
+  const [folderMenu, setFolderMenu] = createSignal<FolderMenuRequest | null>(null)
   const [categoryDialog, setCategoryDialog] = createSignal<SoundRow[] | null>(null)
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [history, setHistory] = createSignal<{ undo: EditKind | null; redo: EditKind | null }>({
@@ -174,8 +202,9 @@ export function App() {
    */
   const request = createMemo(() => ({
     query: query(),
-    category: category() ?? undefined,
-    subcategory: subcategory() ?? undefined,
+    categories: categories().length > 0 ? categories() : undefined,
+    subcategories:
+      subcategories().length > 0 ? subcategories().map((entry) => entry.sub) : undefined,
     folder: folder() ?? undefined,
     favoriteOnly: favoritesOnly() ? true : undefined,
     sortBy: SORT_WIRE[sortKey()],
@@ -394,8 +423,8 @@ export function App() {
       setLibraries(await api.setActiveLibrary(root))
       // A different database means every derived thing is stale: the facets, the
       // folder tree, the undo stack and the rows.
-      setCategory(null)
-      setSubcategory(null)
+      setCategories([])
+      setSubcategories([])
       setFolder(null)
       setFavoritesOnly(false)
       setSelection([])
@@ -433,6 +462,18 @@ export function App() {
     setTheme(applyTheme(id).id)
   }
 
+  /**
+   * Apply an interface scale.
+   *
+   * The select has already moved when this runs, so the only thing to do is make
+   * the webview agree — and if it does not (no webview yet, a denied permission),
+   * `applyZoom` resolves to the scale that is actually in effect and the select
+   * snaps back instead of claiming a value the window does not have.
+   */
+  const changeZoom = (percent: number) => {
+    void applyZoom(percent).then(setZoom)
+  }
+
   const toggleAutoPlay = () => changeSettings({ autoPlay: !settings().autoPlay })
 
   const changeSort = (key: SortKey) => {
@@ -461,19 +502,83 @@ export function App() {
     if (settings().autoPlay) void play(row)
   }
 
-  const setCategoryFilter = (name: string | null, sub: string | null) => {
-    setCategory(name)
-    setSubcategory(sub)
-    // A category and a folder are two ways of narrowing the same list; keeping
-    // both would produce an empty result the user cannot explain.
+  /**
+   * Clicking a category in the rail.
+   *
+   * Plain click replaces the selection (and clicking the only lit category clears
+   * it, so the row toggles like a filter should); Ctrl+click adds or removes it,
+   * which is what makes "kicks and snares" one query instead of two.
+   */
+  const toggleCategory = (name: string | null, additive: boolean) => {
+    if (name === null) {
+      // The "All sounds" row: one click clears every category row.
+      setCategories([])
+      setSubcategories([])
+      setFolder(null)
+      setFavoritesOnly(false)
+      void runSearch()
+      return
+    }
+    if (!additive) {
+      const sole = categories().length === 1 && categories()[0] === name
+      setCategories(sole ? [] : [name])
+      // A category click means "this whole category", so the subcategory rows
+      // underneath it would otherwise narrow it to something the click did not ask
+      // for.
+      setSubcategories([])
+    } else if (categories().includes(name)) {
+      setCategories(categories().filter((c) => c !== name))
+      setSubcategories(subcategories().filter((entry) => entry.category !== name))
+    } else {
+      setCategories([...categories(), name])
+    }
     setFolder(null)
+    setFavoritesOnly(false)
+    void runSearch()
+  }
+
+  /**
+   * Clicking a subcategory. Its parent joins the category set, because the two
+   * filters intersect: a lit subcategory with its parent missing would filter to
+   * an empty list while both rows looked lit.
+   */
+  const toggleSubcategory = (category: string, sub: string, additive: boolean) => {
+    const same = (entry: { category: string; sub: string }) =>
+      entry.category === category && entry.sub === sub
+    const lit = subcategories().some(same)
+
+    let next: { category: string; sub: string }[]
+    if (additive) {
+      next = lit
+        ? subcategories().filter((entry) => !same(entry))
+        : [...subcategories(), { category, sub }]
+    } else if (lit && subcategories().length === 1) {
+      // Clicking the only lit subcategory turns the filter off, the same way a
+      // second click on the only lit category does.
+      next = []
+    } else {
+      next = [{ category, sub }]
+    }
+
+    setSubcategories(next)
+    // Every parent of a lit subcategory must also be lit: the two filters
+    // intersect, so an unlit parent would make the query match nothing.
+    const parents = new Set(next.map((entry) => entry.category))
+    if (!additive) {
+      setCategories([...parents])
+    } else {
+      const kept = categories().filter((c) => c !== category || parents.has(c))
+      setCategories([...new Set([...kept, ...parents])])
+    }
+    setFolder(null)
+    setFavoritesOnly(false)
     void runSearch()
   }
 
   const setFolderFilter = (path: string | null) => {
     setFolder(path)
-    setCategory(null)
-    setSubcategory(null)
+    setCategories([])
+    setSubcategories([])
     setFavoritesOnly(false)
     void runSearch()
   }
@@ -609,7 +714,6 @@ export function App() {
             0,
             Math.max(one.path.lastIndexOf('/'), one.path.lastIndexOf('\\'))
           )
-          setCategoryFilter(null, null)
           setFolderFilter(dir === activeLibrary()?.root ? null : dir)
         }
       },
@@ -617,15 +721,6 @@ export function App() {
         id: 'copy-path',
         label: one ? t('menu.copyPath') : t('menu.copyPaths', { count: targets.length }),
         onSelect: () => copyPaths(targets)
-      },
-      { id: 'd3', label: '', divider: true },
-      {
-        id: 'drag',
-        label: one ? t('menu.dragToDaw') : t('menu.dragToDawMany', { count: targets.length }),
-        disabled: true,
-        // Dragging is done with the mouse; the menu entry exists so the feature is
-        // discoverable, and it says how rather than pretending to be clickable.
-        shortcut: t('menu.dragHint')
       }
     ]
   }
@@ -673,6 +768,39 @@ export function App() {
         id: 'close',
         label: t('libMenu.close'),
         onSelect: () => void removeLibrary(library.root)
+      }
+    ]
+  }
+
+  /**
+   * The folder row's menu.
+   *
+   * Same panel as the two above rather than the OS menu: a native menu does not
+   * follow the theme and cannot call back into the app, and the rail is the one
+   * place a right-click used to produce something that looked like a different
+   * program.
+   */
+  const folderMenuItems = (): MenuItem[] => {
+    const current = folderMenu()
+    if (!current) return []
+    return [
+      {
+        id: 'reveal',
+        label: t('folderMenu.reveal'),
+        onSelect: () => api.revealInFolder(current.path).catch((e) => setNotice(String(e)))
+      },
+      {
+        id: 'filter',
+        label: t('folderMenu.filter'),
+        onSelect: () => setFolderFilter(current.path)
+      },
+      {
+        id: 'copy-path',
+        label: t('folderMenu.copyPath'),
+        onSelect: () => {
+          void navigator.clipboard.writeText(current.path)
+          setNotice(t('notice.pathCopied'))
+        }
       }
     ]
   }
@@ -748,7 +876,8 @@ export function App() {
       !categoryDialog() &&
       !settingsOpen() &&
       !menu() &&
-      !libMenu()
+      !libMenu() &&
+      !folderMenu()
     ) {
       event.preventDefault()
       void togglePlayback()
@@ -762,7 +891,8 @@ export function App() {
     }
 
     if (event.key === 'Escape') {
-      if (libMenu()) setLibMenu(null)
+      if (folderMenu()) setFolderMenu(null)
+      else if (libMenu()) setLibMenu(null)
       else if (menu()) setMenu(null)
       else if (settingsOpen()) setSettingsOpen(false)
     }
@@ -791,6 +921,10 @@ export function App() {
     // flashes iX's default palette. `main.tsx` applies it too; this call covers a
     // settings change made in another window.
     setTheme(applyTheme(theme()).id)
+    // The scale is a webview property, not a document one: applying it here is the
+    // first moment there is a webview to talk to. `App` mirrors the stored value
+    // for the picker and never re-applies it on mount, so this is the only call.
+    void applyZoom(zoom())
     // Push the remembered level into the engine: the slider is renderer state,
     // and the engine starts at unity.
     void api.setGain(gain()).catch(() => {})
@@ -799,12 +933,25 @@ export function App() {
     onCleanup(() => window.removeEventListener('keydown', onKeyDown))
   })
 
+  /**
+   * The chips over the table, one per active filter.
+   *
+   * Categories and subcategories get a chip each rather than one chip per list:
+   * with several lit, a single chip could only clear all of them, and the point of
+   * the multi-select is to drop one kind without losing the rest.
+   */
   const filterChips = () => {
     const chips: { label: string; clear: () => void }[] = []
-    if (category()) {
+    for (const name of categories()) {
       chips.push({
-        label: subcategory() ? `${category()} / ${subcategory()}` : category()!,
-        clear: () => setCategoryFilter(null, null)
+        label: categoryName(name),
+        clear: () => toggleCategory(name, true)
+      })
+    }
+    for (const entry of subcategories()) {
+      chips.push({
+        label: `${categoryName(entry.category)} / ${categoryName(entry.sub)}`,
+        clear: () => toggleSubcategory(entry.category, entry.sub, true)
       })
     }
     if (folder()) {
@@ -830,7 +977,6 @@ export function App() {
       <header class="topbar">
         <div class="brand">
           <span class="brand-name">Mio Sound Manager</span>
-          <span class="brand-sub">{t('app.subtitle')}</span>
         </div>
 
         <Show when={activeLibrary()}>
@@ -896,13 +1042,15 @@ export function App() {
             favorites={favorites()}
             total={total()}
             folders={folders()}
-            category={category()}
-            subcategory={subcategory()}
+            categories={categories()}
+            subcategories={subcategories()}
             folder={folder()}
             favoritesOnly={favoritesOnly()}
             onActivate={(root) => void switchLibrary(root)}
-            onCategory={setCategoryFilter}
+            onCategory={toggleCategory}
+            onSubcategory={toggleSubcategory}
             onFolder={setFolderFilter}
+            onFolderMenu={(request) => setFolderMenu(request)}
             onToggleFavorites={() => {
               setFavoritesOnly(!favoritesOnly())
               void runSearch()
@@ -1080,6 +1228,17 @@ export function App() {
         )}
       </Show>
 
+      <Show when={folderMenu()}>
+        {(current) => (
+          <ContextMenu
+            x={current().x}
+            y={current().y}
+            items={folderMenuItems()}
+            onClose={() => setFolderMenu(null)}
+          />
+        )}
+      </Show>
+
       <Show when={categoryDialog()}>
         {(targets) => (
           <CategoryDialog
@@ -1096,8 +1255,10 @@ export function App() {
         <SettingsDialog
           settings={settings()}
           theme={theme()}
+          zoom={zoom()}
           onChange={changeSettings}
           onTheme={changeTheme}
+          onZoom={changeZoom}
           status={status()}
           libraries={libraries()}
           activeLibrary={activeLibrary()}

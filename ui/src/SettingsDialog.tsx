@@ -6,16 +6,22 @@ import {
   type LibraryStatus
 } from './ipc'
 import { LOCALES, locale, setLocale, t, type Locale } from './i18n'
-import { THEMES, findTheme, type Theme } from './theme'
+import { THEMES, type Theme } from './theme'
+import { ZOOM_STEPS } from './zoom'
 
 /**
- * Settings: device, library, appearance.
+ * Settings: device, library, behaviour, appearance.
  *
- * Three groups in one dialog rather than a settings tree, because there are
- * eleven settings in total and a tree would be more navigation than content. The
+ * Four groups in one dialog rather than a settings tree, because there are a
+ * dozen settings in total and a tree would be more navigation than content. The
  * library group edits the *active* library; per-library management (reindex,
  * close) is on the rail's right-click menu, which is where it can name which
  * library it applies to.
+ *
+ * Nothing here explains itself in a second line. A row is a label and its
+ * control; the only text allowed under a label is a state the label cannot
+ * carry — the device error, the format the engine actually opened, or the count
+ * of what an action will apply to.
  */
 export interface Settings {
   /** Audition a row as soon as it is clicked. */
@@ -77,9 +83,13 @@ interface Props {
   settings: Settings
   /** The applied theme's id. Owned by `theme.ts`, not by the settings blob. */
   theme: string
+  /** The applied interface scale, as a percentage. */
+  zoom: number
   onChange: (patch: Partial<Settings>) => void
   /** Theme choice goes through its own callback: `theme.ts` owns that state. */
   onTheme: (id: string) => void
+  /** Same for the zoom: `zoom.ts` owns the webview, this is only the picker. */
+  onZoom: (percent: number) => void
   status: AppStatus | null
   libraries: LibraryStatus[]
   activeLibrary: LibraryStatus | null
@@ -112,21 +122,20 @@ function ThemeCard(props: { theme: Theme; current: boolean; onPick: () => void }
     <button
       class={props.current ? 'theme-card on' : 'theme-card'}
       onClick={props.onPick}
-      title={t(props.theme.hintKey)}
+      title={t(props.theme.labelKey)}
       data-theme-id={props.theme.id}
     >
       <span class="theme-swatch">
         <For each={swatch()}>{(color) => <span style={{ background: color }} />}</For>
       </span>
       <span class="theme-card-name">{t(props.theme.labelKey)}</span>
-      <span class="theme-card-hint">{t(props.theme.hintKey)}</span>
     </button>
   )
 }
 
 export function SettingsDialog(props: Props) {
   const [devices, setDevices] = createSignal<AudioDevice[]>([])
-  const [asioCompiled, setAsioCompiled] = createSignal(false)
+  const [asioCompiled, setAsioCompiled] = createSignal(true)
   const [deviceError, setDeviceError] = createSignal<string | null>(null)
   let modal:
     | (HTMLElement & { showModal: () => Promise<void>; closeModal: (r?: unknown) => Promise<void> })
@@ -137,8 +146,30 @@ export function SettingsDialog(props: Props) {
     queueMicrotask(() => void modal?.showModal())
   }
 
+  /**
+   * Close from inside the dialog (the Done button).
+   *
+   * The signal has to drop on the same tick as the request: iX's close is
+   * animated, and a parent that unmounts the element mid-animation leaves the
+   * next mount with no `showModal` to run on. `props.onClose()` unmounts, so it
+   * cannot wait for `closeModal` to resolve.
+   */
   const close = () => {
     void modal?.closeModal()
+    props.onClose()
+  }
+
+  /**
+   * iX closes itself when the header's × or Escape is used, without going
+   * through `close`.
+   *
+   * Before this, the × left `settingsOpen` true while the element was already
+   * dismissed: the app believed a dialog was up, so the next click on the gear
+   * flipped the same flag to the same value and nothing was rendered. The window
+   * had to be restarted. Both of iX's events land here, so the state follows
+   * whatever actually closed it.
+   */
+  const onDialogClosed = () => {
     props.onClose()
   }
 
@@ -173,8 +204,13 @@ export function SettingsDialog(props: Props) {
   }
 
   return (
-    <ix-modal ref={open} size="720">
-      <ix-modal-header heading={t('settings.heading')} subHeading={t('settings.subHeading')} />
+    <ix-modal
+      ref={open}
+      size="720"
+      on:dialogClose={onDialogClosed}
+      on:dialogDismiss={onDialogClosed}
+    >
+      <ix-modal-header heading={t('settings.heading')} />
       <ix-modal-content>
         <div class="modal-form">
           {/* ---------------------------------------------------------- audio */}
@@ -219,6 +255,10 @@ export function SettingsDialog(props: Props) {
               </div>
             </div>
 
+            {/* A build without the ASIO backend is a dev build (--no-asio), not a
+                shipping one, so this is the only case where the picker's absence
+                of drivers has to be explained: on a real build, an empty ASIO
+                half means the machine has no driver installed. */}
             <Show when={!asioCompiled()}>
               <div class="setting-hint">{t('settings.asioMissing')}</div>
             </Show>
@@ -269,10 +309,7 @@ export function SettingsDialog(props: Props) {
             </div>
 
             <div class="setting">
-              <span class="setting-label">
-                {t('settings.rowsPerPage')}
-                <div class="setting-hint">{t('settings.rowsPerPageHint')}</div>
-              </span>
+              <span class="setting-label">{t('settings.rowsPerPage')}</span>
               <div style={{ width: '140px' }}>
                 <ix-select
                   value={String(props.settings.pageSize)}
@@ -289,10 +326,7 @@ export function SettingsDialog(props: Props) {
             </div>
 
             <div class="setting">
-              <span class="setting-label">
-                {t('settings.showCategory')}
-                <div class="setting-hint">{t('settings.showCategoryHint')}</div>
-              </span>
+              <span class="setting-label">{t('settings.showCategory')}</span>
               <ix-toggle
                 checked={props.settings.showCategory}
                 on:checkedChange={(e: CustomEvent<boolean>) =>
@@ -307,10 +341,7 @@ export function SettingsDialog(props: Props) {
             <h3>{t('settings.behaviour')}</h3>
 
             <div class="setting">
-              <span class="setting-label">
-                {t('settings.autoPlay')}
-                <div class="setting-hint">{t('settings.autoPlayHint')}</div>
-              </span>
+              <span class="setting-label">{t('settings.autoPlay')}</span>
               <ix-toggle
                 checked={props.settings.autoPlay}
                 on:checkedChange={(e: CustomEvent<boolean>) => props.onChange({ autoPlay: e.detail })}
@@ -318,10 +349,7 @@ export function SettingsDialog(props: Props) {
             </div>
 
             <div class="setting">
-              <span class="setting-label">
-                {t('settings.infiniteScroll')}
-                <div class="setting-hint">{t('settings.infiniteScrollHint')}</div>
-              </span>
+              <span class="setting-label">{t('settings.infiniteScroll')}</span>
               <ix-toggle
                 checked={props.settings.infiniteScroll}
                 on:checkedChange={(e: CustomEvent<boolean>) =>
@@ -334,7 +362,6 @@ export function SettingsDialog(props: Props) {
           {/* ------------------------------------------------------ appearance */}
           <section class="settings-section">
             <h3>{t('settings.appearance')}</h3>
-            <div class="setting-hint">{t('settings.themeHint')}</div>
             <div class="theme-grid">
               <For each={THEMES}>
                 {(theme) => (
@@ -346,19 +373,28 @@ export function SettingsDialog(props: Props) {
                 )}
               </For>
             </div>
-            <div class="setting-hint">
-              {t('settings.currentTheme', { name: t(findTheme(props.theme).labelKey) })}
+
+            {/* Interface scale, then language. Both change the whole window rather
+                than one pane, which is why neither sits under List or Behaviour. */}
+            <div class="setting">
+              <span class="setting-label">{t('settings.zoom')}</span>
+              <div style={{ width: '140px' }}>
+                <ix-select
+                  value={String(props.zoom)}
+                  allowClear={false}
+                  on:valueChange={(e: CustomEvent<string | string[]>) =>
+                    props.onZoom(Number(e.detail))
+                  }
+                >
+                  <For each={ZOOM_STEPS}>
+                    {(step) => <ix-select-item value={String(step)} label={`${step}%`} />}
+                  </For>
+                </ix-select>
+              </div>
             </div>
 
-            {/* Language sits in Appearance because that is what it is: the app is
-                not re-laid out, the words change. Each option is written in its own
-                language — a picker that says "Chinese" to a reader who cannot read
-                English defeats itself. */}
             <div class="setting">
-              <span class="setting-label">
-                {t('settings.language')}
-                <div class="setting-hint">{t('settings.languageHint')}</div>
-              </span>
+              <span class="setting-label">{t('settings.language')}</span>
               <div style={{ width: '160px' }}>
                 <ix-select
                   value={locale()}
