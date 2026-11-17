@@ -979,14 +979,6 @@ export function App() {
           <span class="brand-name">Mio Sound Manager</span>
         </div>
 
-        <Show when={activeLibrary()}>
-          {(library) => (
-            <ix-pill class="lib-chip" variant="neutral" outline title={library().root}>
-              {library().name}
-            </ix-pill>
-          )}
-        </Show>
-
         <div class="spacer" />
 
         <Show when={history().undo}>

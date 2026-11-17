@@ -141,13 +141,9 @@ button {
   min-width: 0;
 }
 
-/* The active library's name, next to the brand, so "which library am I in" is
-   answerable without looking at the rail. An iX pill, which is what the design
-   system has for a short piece of contextual state. */
-.lib-chip {
-  max-width: 240px;
-}
-
+/* The active library's name lives in the rail's header, not in the top bar: the
+   brand is the only thing that belongs next to the product name, and a chip there
+   read as a second title. */
 .dim {
   color: var(--theme-color-soft-text);
 }
