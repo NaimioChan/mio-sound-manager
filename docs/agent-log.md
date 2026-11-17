@@ -2,6 +2,21 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-18 00:20 · hermes · 用 AGPL 版重打包并替换 release 附件
+
+- 改: `crates/mio-app/tauri.conf.json`（`bundle.copyright` / `license` / `licenseFile` 三条，让 NSIS 安装器显示许可页）
+- 验证: 重新 `tauri build --features asio --bundles nsis`（安装包 4.98 MiB，比无许可版大 13 KiB）；新便携版单独启动过（CDP 9226）：顶栏零个 pill、设置页无解释小字、`Interface scale` 在、`asio_compiled=true`；release v0.1.0 的四个附件逐个 `curl -L` 下载返回 200 且字节数匹配（setup 5219718 / portable 17162240 / LICENSE 35184 / THIRD-PARTY-NOTICES.md 2229）
+- 遗留: ① 便携版仍把配置写 `%APPDATA%`，不是真绿色版；② 安装包只验证了「能生成」，没跑过实际安装流程；③ 没有 README（用户说过先不写）
+- 下一步: README；安装流程实际跑一遍；便携版配置改到 exe 同目录
+
+### 这次改了什么
+
+旧附件（22:32 上传的那两个）是在 `license = "MIT"` 的 Cargo.toml 下构建的。二进制内容其实与许可字符串无关，但 release 既然对外声明 AGPL，附件就应当来自对应那次提交。做法是删掉旧附件、用 AGPL 配置重打包、重新上传，并把 `LICENSE` 与 `THIRD-PARTY-NOTICES.md` 一并作为附件——AGPL 分发二进制时要求附许可声明，放在仓库里不如放在下载页面旁边直接。
+
+release 说明也换掉了：原文只说两个产物，现在写明 AGPL、ASIO SDK 走 GPLv3 一支、源码地址，并列出两个 exe 的 SHA-256，便于下载者自行核对。
+
+**下载页取不到附件列表是假象。** 用 `curl` 抓 release 页面 HTML 会得到 0 个匹配，因为 GitHub 的附件区是 JS 渲染的。判据应当是 `gh release view --json assets`（`state: uploaded`）或对 `releases/download/<tag>/<file>` 发一次真实请求看 HTTP 码与字节数。
+
 ## 2026-11-18 00:05 · hermes · 许可证改成 AGPL：清掉仓库里的 MIT 残留与「SDK 不能随 GPL 分发」的旧结论
 
 - 改: `Cargo.toml`（`[workspace.package] license` `MIT` → `AGPL-3.0-or-later`，四个 crate 都继承它）、`AGENTS.md`（技术栈那条去掉「SDK 专有许可」）、`docs/architecture.md`（ASIO 小节与否决表两处）、`docs/engine.md`（ASIO feature 一节）、`THIRD-PARTY-NOTICES.md`（新增）
