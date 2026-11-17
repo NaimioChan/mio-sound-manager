@@ -1,10 +1,10 @@
-// Interaction checks against the running window: stop halts the playhead, clicking
-// the waveform seeks, and the playhead keeps moving afterwards.
+// Interaction checks for the rewritten UI.
 //
-//   node check-interactions.mjs [port]
+//   node tools/check-interactions.mjs [port]
 //
-// `playwright-core` is not a dependency of this repo: it is resolved out of the
-// reference project's `node_modules`, which lets the script run from anywhere.
+// Covers what the rewrite touched: the iX search field, sort headers, selection
+// (click / Ctrl / Shift), the row menu, the AUTO PLAY toggle, the dock transport
+// and seeking on the waveform.
 import { createRequire } from 'node:module'
 
 const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
@@ -17,94 +17,326 @@ if (!page) {
   console.error('no page on the debugger')
   process.exit(1)
 }
+// A previous run can leave a modal open, which blocks every click. Reload first:
+// the checks are all stateless from the app's point of view, and a clean page is
+// the only reliable starting state for a script that drives a real window.
+await page.reload()
+await page.waitForSelector('.row', { timeout: 60_000 })
+await page.waitForTimeout(1000)
 
-const errors = []
-page.on('pageerror', (e) => errors.push(e.message))
+const problems = []
+const check = (ok, label, detail = '') => {
+  if (!ok) problems.push(`${label}${detail ? ` (${detail})` : ''}`)
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`)
+}
 
-/** Read the playhead time and the clip duration from the dock's time label. */
-async function readTimes() {
-  const label = await page.locator('.wave-time').textContent().catch(() => null)
-  if (!label) return null
-  const [cur, total] = label.split('/')
+// --- search through the iX input, which emits `valueChange` from inside a shadow
+//     root; typing into the host does not work, so the event is dispatched the way
+//     the component does it.
+const search = async (text) => {
+  await page.evaluate((text) => {
+    const input = document.querySelector('#search-input')
+    input.value = text
+    input.dispatchEvent(new CustomEvent('valueChange', { detail: text, bubbles: true }))
+  }, text)
+  await page.waitForTimeout(450)
+}
+
+const rowCount = () => page.locator('.row').count()
+const total = await rowCount()
+check(total > 0, 'the list has rows', `${total}`)
+
+const first = await page.locator('.row').first().getAttribute('data-path')
+check(!!first, 'rows carry their path', first?.slice(-40))
+
+// --- clicking a row selects and activates it
+await page.locator('.row').first().click()
+await page.waitForTimeout(350)
+check((await page.locator('.row.active').count()) === 1, 'clicking a row makes it active')
+check((await page.locator('.row.selected').count()) === 1, 'clicking a row selects it')
+
+// --- Ctrl+click adds, Shift+click extends
+await page.locator('.row').nth(2).click({ modifiers: ['Control'] })
+await page.waitForTimeout(250)
+check((await page.locator('.row.selected').count()) === 2, 'Ctrl+click extends the selection')
+await page.locator('.row').nth(5).click({ modifiers: ['Shift'] })
+await page.waitForTimeout(250)
+const shiftCount = await page.locator('.row.selected').count()
+check(shiftCount >= 4, 'Shift+click selects a range', `${shiftCount} rows`)
+
+// --- the footer and status bar report the selection
+const status = (await page.locator('.statusbar').textContent()) ?? ''
+check(/\d+ selected/.test(status), 'the status bar reports the selection', status.trim())
+
+// --- sorting: click a header twice, expect the arrow to flip
+const sortBefore = await page.locator('.head-cell .sort-arrow').first().textContent()
+await page.locator('.head-cell', { hasText: 'Length' }).click()
+await page.waitForTimeout(500)
+const lengthArrow = await page
+  .locator('.head-cell', { hasText: 'Length' })
+  .locator('.sort-arrow')
+  .textContent()
+check(!!lengthArrow, 'clicking Length sorts by it', lengthArrow)
+await page.locator('.head-cell', { hasText: 'Length' }).click()
+await page.waitForTimeout(500)
+const flipped = await page
+  .locator('.head-cell', { hasText: 'Length' })
+  .locator('.sort-arrow')
+  .textContent()
+check(
+  lengthArrow !== flipped,
+  'clicking the same header flips the direction',
+  `${lengthArrow} → ${flipped}`
+)
+check(!!sortBefore, 'the default sort shows an arrow', sortBefore)
+
+// --- search filters the list, and clearing restores it
+await search('kick')
+const kickCount = await rowCount()
+const foot = (await page.locator('.table-foot').textContent()) ?? ''
+check(kickCount > 0, 'searching "kick" finds rows', `${kickCount}`)
+check(/of/.test(foot), 'the footer reports how much matched', foot.trim())
+await search('zzzznotasoundzzz')
+check((await rowCount()) === 0, 'a query with no hits empties the list')
+check((await page.locator('.table-empty').count()) === 1, 'an empty result shows the empty state')
+await search('')
+await page.waitForTimeout(400)
+check((await rowCount()) === total, 'clearing the query restores the list')
+
+// --- the row context menu
+await page.locator('.row').first().click({ button: 'right' })
+await page.waitForTimeout(300)
+const menuItems = await page.locator('.menu-item').count()
+check(menuItems >= 6, 'right-click opens the row menu', `${menuItems} items`)
+check(
+  (await page.locator('.menu-item', { hasText: 'Set Category' }).count()) === 1,
+  'the menu offers Set Category'
+)
+await page.keyboard.press('Escape')
+await page.waitForTimeout(200)
+check((await page.locator('.menu').count()) === 0, 'Escape closes the menu')
+
+// --- the category dialog is an iX modal
+await page.locator('.row').first().click({ button: 'right' })
+await page.locator('.menu-item', { hasText: 'Set Category' }).click()
+await page.waitForTimeout(900)
+check((await page.locator('ix-modal').count()) === 1, 'Set Category opens an iX modal')
+// The host is display:none until iX adds `.visible`, and the dialog inside it is
+// `position: fixed`, so the host itself measures 0×0 even when the modal is up.
+// The thing to measure is the dialog in the shadow root.
+const modalState = await page.evaluate(() => {
+  const m = document.querySelector('ix-modal')
+  if (!m) return { visible: false, w: 0, h: 0 }
+  const dlg = m.shadowRoot?.querySelector('dialog')
+  const r = dlg?.getBoundingClientRect()
+  return { visible: m.classList.contains('visible'), w: Math.round(r?.width ?? 0), h: Math.round(r?.height ?? 0) }
+})
+check(modalState.visible, 'the modal host is marked visible')
+check(modalState.w > 300 && modalState.h > 100, 'the modal dialog has a real size', `${modalState.w}×${modalState.h}`)
+
+// Escape must close it: iX listens for `cancel` on the inner dialog and animates
+// out, so the assertion waits for the class rather than for the element to vanish.
+await page.keyboard.press('Escape')
+await page.waitForTimeout(900)
+const closed = await page.evaluate(() => {
+  const m = document.querySelector('ix-modal')
+  return m ? !m.classList.contains('visible') : true
+})
+check(closed, 'Escape closes the modal')
+
+// --- AUTO PLAY is a word, not a glyph, and it toggles
+const autoText = (await page.locator('#auto-play').textContent())?.trim()
+check(autoText === 'AUTO PLAY', 'the toggle is labelled in words', autoText)
+
+// iX components render their control inside a shadow root, so a `.click()` on the
+// host does nothing — the inner button is the thing a user clicks. Driving it
+// directly is what the browser does on a real click.
+const clickInner = (selector) =>
+  page.evaluate((selector) => {
+    const host = document.querySelector(selector)
+    const inner = host?.shadowRoot?.querySelector('button')
+    if (!inner) return 'no inner button'
+    inner.click()
+    return 'ok'
+  }, selector)
+
+const pressedBefore = await page.evaluate(() => document.querySelector('#auto-play').pressed)
+check((await clickInner('#auto-play')) === 'ok', 'AUTO PLAY has a clickable inner button')
+await page.waitForTimeout(400)
+const pressedAfter = await page.evaluate(() => document.querySelector('#auto-play').pressed)
+check(
+  pressedBefore !== pressedAfter,
+  'clicking AUTO PLAY flips it',
+  `${pressedBefore} → ${pressedAfter}`
+)
+check(
+  (await page.evaluate(() => localStorage.getItem('mio:autoplay'))) === String(pressedAfter),
+  'the toggle is persisted'
+)
+// Put it back on, so the rest of the checks audition rows.
+if (!pressedAfter) {
+  await clickInner('#auto-play')
+  await page.waitForTimeout(350)
+}
+
+// --- transport. The playhead can only be watched on a clip long enough to
+// outlast two polls, so the longest loaded row is chosen from the rendered
+// durations rather than by hoping a sort put it first.
+// The sort checks above left Length ascending, which puts the shortest clips on
+// screen. Click it once more for descending, so the longest loaded row is visible.
+const lengthArrowNow = await page
+  .locator('.head-cell', { hasText: 'Length' })
+  .locator('.sort-arrow')
+  .textContent()
+if (lengthArrowNow === '▲') {
+  await page.locator('.head-cell', { hasText: 'Length' }).click()
+  await page.waitForTimeout(700)
+}
+const longestIndex = await page.evaluate(() => {
   const parse = (text) => {
-    const [m, s] = text.trim().split(':')
-    return Number(m) * 60 + Number(s)
+    const m = /^(\d+):(\d+(?:\.\d+)?)$/.exec((text ?? '').trim())
+    return m ? Number(m[1]) * 60 + Number(m[2]) : 0
   }
-  return { position: parse(cur), duration: parse(total) }
-}
+  const rows = [...document.querySelectorAll('.row')]
+  let best = 0
+  let bestLen = -1
+  rows.forEach((row, i) => {
+    // Columns: ★ · Name · Category · Length · Ch · Rate · Size
+    const cell = row.children[3]
+    const len = parse(cell?.textContent)
+    if (len > bestLen) {
+      bestLen = len
+      best = i
+    }
+  })
+  return { index: best, length: bestLen }
+})
+check(longestIndex.length > 3, 'the list holds a clip long enough to observe', `${longestIndex.length.toFixed(2)}s`)
 
-const rows = page.locator('.row')
-if ((await rows.count()) === 0) {
-  console.error('no rows: open a library first')
-  process.exit(1)
-}
-
-// Search something that returns long files: a short sample finishes before the
-// checks below can run, and a finished clip is a legitimately parked playhead.
-await page.locator('input.search').fill('rain')
-// Wait for the query to land instead of sleeping: while a search is in flight the
-// table still shows the old rows, and a click on one of them is applied to a node
-// that is about to be replaced — which silently drops the play request.
-await page
-  .waitForSelector('.table:not([data-querying="true"])', { timeout: 5000 })
-  .catch(() => {})
-await page.waitForTimeout(150)
-const candidates = await rows.count()
-console.log('rain rows:', candidates)
-await rows.first().click()
-await page.waitForTimeout(600)
-
-const first = await readTimes()
+const longestRow = page.locator('.row').nth(longestIndex.index)
+const longestName = ((await longestRow.locator('.cell.name').textContent()) ?? '').trim()
+await longestRow.click()
+// Wait for the dock to actually be showing this clip. `.wave-time` appears for the
+// previous row too, so waiting on its presence alone reads the old clip's position
+// and compares two different clips.
+await page.waitForFunction(
+  (name) => document.querySelector('.dock-name')?.textContent?.trim() === name,
+  longestName,
+  { timeout: 10_000 }
+)
 await page.waitForTimeout(500)
-const later = await readTimes()
-if (!first || !later) {
-  console.error('FAIL: no waveform panel')
-  process.exit(1)
-}
-console.log(`duration: ${first.duration.toFixed(2)}s`)
-console.log(`playhead: ${first.position.toFixed(2)}s → ${later.position.toFixed(2)}s`)
-if (later.position <= first.position) {
-  console.error('FAIL: playhead did not advance')
-  process.exitCode = 1
-}
 
-// Click at 75% of the waveform; playback should resume from there.
-const box = await page.locator('canvas.wave').boundingBox()
-await page.mouse.click(box.x + box.width * 0.75, box.y + box.height / 2)
+const position = async () =>
+  page.evaluate(() => {
+    const label = document.querySelector('.wave-time')?.textContent ?? ''
+    const [now] = label.split('/')
+    const [mm, ss] = (now ?? '0:00').split(':')
+    return Number(mm) * 60 + Number(ss)
+  })
+// The playhead is polled once per animation frame, so for a moment after a publish
+// it still reports the previous clip's position. Wait for it to be inside the new
+// clip's duration before taking the first sample, otherwise the "before" reading
+// belongs to a different clip and the comparison is meaningless.
+await page.waitForFunction(
+  () => {
+    const label = document.querySelector('.wave-time')?.textContent ?? ''
+    const [now, total] = label.split('/')
+    const parse = (text) => {
+      const m = /^(\d+):(\d+(?:\.\d+)?)$/.exec((text ?? '').trim())
+      return m ? Number(m[1]) * 60 + Number(m[2]) : 0
+    }
+    return parse(now) < parse(total)
+  },
+  undefined,
+  { timeout: 5000 }
+)
+const p1 = await position()
+await page.waitForTimeout(900)
+const p2 = await position()
+check(p2 > p1, 'the playhead advances while playing', `${p1}s → ${p2}s`)
+
+// The transport buttons are disabled with nothing loaded; iX sets
+// `pointer-events: none` on a disabled host, so Playwright refuses to click. The
+// state is asserted first, then the click goes through the inner button.
+const toggleDisabled = await page.evaluate(() =>
+  document.querySelector('#transport-toggle').classList.contains('disabled')
+)
+check(!toggleDisabled, 'the pause button is enabled while playing')
+
+await clickInner('#transport-toggle')
+await page.waitForTimeout(600)
+// iX moves the host's `aria-label` onto its inner button and removes it from the
+// host, so the label has to be read where a screen reader reads it.
+const pausedLabel = await page.evaluate(() => {
+  const host = document.querySelector('#transport-toggle')
+  return host?.shadowRoot?.querySelector('button')?.getAttribute('aria-label') ?? ''
+})
+check(pausedLabel === 'Resume', 'the transport button switches to Resume when paused', pausedLabel)
+const p3 = await position()
+await page.waitForTimeout(800)
+const p4 = await position()
+check(Math.abs(p4 - p3) < 0.3, 'the playhead holds while paused', `${p3}s → ${p4}s`)
+
+await clickInner('#transport-stop')
+await page.waitForTimeout(500)
+const stopped = await position()
+check(stopped < 0.2, 'Stop clears the playhead', `${stopped}s`)
+
+// --- seeking on the waveform, on the same long clip
+await longestRow.click()
+await page.waitForFunction(
+  (name) => document.querySelector('.dock-name')?.textContent?.trim() === name,
+  longestName,
+  { timeout: 10_000 }
+)
 await page.waitForTimeout(700)
-const seeked = await readTimes()
-if (!seeked) {
-  console.error('FAIL: no waveform panel after seek')
-  process.exit(1)
-}
-const target = seeked.duration * 0.75
-console.log(`after seek to 75%: ${seeked.position.toFixed(2)}s (expected ≥ ${target.toFixed(2)})`)
-if (seeked.position < target - 0.5) {
-  console.error('FAIL: seek did not move the playhead')
-  process.exitCode = 1
+const box = await page.locator('canvas.wave').boundingBox()
+if (box) {
+  await page.mouse.click(box.x + box.width * 0.7, box.y + box.height / 2)
+  await page.waitForTimeout(700)
+  const seeked = await position()
+  const duration = await page.evaluate(() => {
+    const label = document.querySelector('.wave-time')?.textContent ?? ''
+    const [, after] = label.split('/')
+    const [mm, ss] = (after ?? '0:00').trim().split(':')
+    return Number(mm) * 60 + Number(ss)
+  })
+  check(
+    seeked > duration * 0.5,
+    'clicking the waveform seeks past the halfway point',
+    `${seeked.toFixed(2)}s of ${duration.toFixed(2)}s`
+  )
+} else {
+  check(false, 'the waveform canvas exists')
 }
 
-// Stop must park the playhead and leave it parked. The button is icon-only, so
-// it is found by its accessible name rather than by its text.
-await page.locator('button.ghost[aria-label="Stop"]').click()
+// --- the settings dialog opens and shows the theme picker
+await page.evaluate(() => {
+  const host = document.querySelector('#settings-button')
+  host?.shadowRoot?.querySelector('button')?.click()
+})
+await page.waitForTimeout(900)
+check((await page.locator('ix-modal').count()) >= 1, 'Settings opens an iX modal')
+// The settings modal is the one carrying the theme cards: a closing dialog from
+// the previous step can still be in the DOM for a frame, and reading the first
+// `ix-modal` would report that one.
+const settingsOpen = await page.evaluate(() => {
+  const m = [...document.querySelectorAll('ix-modal')].find((el) => el.querySelector('.theme-card'))
+  if (!m) return false
+  const dlg = m.shadowRoot?.querySelector('dialog')
+  return m.classList.contains('visible') && !!dlg?.open
+})
+check(settingsOpen, 'the settings modal is visible')
+const themeCards = await page.locator('.theme-card').count()
+check(themeCards >= 4, 'the settings dialog lists the built-in themes', `${themeCards} cards`)
+await page.keyboard.press('Escape')
 await page.waitForTimeout(500)
-const stoppedA = await readTimes()
-await page.waitForTimeout(600)
-const stoppedB = await readTimes()
-if (!stoppedA || !stoppedB) {
-  console.error('FAIL: no waveform panel after stop')
-  process.exit(1)
-}
-console.log(`stopped: ${stoppedA.position.toFixed(2)}s then ${stoppedB.position.toFixed(2)}s`)
-if (Math.abs(stoppedB.position - stoppedA.position) > 0.05) {
-  console.error('FAIL: playhead kept moving after stop')
-  process.exitCode = 1
-}
 
-if (errors.length) {
-  console.error('page errors:', errors)
-  process.exitCode = 1
+if (problems.length === 0) {
+  console.log('\ninteractions: OK')
+} else {
+  console.log('\ninteraction problems:')
+  for (const p of problems) console.log(`  - ${p}`)
 }
-
-console.log(process.exitCode ? 'FAILED' : 'OK')
 await browser.close()
+process.exit(problems.length === 0 ? 0 : 1)

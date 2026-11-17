@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js'
 import type { Facet, FolderNode, LibraryStatus } from './ipc'
+import { ICON } from './icons'
 
 /**
  * The left rail: one collapsible group per open library, and inside each either
@@ -17,9 +18,9 @@ import type { Facet, FolderNode, LibraryStatus } from './ipc'
  */
 type Mode = 'categories' | 'folders'
 
-const MODE_KEY = 'reslip:sidebar-mode'
+const MODE_KEY = 'mio:sidebar-mode'
 /** Expanded folders, remembered per library root. */
-const EXPANDED_PREFIX = 'reslip:folders-expanded:'
+const EXPANDED_PREFIX = 'mio:folders-expanded:'
 
 function loadExpanded(root: string | null): Set<string> {
   if (!root) return new Set()
@@ -109,7 +110,6 @@ export function Sidebar(props: Props) {
     saveExpanded(activeRoot(), next)
   }
 
-
   const changeMode = (next: Mode) => {
     setMode(next)
     localStorage.setItem(MODE_KEY, next)
@@ -179,7 +179,7 @@ export function Sidebar(props: Props) {
 
   const renderFolder = (node: FolderNode, depth: number) => {
     const hasChildren = () => node.children.length > 0
-    const isOpen = () => expandedFolders().has(node.path)
+    const open = () => expandedFolders().has(node.path)
     return (
       <div class="folder-node">
         <div
@@ -198,9 +198,9 @@ export function Sidebar(props: Props) {
               e.stopPropagation()
               if (hasChildren()) toggleFolder(node.path)
             }}
-            title={hasChildren() ? (isOpen() ? 'Collapse' : 'Expand') : undefined}
+            title={hasChildren() ? (open() ? 'Collapse' : 'Expand') : undefined}
           >
-            {hasChildren() ? (isOpen() ? '▾' : '▸') : ''}
+            {hasChildren() ? (open() ? '▾' : '▸') : ''}
           </span>
           <span class="folder-name">{node.name}</span>
           <span class="count">{node.count.toLocaleString()}</span>
@@ -210,7 +210,7 @@ export function Sidebar(props: Props) {
           tree and hiding it with CSS would build thousands of nodes for a real
           sample library (271k files) on every rail re-render.
         */}
-        <Show when={isOpen() && hasChildren()}>
+        <Show when={open() && hasChildren()}>
           <For each={node.children}>{(child) => renderFolder(child, depth + 1)}</For>
         </Show>
       </div>
@@ -235,10 +235,10 @@ export function Sidebar(props: Props) {
         <button
           class="side-mode gear"
           onClick={props.onOpenSettings}
-          title="Settings"
+          title="Settings (Ctrl+,)"
           aria-label="Settings"
         >
-          ⚙
+          <ix-icon name={ICON.settings} size="16" />
         </button>
       </div>
 

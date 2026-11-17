@@ -15,7 +15,8 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
 import { SettingsDialog, loadSettings, saveSettings, type Settings } from './SettingsDialog'
 import { IndexOverlay } from './IndexOverlay'
-import { GearIcon } from './icons'
+import { ICON } from './icons'
+import { applyTheme, loadThemeId } from './theme'
 
 /**
  * Playhead polling, per `docs/architecture.md` 7.3: read position from
@@ -66,12 +67,23 @@ function usePlayhead() {
 }
 
 /** Sidebar width, remembered per machine. Clamped to what the layout can take. */
-const SIDEBAR_KEY = 'reslip:sidebar-width'
-const SIDEBAR_MIN = 160
+const SIDEBAR_KEY = 'mio:sidebar-width'
+const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 520
+/** Output gain, remembered per machine. */
+const GAIN_KEY = 'mio:gain'
 
 export function App() {
   const [settings, setSettings] = createSignal<Settings>(loadSettings())
+  /**
+   * The applied theme.
+   *
+   * Separate from `settings` on purpose: the theme is written by `theme.ts` so the
+   * script in `index.html` can read it before the bundle loads, and keeping a second
+   * copy inside the settings blob is what made a reload fall back to the default —
+   * two writers, one of them stale.
+   */
+  const [theme, setTheme] = createSignal(loadThemeId())
 
   const [status, setStatus] = createSignal<AppStatus | null>(null)
   const [bootError, setBootError] = createSignal<string | null>(null)
@@ -97,9 +109,9 @@ export function App() {
 
   const [menu, setMenu] = createSignal<RowMenuRequest | null>(null)
   /**
-   * A library header's right-click menu. Separate from `menu` because the two
-   * have different targets and different actions: one acts on sounds, this one on
-   * a library. Sharing the state would mean a union the renderer has to narrow on
+   * A library header's right-click menu. Separate from `menu` because the two have
+   * different targets and different actions: one acts on sounds, this one on a
+   * library. Sharing the state would mean a union the renderer has to narrow on
    * every read, and the menus never open at the same time anyway.
    */
   const [libMenu, setLibMenu] = createSignal<{ library: LibraryStatus; x: number; y: number } | null>(
@@ -133,10 +145,16 @@ export function App() {
   const [querying, setQuerying] = createSignal(false)
 
   const [sidebarW, setSidebarW] = createSignal(
-    Math.min(
-      SIDEBAR_MAX,
-      Math.max(SIDEBAR_MIN, Number(localStorage.getItem(SIDEBAR_KEY)) || 232)
-    )
+    Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Number(localStorage.getItem(SIDEBAR_KEY)) || 232))
+  )
+
+  /**
+   * The output level. Kept in the renderer as well as the engine so the slider
+   * tracks the pointer without waiting for a round trip; `setGain` is fired on
+   * every move and the engine clamps to what it actually applied.
+   */
+  const [gain, setGain] = createSignal(
+    Math.min(1, Math.max(0, Number(localStorage.getItem(GAIN_KEY)) || 1))
   )
 
   const playhead = usePlayhead()
@@ -187,19 +205,15 @@ export function App() {
    * Append the next page.
    *
    * Offset is the number of rows already loaded, which is correct because the
-   * request is sorted: the index returns a stable window for a given sort, so
-   * page two cannot overlap page one. A re-sort resets the list, so a stale
-   * offset cannot survive into a different ordering.
+   * request is sorted: the index returns a stable window for a given sort, so page
+   * two cannot overlap page one. A re-sort resets the list, so a stale offset
+   * cannot survive into a different ordering.
    */
   const loadMore = async () => {
     if (loadingMore() || !hasMore()) return
     setLoadingMore(true)
     try {
-      const req = {
-        ...request(),
-        limit: settings().pageSize,
-        offset: rows().length
-      }
+      const req = { ...request(), limit: settings().pageSize, offset: rows().length }
       const page = await api.search(req)
       if (page.length === 0) {
         // Nothing came back: the count is ahead of the data (a pass finished
@@ -306,6 +320,24 @@ export function App() {
   }
 
   /**
+   * Move the output level.
+   *
+   * The signal is set first so the slider and the percentage follow the pointer
+   * with no latency; the engine call is fire-and-forget because a dropped one
+   * costs a level change the user will make again, not a broken state. The value
+   * is persisted so the next launch starts where this one ended.
+   */
+  const changeGain = (next: number) => {
+    const clamped = Math.min(1, Math.max(0, next))
+    setGain(clamped)
+    localStorage.setItem(GAIN_KEY, String(clamped))
+    api.setGain(clamped).catch(() => {
+      // The engine clamps to its own range; a rejection here means no device,
+      // and the level is remembered for whenever one opens.
+    })
+  }
+
+  /**
    * Add a library. Blocks on the index pass and shows the overlay while it runs.
    *
    * `add_library` only resolves when the pass is done, so the overlay is driven by
@@ -337,17 +369,15 @@ export function App() {
   /**
    * Reindex one library, blocking.
    *
-   * `root` names the library; `null` means the active one. The context menu can
-   * act on a background library without switching to it first, which is the whole
-   * point of moving this out of Settings.
+   * Named explicitly rather than defaulting to the active one: the rail's menu
+   * acts on whichever library was right-clicked, which may be in the background.
    */
-  const reindexLibrary = async (root: string | null, full: boolean) => {
-    const label = full ? 'Re-probing every file…' : 'Looking for changes…'
-    const target = root ?? activeLibrary()?.root
-    if (!target) return
-    setIndexing({ label, progress: null })
+  const reindexLibrary = async (root: string, full: boolean) => {
+    setIndexing({ label: full ? 'Full reindex…' : 'Reindexing…', progress: null })
     try {
-      await api.reindexLibrary(target, (progress) => setIndexing({ label, progress }), full)
+      await api.reindexLibrary(root, (progress) => {
+        setIndexing({ label: full ? 'Full reindex…' : 'Reindexing…', progress })
+      }, full)
       await refresh()
     } catch (e) {
       setNotice(String(e))
@@ -357,14 +387,18 @@ export function App() {
   }
 
   const switchLibrary = async (root: string) => {
+    if (activeLibrary()?.root === root) return
     try {
       setLibraries(await api.setActiveLibrary(root))
+      // A different database means every derived thing is stale: the facets, the
+      // folder tree, the undo stack and the rows.
       setCategory(null)
       setSubcategory(null)
       setFolder(null)
       setFavoritesOnly(false)
-      await Promise.all([loadTree(), loadSidebar()])
-      await runSearch()
+      setSelection([])
+      setActive(null)
+      await refresh()
     } catch (e) {
       setNotice(String(e))
     }
@@ -373,29 +407,31 @@ export function App() {
   const removeLibrary = async (root: string) => {
     try {
       setLibraries(await api.removeLibrary(root))
-      await Promise.all([loadTree(), loadSidebar()])
-      await runSearch()
+      await refresh()
     } catch (e) {
       setNotice(String(e))
     }
   }
 
-  const changeSelection = (paths: string[], next: SoundRow | null) => {
-    setSelection(paths)
-    if (next) setActive(next)
-  }
-
-  const activate = (row: SoundRow) => {
-    if (settings().autoPlay) void play(row)
-    else setActive(row)
-  }
-
-  const changeSettings = (next: Settings) => {
+  const changeSettings = (patch: Partial<Settings>) => {
+    const next = { ...settings(), ...patch }
     setSettings(next)
     saveSettings(next)
+    if (patch.autoPlay !== undefined) {
+      // The dock's AUTO PLAY switch and this setting are the same policy, so they
+      // are persisted under the same key rather than two that can disagree.
+      localStorage.setItem('mio:autoplay', String(next.autoPlay))
+    }
+    if (patch.pageSize !== undefined || patch.infiniteScroll !== undefined) {
+      void runSearch()
+    }
   }
 
-  const toggleAutoPlay = () => changeSettings({ ...settings(), autoPlay: !settings().autoPlay })
+  const changeTheme = (id: string) => {
+    setTheme(applyTheme(id).id)
+  }
+
+  const toggleAutoPlay = () => changeSettings({ autoPlay: !settings().autoPlay })
 
   const changeSort = (key: SortKey) => {
     if (sortKey() === key) {
@@ -407,30 +443,50 @@ export function App() {
     void runSearch()
   }
 
-  const setCategoryFilter = (next: string | null, sub: string | null) => {
-    setCategory(next)
+  const changeSelection = (paths: string[], nextActive: SoundRow | null) => {
+    setSelection(paths)
+    if (nextActive) setActive(nextActive)
+  }
+
+  /**
+   * Clicking a row: select it, and audition it when auto-play is on.
+   *
+   * The keyboard's arrow keys go through the same path, so "clicking a row plays
+   * it" and "walking the list plays each one" cannot diverge.
+   */
+  const activate = (row: SoundRow) => {
+    setActive(row)
+    if (settings().autoPlay) void play(row)
+  }
+
+  const setCategoryFilter = (name: string | null, sub: string | null) => {
+    setCategory(name)
     setSubcategory(sub)
+    // A category and a folder are two ways of narrowing the same list; keeping
+    // both would produce an empty result the user cannot explain.
+    setFolder(null)
     void runSearch()
   }
 
-  const setFolderFilter = (next: string | null) => {
-    setFolder(next)
+  const setFolderFilter = (path: string | null) => {
+    setFolder(path)
+    setCategory(null)
+    setSubcategory(null)
+    setFavoritesOnly(false)
     void runSearch()
   }
 
   /**
-   * Ctrl+A. Asks for paths only, because selecting everything in a 280k library
-   * is not a table page: `search` clamps at 5,000 rows by design, and a "select
-   * all" that silently stops at the clamp is worse than no shortcut.
+   * Select every path the filter matches.
+   *
+   * Deliberately a separate command from `search`: the page on screen is clamped,
+   * and "select all" in a filtered subset of a 280k library is not a page. The
+   * backend returns paths only, which is why this does not need full rows.
    */
   const selectAll = async () => {
     try {
-      const paths = await api.matchingPaths({ ...request(), limit: 0 })
+      const paths = await api.matchingPaths(request())
       setSelection(paths)
-      if (paths[0]) {
-        const first = rows().find((r) => r.path === paths[0])
-        if (first) setActive(first)
-      }
       setNotice(`${paths.length.toLocaleString()} selected`)
     } catch (e) {
       setNotice(String(e))
@@ -543,7 +599,10 @@ export function App() {
         disabled: !one,
         onSelect: () => {
           if (!one) return
-          const dir = one.path.slice(0, Math.max(one.path.lastIndexOf('/'), one.path.lastIndexOf('\\')))
+          const dir = one.path.slice(
+            0,
+            Math.max(one.path.lastIndexOf('/'), one.path.lastIndexOf('\\'))
+          )
           setCategoryFilter(null, null)
           setFolderFilter(dir === activeLibrary()?.root ? null : dir)
         }
@@ -636,10 +695,18 @@ export function App() {
    */
   const onKeyDown = (event: KeyboardEvent) => {
     const el = document.activeElement as HTMLElement | null
+    const tag = el?.tagName ?? ''
+    // iX components put a native input inside a shadow root, so the host is what
+    // `activeElement` reports. Treating the whole iX namespace as "in a field"
+    // would also swallow Space on a focused button, which is correct: a focused
+    // button activates on Space.
     const inField =
-      el?.tagName === 'INPUT' ||
-      el?.tagName === 'TEXTAREA' ||
-      el?.tagName === 'SELECT' ||
+      tag === 'INPUT' ||
+      tag === 'TEXTAREA' ||
+      tag === 'SELECT' ||
+      tag === 'IX-INPUT' ||
+      tag === 'IX-SLIDER' ||
+      tag === 'IX-SELECT' ||
       el?.isContentEditable === true
 
     // Nothing but Escape works while a blocking index pass owns the window.
@@ -669,7 +736,14 @@ export function App() {
       return
     }
 
-    if (event.code === 'Space' && !inField && !categoryDialog() && !settingsOpen() && !menu()) {
+    if (
+      event.code === 'Space' &&
+      !inField &&
+      !categoryDialog() &&
+      !settingsOpen() &&
+      !menu() &&
+      !libMenu()
+    ) {
       event.preventDefault()
       void togglePlayback()
       return
@@ -707,6 +781,13 @@ export function App() {
   }
 
   onMount(() => {
+    // The theme has to be on the document before the first paint, or the window
+    // flashes iX's default palette. `main.tsx` applies it too; this call covers a
+    // settings change made in another window.
+    setTheme(applyTheme(theme()).id)
+    // Push the remembered level into the engine: the slider is renderer state,
+    // and the engine starts at unity.
+    void api.setGain(gain()).catch(() => {})
     void refresh()
     window.addEventListener('keydown', onKeyDown)
     onCleanup(() => window.removeEventListener('keydown', onKeyDown))
@@ -728,7 +809,7 @@ export function App() {
     }
     if (favoritesOnly()) {
       chips.push({
-        label: '★ Favorites',
+        label: 'Favorites',
         clear: () => {
           setFavoritesOnly(false)
           void runSearch()
@@ -741,27 +822,42 @@ export function App() {
   return (
     <div class="app">
       <header class="topbar">
-        <div class="brand">ReSlip</div>
+        <div class="brand">
+          <span class="brand-name">Mio Sound Manager</span>
+          <span class="brand-sub">samples</span>
+        </div>
 
         <Show when={activeLibrary()}>
           {(library) => (
-            <span class="lib-chip" title={library().root}>
+            <ix-pill class="lib-chip" variant="neutral" outline title={library().root}>
               {library().name}
-            </span>
+            </ix-pill>
           )}
         </Show>
 
         <div class="spacer" />
 
         <Show when={history().undo}>
-          <button class="ghost" onClick={() => void undo()} title="Undo (Ctrl+Z)">
-            ↶ Undo
-          </button>
+          <ix-icon-button
+            id="undo-button"
+            size="16"
+            variant="tertiary"
+            icon={ICON.undo}
+            title={`Undo ${history().undo} (Ctrl+Z)`}
+            aria-label="Undo"
+            onClick={() => void undo()}
+          />
         </Show>
         <Show when={history().redo}>
-          <button class="ghost" onClick={() => void redo()} title="Redo (Ctrl+Shift+Z)">
-            ↷ Redo
-          </button>
+          <ix-icon-button
+            id="redo-button"
+            size="16"
+            variant="tertiary"
+            icon={ICON.redo}
+            title={`Redo ${history().redo} (Ctrl+Shift+Z)`}
+            aria-label="Redo"
+            onClick={() => void redo()}
+          />
         </Show>
 
         <Show when={notice()}>
@@ -770,14 +866,15 @@ export function App() {
           </button>
         </Show>
 
-        <button
-          class="ghost icon"
-          onClick={() => setSettingsOpen(true)}
+        <ix-icon-button
+          id="settings-button"
+          size="16"
+          variant="tertiary"
+          icon={ICON.settings}
           title="Settings (Ctrl+,)"
           aria-label="Settings"
-        >
-          <GearIcon />
-        </button>
+          onClick={() => setSettingsOpen(true)}
+        />
       </header>
 
       <div class="body" style={{ 'grid-template-columns': `${sidebarW()}px 1fr` }}>
@@ -812,26 +909,34 @@ export function App() {
 
         <main class="main">
           <div class="main-head">
-            <input
-              class="search"
-              placeholder="Search samples…"
-              value={query()}
-              onInput={(e) => {
-                setQuery(e.currentTarget.value)
-                scheduleSearch()
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setQuery('')
-                  void runSearch()
-                  e.currentTarget.blur()
-                }
-              }}
-            />
+            <div class="search">
+              <ix-input
+                id="search-input"
+                placeholder="Search samples…"
+                value={query()}
+                on:valueChange={(e: CustomEvent<string>) => {
+                  setQuery(e.detail)
+                  scheduleSearch()
+                }}
+                onKeyDown={(e: KeyboardEvent) => {
+                  if (e.key === 'Escape') {
+                    setQuery('')
+                    void runSearch()
+                  }
+                }}
+              />
+            </div>
             {filterChips().map((chip) => (
-              <button class="chip" onClick={chip.clear}>
-                {chip.label} <span class="chip-x">×</span>
-              </button>
+              <ix-chip
+                class="filter-chip"
+                variant="primary"
+                outline
+                closable
+                onClick={chip.clear}
+                on:closeChip={chip.clear}
+              >
+                {chip.label}
+              </ix-chip>
             ))}
             <div class="spacer" />
             <Show when={matching() > 0}>
@@ -839,22 +944,35 @@ export function App() {
                 {matching().toLocaleString()} match{matching() === 1 ? '' : 'es'}
               </span>
             </Show>
-            <button class="ghost" onClick={() => void addLibrary()} title="Add a library (Ctrl+O)">
+            <ix-button
+              variant="secondary"
+              icon={ICON.folderOpen}
+              onClick={() => void addLibrary()}
+              title="Add a library (Ctrl+O)"
+            >
               Add library
-            </button>
+            </ix-button>
           </div>
 
           <Show
             when={libraries().length > 0}
             fallback={
               <div class="empty">
+                <ix-icon name={bootError() ? ICON.error : ICON.database} size="48" />
                 <h1>{bootError() ? 'Backend error' : 'No library open'}</h1>
                 <Show when={bootError()}>
                   <p class="bad">{bootError()}</p>
                 </Show>
-                <button class="primary" onClick={() => void addLibrary()}>
+                <Show when={!bootError()}>
+                  <p>
+                    Point Mio at a folder of samples. The first pass indexes every file it
+                    finds, which takes about a minute for 280k files and a few seconds after
+                    that.
+                  </p>
+                </Show>
+                <ix-button variant="primary" icon={ICON.folderOpen} onClick={() => void addLibrary()}>
                   Open library…
-                </button>
+                </ix-button>
               </div>
             }
           >
@@ -886,9 +1004,11 @@ export function App() {
             paused={playhead.paused()}
             selectionCount={selection().length}
             autoPlay={settings().autoPlay}
+            gain={gain()}
             onStop={() => void stop()}
             onToggle={() => void togglePlayback()}
             onToggleAutoPlay={toggleAutoPlay}
+            onGain={changeGain}
             onSeek={(seconds) => {
               const row = active()
               if (row) void play(row, seconds)
@@ -966,14 +1086,19 @@ export function App() {
       <Show when={settingsOpen()}>
         <SettingsDialog
           settings={settings()}
+          theme={theme()}
           onChange={changeSettings}
+          onTheme={changeTheme}
           status={status()}
+          libraries={libraries()}
+          activeLibrary={activeLibrary()}
           onStatus={(next) => {
             // A device switch changes the format, so anything derived from the old
             // one has to be re-read: the rows are fine, but the playhead, the
             // status bar and the dock all read the new engine.
             setStatus(next)
           }}
+          onAddLibrary={() => void addLibrary()}
           onClose={() => setSettingsOpen(false)}
         />
       </Show>

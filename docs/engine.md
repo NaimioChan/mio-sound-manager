@@ -1,6 +1,6 @@
-# ReSlip 音频引擎
+# Mio Sound Manager 音频引擎
 
-`crates/reslip-engine` 的模块细节。架构依据见 `docs/architecture.md` 第 4、8 节；本文件只说代码怎么组织、为什么这么切。实测数字见 `docs/agent-log.md` 与 `docs/architecture.md` 8.1。
+`crates/mio-engine` 的模块细节。架构依据见 `docs/architecture.md` 第 4、8 节；本文件只说代码怎么组织、为什么这么切。实测数字见 `docs/agent-log.md` 与 `docs/architecture.md` 8.1。
 
 ## 模块
 

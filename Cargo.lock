@@ -2358,6 +2358,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "mio-app"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "mio-engine",
+ "mio-index",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-drag",
+ "tauri-plugin-opener",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mio-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mio-engine",
+ "mio-index",
+ "rayon",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
+name = "mio-engine"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "asio-sys",
+ "crossbeam-queue",
+ "log",
+ "rubato",
+ "symphonia",
+ "thiserror 2.0.21",
+ "wasapi",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "mio-index"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rayon",
+ "rusqlite",
+ "serde_json",
+ "symphonia",
+ "thiserror 2.0.21",
+ "walkdir",
+]
+
+[[package]]
 name = "muda"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3258,64 +3316,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
-]
-
-[[package]]
-name = "reslip-app"
-version = "0.1.0"
-dependencies = [
- "log",
- "reslip-engine",
- "reslip-index",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-drag",
- "tauri-plugin-opener",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "reslip-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rayon",
- "reslip-engine",
- "reslip-index",
- "rusqlite",
- "serde_json",
-]
-
-[[package]]
-name = "reslip-engine"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "asio-sys",
- "crossbeam-queue",
- "log",
- "rubato",
- "symphonia",
- "thiserror 2.0.21",
- "wasapi",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "reslip-index"
-version = "0.1.0"
-dependencies = [
- "log",
- "rayon",
- "rusqlite",
- "serde_json",
- "symphonia",
- "thiserror 2.0.21",
- "walkdir",
 ]
 
 [[package]]

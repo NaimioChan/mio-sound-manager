@@ -1,6 +1,6 @@
-import { Show, createEffect, createSignal, onCleanup } from 'solid-js'
+import { Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import { api, type SoundRow } from './ipc'
-import { PauseIcon, PlayIcon, StopIcon } from './icons'
+import { ICON } from './icons'
 
 interface Props {
   row: SoundRow | null
@@ -13,9 +13,12 @@ interface Props {
   selectionCount: number
   /** Auto-play on select: whether clicking a row auditions it. */
   autoPlay: boolean
+  /** Output gain, `0..1`. */
+  gain: number
   onStop: () => void
   onToggle: () => void
   onToggleAutoPlay: () => void
+  onGain: (gain: number) => void
   onSeek: (seconds: number) => void
   /** Decode cost of the waveform, reported to the status bar only. */
   onDecoded: (ms: number) => void
@@ -23,6 +26,9 @@ interface Props {
 
 const MIN_H = 64
 const MAX_H = 260
+
+/** Slider range. 1% is fine enough for a level control and keeps the readout steady. */
+const GAIN_MAX = 100
 
 /**
  * The waveform dock.
@@ -44,7 +50,6 @@ export function WaveformDock(props: Props) {
 
   let waveCanvas: HTMLCanvasElement | undefined
   let headCanvas: HTMLCanvasElement | undefined
-  let container: HTMLDivElement | undefined
 
   // A new row invalidates whatever waveform is on screen immediately, so the dock
   // never shows the previous sample's shape under the new sample's name.
@@ -75,6 +80,12 @@ export function WaveformDock(props: Props) {
     })
   })
 
+  /** A CSS variable resolved on the document, for the two canvas colours. */
+  const token = (name: string, fallback: string): string => {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    return value || fallback
+  }
+
   const drawPeaks = () => {
     const canvas = waveCanvas
     const data = peaks()
@@ -94,16 +105,16 @@ export function WaveformDock(props: Props) {
     const mid = h / 2
 
     // No background fill: the container already has the panel colour, and filling
-    // it here is what turned the whole dock blue on the first run.
+    // it here is what turned the whole dock one colour on the first run.
     if (!data || data.length === 0) return
 
     // A one-pixel zero line, so an all-silent sample reads as a flat line rather
     // than as an empty panel.
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--border-strong')
+    ctx.fillStyle = token('--theme-color-3', '#3c484d')
     ctx.fillRect(0, Math.round(mid), w, 1)
 
     const barW = w / data.length
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--wave')
+    ctx.fillStyle = token('--mio-wave', '#00eaff')
     for (let i = 0; i < data.length; i++) {
       const peak = data[i] ?? 0
       const barH = Math.max(1, peak * (h - 4))
@@ -131,7 +142,7 @@ export function WaveformDock(props: Props) {
     if (duration <= 0) return
     const fraction = Math.min(1, Math.max(0, props.positionS / duration))
     const x = fraction * w
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--playhead')
+    ctx.fillStyle = token('--mio-playhead', '#ffffff')
     ctx.fillRect(x - 0.5, 0, 1, h)
   }
 
@@ -147,6 +158,26 @@ export function WaveformDock(props: Props) {
     peaks()
     height()
     drawPeaks()
+  })
+
+  /**
+   * Repaint when the theme changes.
+   *
+   * The canvases are painted once and then left alone, so a theme switch would
+   * leave the old palette on screen — the peaks layer is never repainted at all.
+   * A MutationObserver on the root's theme attributes is the cheapest honest
+   * signal that the tokens moved.
+   */
+  onMount(() => {
+    const observer = new MutationObserver(() => {
+      drawPeaks()
+      drawHead()
+    })
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-mio-theme', 'data-ix-color-schema', 'style']
+    })
+    onCleanup(() => observer.disconnect())
   })
 
   const startResize = (event: PointerEvent) => {
@@ -182,8 +213,11 @@ export function WaveformDock(props: Props) {
     return `${mm}:${ss} / ${dm}:${ds}`
   }
 
+  /** Slider units (`0..100`) to gain. */
+  const gainFromSlider = (value: number) => Math.max(0, Math.min(1, value / GAIN_MAX))
+
   return (
-    <section class="dock" ref={container}>
+    <section class="dock">
       <div class="dock-resize" onPointerDown={startResize} />
 
       <div class="dock-head">
@@ -210,45 +244,76 @@ export function WaveformDock(props: Props) {
 
         <div class="spacer" />
 
+        {/*
+          Volume, immediately left of AUTO PLAY. A mute toggle plus the short
+          slider, in one cluster: they change the same thing, so they read as one
+          control. Never disabled — the level belongs to the output, not to the
+          clip, so it is settable with nothing loaded.
+        */}
+        <div class="volume" title="Output level">
+          <ix-icon-button
+            id="volume-mute"
+            size="24"
+            variant="tertiary"
+            icon={props.gain === 0 ? ICON.mute : ICON.sound}
+            title={props.gain === 0 ? 'Unmute' : 'Mute'}
+            aria-label={props.gain === 0 ? 'Unmute' : 'Mute'}
+            onClick={() => props.onGain(props.gain === 0 ? 1 : 0)}
+          />
+          <div class="volume-slider">
+            <ix-slider
+              id="volume-slider"
+              min={0}
+              max={GAIN_MAX}
+              step={1}
+              value={Math.round(props.gain * GAIN_MAX)}
+              trace
+              aria-label="Output level"
+              on:valueChange={(e: CustomEvent<number>) => props.onGain(gainFromSlider(e.detail))}
+            />
+          </div>
+          <span class="volume-value">{Math.round(props.gain * 100)}%</span>
+        </div>
 
         {/*
-          Icon-only transport. The auto-play toggle leads, then Pause/Resume and
-          Stop, so the three controls that decide whether a click makes sound sit
-          in one cluster instead of being split between the top bar and the dock.
-          Each one carries its label in `title` and `aria-label`: with no text on
-          screen, those are the only names a screen reader or a tooltip has.
+          AUTO PLAY leads the transport, then Pause/Resume and Stop, so the three
+          controls that decide whether a click makes sound sit in one cluster
+          instead of being split between the top bar and the dock. It is a word
+          rather than a bolt glyph: the state is a policy ("does clicking a row
+          make sound"), and a 12px icon cannot say that.
         */}
-        <button
-          class={props.autoPlay ? 'ghost auto on' : 'ghost auto'}
-          onClick={props.onToggleAutoPlay}
+        <ix-toggle-button
+          id="auto-play"
+          variant="secondary"
+          pressed={props.autoPlay}
           title={`Auto-play ${props.autoPlay ? 'on' : 'off'} — clicking a row auditions it (Alt+A)`}
           aria-label={`Auto-play ${props.autoPlay ? 'on' : 'off'}`}
-          aria-pressed={props.autoPlay}
+          on:pressedChange={() => props.onToggleAutoPlay()}
         >
           AUTO PLAY
-        </button>
+        </ix-toggle-button>
 
-        <button
-          class="ghost icon"
-          onClick={props.onToggle}
+        <ix-icon-button
+          id="transport-toggle"
+          size="24"
+          variant="tertiary"
+          icon={props.paused ? ICON.play : ICON.pause}
           disabled={!props.playing && !props.paused}
           title={props.paused ? 'Resume (Space)' : 'Pause (Space)'}
           aria-label={props.paused ? 'Resume' : 'Pause'}
-        >
-          <Show when={props.paused} fallback={<PauseIcon />}>
-            <PlayIcon />
-          </Show>
-        </button>
+          onClick={props.onToggle}
+        />
 
-        <button
-          class="ghost icon"
-          onClick={props.onStop}
+        <ix-icon-button
+          id="transport-stop"
+          size="24"
+          variant="tertiary"
+          icon={ICON.stop}
           disabled={!props.playing && !props.paused}
           title="Stop and clear the playhead"
           aria-label="Stop"
-        >
-          <StopIcon />
-        </button>
+          onClick={props.onStop}
+        />
       </div>
 
       <div class="wave-wrap" style={{ height: `${height()}px` }}>
@@ -258,9 +323,7 @@ export function WaveformDock(props: Props) {
         <Show when={loading()}>
           <div class="wave-overlay">decoding…</div>
         </Show>
-        <Show when={loadError()}>
-          {(err) => <div class="wave-overlay bad">{err()}</div>}
-        </Show>
+        <Show when={loadError()}>{(err) => <div class="wave-overlay bad">{err()}</div>}</Show>
 
         <Show when={props.row}>
           <div class="wave-time">{label()}</div>

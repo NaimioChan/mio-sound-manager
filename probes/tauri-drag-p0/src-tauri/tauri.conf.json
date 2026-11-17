@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "reslip-p0-drag",
+  "productName": "mio-p0-drag",
   "version": "0.1.0",
-  "identifier": "com.naimio.reslip.p0drag",
+  "identifier": "com.naimio.miosound.p0drag",
   "build": {
     "frontendDist": "../ui"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ReSlip P0 — drag a file into a DAW",
+        "title": "Mio Sound Manager P0 — drag a file into a DAW",
         "width": 660,
         "height": 620,
         "resizable": true,

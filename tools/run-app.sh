@@ -3,7 +3,7 @@
 # be driven over CDP instead of by clicking.
 #
 #   ./tools/run-app.sh                 # default device
-#   RESLIP_DEVICE=E2x2 ./tools/run-app.sh
+#   MIO_DEVICE=E2x2 ./tools/run-app.sh
 #   ./tools/run-app.sh --cdp 9223
 #
 # Why a script: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` has to be set before the
@@ -23,11 +23,11 @@ if [ ! -f ui/dist/index.html ]; then
   exit 1
 fi
 
-if [ ! -f target/release/reslip.exe ]; then
-  echo "target/release/reslip.exe is missing; run: cargo build -p reslip-app --release" >&2
+if [ ! -f target/release/mio-sound-manager.exe ]; then
+  echo "target/release/mio-sound-manager.exe is missing; run: cargo build -p mio-app --release" >&2
   exit 1
 fi
 
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=${PORT}"
 echo "webview debugger: http://127.0.0.1:${PORT}"
-exec ./target/release/reslip.exe
+exec ./target/release/mio-sound-manager.exe

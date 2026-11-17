@@ -2,6 +2,34 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-17 15:12 · hermes · 改名 Mio Sound Manager + iX 重写前端 + 主题系统 + 输出音量
+
+- 改: 新仓 `projects/mio-sound-manager`（从 `reslip` 迁入，`target/`、`ui/node_modules`、`ui/dist` 未带）；`crates/reslip-*` → `crates/mio-*`，crate/二进制名、identifier（`com.naimio.miosound`）、`localStorage` 前缀（`mio:`）、线程名全部改名；`ui/src/` 前端整体重写（SolidJS + `@siemens/ix` 5.3）：新增 `theme.ts`（六套主题）、`icons.ts`、`ix-elements.d.ts`；`styles.css` 重写为纯 token；`WaveformDock` 加静音按钮 + 104px 横向滑杆 + 百分比；引擎加 `set_gain`/`get_gain`（`Shared.gain_bits` 原子 + 渲染回调按设备格式原地缩放）；`tools/` 删掉旧的 8 个检查脚本，换成 `check-interactions` / `check-themes` / `check-volume` / `check-layout` / `shot` / `shot-themes`
+- 验证: `cargo test --release` 62 个通过（engine 13 / index 49）；`tsc --noEmit` 干净；`check-layout.mjs` 通过（区域拼合、列轨道对齐、dock 顺序「音量 → AUTO PLAY → 暂停 → 停止」）；`check-themes.mjs` 六套主题应用 + 重载保留 + WCAG 对比度全部通过；`check-volume.mjs` 滑杆→IPC→引擎→回读、静音、重载全部通过；`check-interactions.mjs` 24 项全部通过（含播放头推进/暂停冻结/Stop 归零/波形 seek）；真实 271,350 条库上跑过
+- 遗留: ① 主题只能改 `theme.ts` 的数组，没有导入/导出界面；② 音量是线性映射，没做 dB 曲线；③ 拖拽导出仍只验证到命令被调用，没在真实 DAW 里拖过（P0 遗留）；④ `probes/` 里的旧探针仍带旧项目名，未改名（它们是历史记录，不影响构建）
+- 下一步: 无。P8 及之后按用户要求不做
+
+### 四条要求各自的落地方式
+
+**一、改名并迁移。** 不是复制一份再改，是迁入新目录后逐个改：crate 目录名、`Cargo.toml` 的 `name`/`description`/`path` 依赖、`use mio_engine::*`、二进制名 `mio-sound-manager`、`tauri.conf.json` 的 `productName`/`identifier`/窗口标题、`tools/*.sh` 里的 exe 名、`localStorage` 键前缀。改完先单独跑 `cargo build --release` + `cargo test --release`，确认后端没破再动前端。
+
+**二、iX 重写前端，布局不变。** 布局（顶栏 / 可拖侧栏 / 列表 / 波形 dock / 状态栏）与交互（选择模型、快捷键、无限滚动、右键菜单、阻塞索引遮罩）全部保留，换的是视觉与控件实现。表格、侧栏、右键菜单、dock 仍是自有 DOM：iX 没有虚拟化表格，27 万行不能每行建一个组件。
+
+**三、主题系统。** 一个主题是**八个颜色**，两百多个 token 由它们推导（中性 ramp、ghost/component 的 alpha、语义色的 hover/active、滚动条、canvas 两色）。六套内置：Classic Dark/Light（iX 原样/反色，不注入覆盖块）、Studio Dark/Light、Amber Console、Frost。覆盖块选择器 `html[data-ix-theme][data-ix-color-schema]`（0,2,1）压过 iX 自己的（0,2,0），这一点在浏览器里验过。
+
+**四、音量滑杆。** 放在 `AUTO PLAY` 左侧：静音图标按钮 + 104px 横向 `ix-slider` + 百分比读数。增益存在引擎的 `Shared.gain_bits`（`AtomicU32` 存 f32 位模式），渲染回调读到非单位增益时对拷进 scratch 的字节按设备采样格式原地缩放；单位增益跳过缩放，回调仍是纯 memcpy。换设备时把记住的增益写进新引擎，否则切设备会静默重置音量。
+
+### 被检查抓到、修掉的四个真实缺陷
+
+1. **主题重载后回退默认。** 主题同时存在 `mio:theme` 和设置 blob 两处，重载后设置里的旧值赢。修法是把主题的所有权收到 `theme.ts` 一处，设置 blob 不再存 theme。
+2. **soft-text 对比度不足。** 0.66 alpha 在 Studio Dark 的侧栏底色上只有 3.99:1。改成 0.78（std 0.94、weak 0.58），这是**通过 WCAG 检查的那组数**。
+3. **表头颜色过暗。** 列头用 weak-text 时 2.62:1，低于 3:1；改用 soft-text。
+4. **`aria-label` 读不到。** iX 的 `InheritAriaAttributesMixin` 把 host 的 `aria-*` 移到 shadow root 内的 `<button>` 并从 host 删除，CDP 脚本读 host 拿到 `null`。检查脚本改为读内层按钮。
+
+### 一条给接手者的提醒
+
+iX 组件的验证有三个坑，都写进 `docs/app.md` 了：控件在 shadow root 里（点 host 无效）、禁用态有 `pointer-events: none`（Playwright 会重试到超时）、上一轮的 modal 会挡住后面所有点击（脚本开头先 `page.reload()`）。另外 **`ix-modal` 的 host 永远是 0×0**，因为内层 `dialog` 是 `position: fixed`；量尺寸要量 shadow root 里的 `dialog`。
+
 ## 2026-11-17 · hermes · 分类只认 ASCII + 厂牌名不算描述
 
 - 改: `tools/taxonomy.py`（删掉全部中文提示词，133 个条目从三元组降到二元组；补 15 个实测缺口的英文词）；`tools/gen-category-dict.py`（不再生成 `hints` 字段）；`crates/reslip-index/src/classify/mod.rs`（删掉 Hint 结构、中文匹配两处调用与兜底分支、新增 `BRAND_TOKENS` 只在文件名首位跳过）；`docs/index.md`、`tools/README.md`

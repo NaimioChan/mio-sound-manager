@@ -1,7 +1,7 @@
 // The IPC contract, in one place.
 //
 // Every type here mirrors a `#[derive(Serialize)]` struct in
-// `crates/reslip-app/src/commands.rs`. They are hand-written rather than
+// `crates/mio-app/src/commands.rs`. They are hand-written rather than
 // generated because the surface is small and a generator would need a build step
 // that runs before the webview bundles — the one thing that must not fail on a
 // machine without Rust installed.
@@ -171,6 +171,16 @@ export const api = {
   resume: () => invoke<void>('resume'),
 
   position: () => invoke<PlaybackPosition>('get_playback_position'),
+
+  /**
+   * Output gain. `1.0` is unity, `0.0` silence; the engine clamps to `0..4`.
+   *
+   * One atomic store on the render thread's side, so it takes effect on the
+   * playing clip without a re-publish and without a re-decode.
+   */
+  setGain: (gain: number) => invoke<number>('set_gain', { gain }),
+
+  gain: () => invoke<number>('get_gain'),
 
   waveform: (path: string, buckets?: number) =>
     invoke<Waveform>('get_waveform', { path, buckets: buckets ?? null }),

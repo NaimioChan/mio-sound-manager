@@ -1,4 +1,4 @@
-# ReSlip 架构设计
+# Mio Sound Manager 架构设计
 
 状态：**设计定稿，P0–P4 已实现**。本文回答「后端怎么做、栈怎么选」，不描述功能（功能与 UI/UX 沿用 Slip Sound，行为基准见 `C:\Users\Naimio\projects\slip-sound` 的 `AGENTS.md` 与 `src/renderer/src/components/WAVEFORM-PLAYBACK.md`）。延迟数字取自本文第 2、3、8.1 节的实测，索引数字来自第 5 节与 `docs/index.md`，均为本机实测；原始测量笔记已随调研阶段结束移除，需要复测时用 `probes/` 重跑。
 
@@ -14,7 +14,7 @@
 | 索引存储 | **SQLite（rusqlite bundled）+ WAL + FTS5** | 2 万文件头探测 0.7s，插入 0.13s，索引构建 17ms |
 | 索引并行度 | **8 线程**（`min(核心数, 8)`） | 实测 1→8 线程从 2.5s 降到 0.8s，16 线程无进一步收益 |
 | 外壳 | **Tauri 2** | 体积与内存优势；webview 不参与音频，只做 UI |
-| 前端 | **SolidJS + Tailwind 4**（沿用） | UI/UX 已定，组件可整体搬移 |
+| 前端 | **SolidJS + Siemens iX 5.3**（P7 换掉 Tailwind） | UI/UX 已定，交互模型不动；视觉与控件改为西门子设计系统的 web components，颜色统一走 `--theme-*` token，主题系统才能一处改全局变 |
 | ffmpeg | **保留为外部进程，仅用于导出与特效渲染** | 播放路径完全不经过 ffmpeg；导出复用现有滤镜链 |
 
 ## 2. 为什么是 WASAPI 共享 + 可选 ASIO
@@ -43,10 +43,10 @@ ASIO 的数字是 P6 落地后在同一套 `publish → 出声` 口径下复测�
 | --- | --- |
 | Slip Sound 现状（冷文件，未预载） | 60–100ms |
 | Slip Sound 现状（连按方向键，池化预载命中） | 10–26ms |
-| ReSlip（WASAPI 共享，任何文件） | 17.5ms |
-| ReSlip（大文件冷启动，未预解码） | 17.5ms + 解码（3 分钟 96k/24bit 要 112ms） |
+| Mio Sound Manager（WASAPI 共享，任何文件） | 17.5ms |
+| Mio Sound Manager（大文件冷启动，未预解码） | 17.5ms + 解码（3 分钟 96k/24bit 要 112ms） |
 
-ReSlip 把最差情况从 60–100ms 压到 17.5ms，但**不能击败 Slip Sound 的池化预载命中路径**（10–26ms 与 17.5ms 是同一量级）。这是必须说清楚的地方：重写后端换来的不是「连按更快」，而是「冷文件不再慢」和「不用再维护元素池那套预载逻辑」。
+Mio Sound Manager 把最差情况从 60–100ms 压到 17.5ms，但**不能击败 Slip Sound 的池化预载命中路径**（10–26ms 与 17.5ms 是同一量级）。这是必须说清楚的地方：重写后端换来的不是「连按更快」，而是「冷文件不再慢」和「不用再维护元素池那套预载逻辑」。
 
 预解码邻行仍然要做，但它的收益不是延迟——设备侧 12ms 排队躲不掉——而是**避免大文件冷启动时叠加 112ms 解码**。见 3.2。
 
@@ -247,7 +247,7 @@ cpal 是跨平台抽象，它把「周期、缓冲、排队量」都藏在背后
 
 唯一缺陷：**M4A 从头部读不到声道数**（返回 0），必须解码第一个包。这是 symphonia 的 `isomp4` 行为，不是 bug。处理：M4A 走「探测 + 解码首包」的慢路径，成本约 0.3ms，仍可忽略。
 
-> **P2 实测补充：WAV 还有一个 symphonia 不认的头部变体。** `symphonia-format-riff` 的 `read_pcm_fmt` 只接受 `fmt ` chunk 长度 16 / 18 / 40，其它长度报 `malformed fmt_pcm chunk`。20 字节是合法的 `WAVEFORMATEX`（`cbSize = 2`），真实库 28 万文件里有 284 个是这种，全部可正常播放。`crates/reslip-index/src/wav_header.rs` 做 RIFF 头兜底解析，只在 symphonia 拒绝时启用。
+> **P2 实测补充：WAV 还有一个 symphonia 不认的头部变体。** `symphonia-format-riff` 的 `read_pcm_fmt` 只接受 `fmt ` chunk 长度 16 / 18 / 40，其它长度报 `malformed fmt_pcm chunk`。20 字节是合法的 `WAVEFORMATEX`（`cbSize = 2`），真实库 28 万文件里有 284 个是这种，全部可正常播放。`crates/mio-index/src/wav_header.rs` 做 RIFF 头兜底解析，只在 symphonia 拒绝时启用。
 
 **七种格式都能在探测阶段拿到 n_frames 并成功 seek 到 1 秒处**，所以「seek 到未解码位置」不需要先解一遍——直接 seek 再解即可。这简化了大文件的 seek 实现。
 
@@ -346,9 +346,9 @@ webview 需要知道「播到哪了」来画播放头。不用事件推送（每
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | **P0** ✅ | 拖拽导出可行性验证 | 能从一个最小 Tauri 2 窗口把文件拖进真实 DAW。**2026-11-16 通过**：Cubase 16 / REAPER / FL Studio 均接受并导入 |
-| **P1** ✅ | 音频引擎原型（不含 UI） | 命令行程序，指定文件路径即播，打印实测延迟；连按模拟切换无 glitch。**2026-11-16 通过**：`crates/reslip-engine` + `crates/reslip-cli`，六格式可播，切换下溢 0 |
-| **P2** ✅ | 索引器 + schema | 对真实库跑一遍，打印各阶段耗时，与第 5 节数字对照。**2026-11-16 通过**：`crates/reslip-index`，28 万真实文件全量 63.9s、增量 5.4s。当时的分类词典移植自 Slip Sound，与旧库 271,350 行零差异；**2026-11-17 起词典与打分模型改为本项目自有**（GPL 汇编不能搬运，见 `docs/index.md` 的 classify 一节），未分类比例从 43.1% 降到 4.3%，全量重索引 68s。与 5.1 的 9s 外推不符，原因见 5.1 末尾 |
-| **P3** ✅ | Tauri 外壳 + IPC 骨架 | 空窗口能调 `play`/`get_waveform`。**2026-11-16 通过**：`crates/reslip-app` + `ui/`，22 个 Rust 测试（其中 15 个走真实设备与真实索引，不开窗口）；真实 28 万库打开到首屏 69ms、搜索 65ms、点击到波形 30–43ms。窗口内交互用 CDP 驱动断言（播放头推进 / seek / 停止），细节见 `docs/app.md` |
+| **P1** ✅ | 音频引擎原型（不含 UI） | 命令行程序，指定文件路径即播，打印实测延迟；连按模拟切换无 glitch。**2026-11-16 通过**：`crates/mio-engine` + `crates/mio-cli`，六格式可播，切换下溢 0 |
+| **P2** ✅ | 索引器 + schema | 对真实库跑一遍，打印各阶段耗时，与第 5 节数字对照。**2026-11-16 通过**：`crates/mio-index`，28 万真实文件全量 63.9s、增量 5.4s。当时的分类词典移植自 Slip Sound，与旧库 271,350 行零差异；**2026-11-17 起词典与打分模型改为本项目自有**（GPL 汇编不能搬运，见 `docs/index.md` 的 classify 一节），未分类比例从 43.1% 降到 4.3%，全量重索引 68s。与 5.1 的 9s 外推不符，原因见 5.1 末尾 |
+| **P3** ✅ | Tauri 外壳 + IPC 骨架 | 空窗口能调 `play`/`get_waveform`。**2026-11-16 通过**：`crates/mio-app` + `ui/`，22 个 Rust 测试（其中 15 个走真实设备与真实索引，不开窗口）；真实 28 万库打开到首屏 69ms、搜索 65ms、点击到波形 30–43ms。窗口内交互用 CDP 驱动断言（播放头推进 / seek / 停止），细节见 `docs/app.md` |
 | **P4** ✅ | 前端搬迁（列表、波形、搜索） | 能浏览、搜索、点击播放。**2026-11-16 通过**：列表虚拟化 + 键盘/多选/右键/拖拽导出、分类侧栏 facet 计数、原生目录选择、收藏与手动分类（批量事务，扛得住全量重索引）、空格暂停。`cargo test --release --workspace` 83 个通过；CDP 驱动真实 28 万库 40 项交互断言全绿，DOM 几何断言无重叠无裁切；点击到波形 30–36ms，Ctrl+A 选中 271,350 条路径。细节见 `docs/app.md` |
 | **P5** ✅ | 工作区（多库、持久化、undo、阻塞索引、设置） | 能当日常工具用。**2026-11-16 通过**：同时打开多个库并在侧栏分组切换、启动恢复上次的库、无限翻页、收藏与分类的 undo/redo、索引期间锁窗并显示读条、设置页、可拖拽宽度的侧栏、搜索框移到列表列顶部。`cargo test --release --workspace` 97 个通过；CDP 三份脚本（工作区 26 项、索引遮罩 7 项、P4 回归 40 项）全绿 |
 | **P6** ✅ | ASIO 后端 + 设置里的音频设备选择 | 用户试用后追加。**2026-11-16 通过**：`--features asio` 编译进 ASIO 后端，设置页有 Audio 节（WASAPI 端点与 ASIO 驱动一个下拉，ASIO 选中时多一个缓冲大小），选择持久化到 `audio.json` 并在启动时恢复。本机 TOPPING Pro 实测：128 帧周期 2.67ms、`publish → 出声` 5.13ms（64 帧）/ 14.4ms（256 帧），零下溢。`cargo test --release --workspace` 101 个通过；CDP 四份脚本全绿 |

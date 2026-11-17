@@ -1,276 +1,379 @@
-import { For, Show, createMemo, createSignal, onMount } from 'solid-js'
-import { api, type AppStatus, type AudioDevice } from './ipc'
+import { For, Show, createEffect, createMemo, createSignal } from 'solid-js'
+import {
+  api,
+  type AppStatus,
+  type AudioDevice,
+  type LibraryStatus
+} from './ipc'
+import { THEMES, findTheme, type Theme } from './theme'
 
 /**
- * Settings, in a modal of its own.
+ * Settings: device, library, appearance.
  *
- * Scope is what a sample browser actually needs to configure, not a dumping ground:
- * the output device, playback behaviour, and what the list shows. Anything that
- * belongs to a file (category, favorite) stays on the row, and anything that
- * belongs to one library (reindex, close) lives in that library's context menu in
- * the rail — a modal is the wrong place to manage several of them.
- *
- * Display settings are persisted in `localStorage` under `reslip:*`. They are
- * per-machine preferences, not library data, so they do not belong in the SQLite
- * index — copying a library folder to another machine should not carry "this
- * person prefers 200 rows a page". The audio device is different: it is a
- * property of the machine's hardware, so the backend writes it into
- * `%APPDATA%\com.naimio.reslip\audio.json` next to the session.
+ * Three groups in one dialog rather than a settings tree, because there are
+ * eleven settings in total and a tree would be more navigation than content. The
+ * library group edits the *active* library; per-library management (reindex,
+ * close) is on the rail's right-click menu, which is where it can name which
+ * library it applies to.
  */
 export interface Settings {
+  /** Audition a row as soon as it is clicked. */
   autoPlay: boolean
-  /** Rows fetched per page. Larger means fewer round trips, more DOM per window. */
-  pageSize: number
-  /** Infinite scroll: fetch the next page when the list nears its end. */
+  /** Ask the index for the next page when the list nears its end. */
   infiniteScroll: boolean
-  /** Show the category column in the table. */
+  /** Show the category column; the value is still filterable from the rail. */
   showCategory: boolean
+  /** Rows per search request. */
+  pageSize: number
 }
 
-export const DEFAULT_SETTINGS: Settings = {
+const STORAGE_KEY = 'mio:settings'
+
+const DEFAULTS: Settings = {
   autoPlay: true,
-  pageSize: 500,
   infiniteScroll: true,
-  showCategory: true
+  showCategory: true,
+  pageSize: 500
 }
 
-const KEYS: Record<keyof Settings, string> = {
-  autoPlay: 'reslip:autoplay',
-  pageSize: 'reslip:page-size',
-  infiniteScroll: 'reslip:infinite-scroll',
-  showCategory: 'reslip:show-category'
-}
-
+/**
+ * Read the settings, one key at a time.
+ *
+ * Not one JSON blob: an older build that wrote `{autoPlay, pageSize}` must not
+ * make a newer one fall back to every default because `theme` is missing. Per-key
+ * reads also mean a corrupt value costs one setting instead of all of them.
+ */
 export function loadSettings(): Settings {
-  const read = (key: keyof Settings) => localStorage.getItem(KEYS[key])
-  const pageSize = Number(read('pageSize'))
-  return {
-    autoPlay: read('autoPlay') !== 'false',
-    pageSize: Number.isFinite(pageSize) && pageSize >= 100 ? pageSize : DEFAULT_SETTINGS.pageSize,
-    infiniteScroll: read('infiniteScroll') !== 'false',
-    showCategory: read('showCategory') !== 'false'
+  const raw = localStorage.getItem(STORAGE_KEY)
+  if (!raw) return { ...DEFAULTS }
+  try {
+    const parsed = JSON.parse(raw) as Partial<Settings>
+    return {
+      autoPlay: typeof parsed.autoPlay === 'boolean' ? parsed.autoPlay : DEFAULTS.autoPlay,
+      infiniteScroll:
+        typeof parsed.infiniteScroll === 'boolean' ? parsed.infiniteScroll : DEFAULTS.infiniteScroll,
+      showCategory:
+        typeof parsed.showCategory === 'boolean' ? parsed.showCategory : DEFAULTS.showCategory,
+      pageSize:
+        typeof parsed.pageSize === 'number' && parsed.pageSize > 0
+          ? Math.min(5000, parsed.pageSize)
+          : DEFAULTS.pageSize
+    }
+  } catch {
+    return { ...DEFAULTS }
   }
 }
 
 export function saveSettings(settings: Settings): void {
-  localStorage.setItem(KEYS.autoPlay, String(settings.autoPlay))
-  localStorage.setItem(KEYS.pageSize, String(settings.pageSize))
-  localStorage.setItem(KEYS.infiniteScroll, String(settings.infiniteScroll))
-  localStorage.setItem(KEYS.showCategory, String(settings.showCategory))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    // A locked profile costs the settings, not the session.
+  }
 }
-
-/**
- * Buffer sizes offered for ASIO.
- *
- * A driver rejects a size outside its own min/max range, and a free-form field
- * would mostly fail. These are the sizes every interface supports; the driver's
- * own preferred size is added to the list when it is something else.
- */
-const ASIO_BUFFERS = [64, 128, 256, 512, 1024, 2048]
 
 interface Props {
   settings: Settings
-  onChange: (settings: Settings) => void
+  /** The applied theme's id. Owned by `theme.ts`, not by the settings blob. */
+  theme: string
+  onChange: (patch: Partial<Settings>) => void
+  /** Theme choice goes through its own callback: `theme.ts` owns that state. */
+  onTheme: (id: string) => void
   status: AppStatus | null
-  onStatus: (status: AppStatus) => void
+  libraries: LibraryStatus[]
+  activeLibrary: LibraryStatus | null
+  onStatus: (next: AppStatus) => void
+  onAddLibrary: () => void
   onClose: () => void
 }
 
-export function SettingsDialog(props: Props) {
-  const [draft, setDraft] = createSignal<Settings>({ ...props.settings })
-  const [devices, setDevices] = createSignal<AudioDevice[]>([])
-  const [asioCompiled, setAsioCompiled] = createSignal(true)
-  const [switching, setSwitching] = createSignal(false)
-  const [deviceError, setDeviceError] = createSignal<string | null>(null)
-
-  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
-    const next = { ...draft(), [key]: value }
-    setDraft(next)
-    // Applied immediately: a settings dialog with an OK button that can be
-    // forgotten is a dialog people close by accident.
-    props.onChange(next)
+/**
+ * The theme picker's swatch.
+ *
+ * Each card paints its own palette rather than the applied one, which is the whole
+ * point of a swatch: a light theme has to be recognisable while a dark one is in
+ * effect. The three colours shown are the ones a theme is *made of* — background,
+ * accent and the neutral its text is derived from.
+ */
+function ThemeCard(props: { theme: Theme; current: boolean; onPick: () => void }) {
+  const swatch = () => {
+    const p = props.theme.palette
+    if (!p) {
+      // iX's own palettes: the two colours that identify them.
+      return props.theme.schema === 'dark'
+        ? ['#0f1619', '#283236', '#00bde3', '#00eaff']
+        : ['#ffffff', '#eff0f1', '#006e93', '#199fff']
+    }
+    return [p.bg, p.accent, p.dynamic, p.fg]
   }
 
-  onMount(() => {
-    api
-      .audioDevices()
-      .then(setDevices)
-      .catch((e) => setDeviceError(String(e)))
-    api.asioCompiled().then(setAsioCompiled).catch(() => setAsioCompiled(false))
+  return (
+    <button
+      class={props.current ? 'theme-card on' : 'theme-card'}
+      onClick={props.onPick}
+      title={props.theme.hint}
+      data-theme-id={props.theme.id}
+    >
+      <span class="theme-swatch">
+        <For each={swatch()}>{(color) => <span style={{ background: color }} />}</For>
+      </span>
+      <span class="theme-card-name">{props.theme.label}</span>
+      <span class="theme-card-hint">{props.theme.hint}</span>
+    </button>
+  )
+}
+
+export function SettingsDialog(props: Props) {
+  const [devices, setDevices] = createSignal<AudioDevice[]>([])
+  const [asioCompiled, setAsioCompiled] = createSignal(false)
+  const [deviceError, setDeviceError] = createSignal<string | null>(null)
+  let modal:
+    | (HTMLElement & { showModal: () => Promise<void>; closeModal: (r?: unknown) => Promise<void> })
+    | undefined
+
+  const open = (el: HTMLElement) => {
+    modal = el as typeof modal
+    queueMicrotask(() => void modal?.showModal())
+  }
+
+  const close = () => {
+    void modal?.closeModal()
+    props.onClose()
+  }
+
+  // The device list is read once when the dialog opens: enumerating ASIO drivers
+  // loads each driver in an STA thread and takes a visible moment, so it must not
+  // be on a render path that can run twice.
+  createEffect(() => {
+    void (async () => {
+      try {
+        setAsioCompiled(await api.asioCompiled())
+        setDevices(await api.audioDevices())
+      } catch (e) {
+        setDeviceError(String(e))
+      }
+    })()
   })
 
-  const wasapi = createMemo(() => devices().filter((d) => d.backend === 'WASAPI'))
-  const asio = createMemo(() => devices().filter((d) => d.backend === 'ASIO'))
+  const currentDevice = createMemo(() => {
+    const status = props.status
+    if (!status) return ''
+    return `${status.backend ?? ''}|${status.deviceName ?? ''}`
+  })
 
-  /** The backend the running engine is on, not what the picker shows. */
-  const activeBackend = createMemo(() => props.status?.backend ?? 'WASAPI')
-
-  const apply = async (backend: string, device: string | null, bufferFrames: number | null) => {
-    setSwitching(true)
+  const switchDevice = async (backend: string, device: string) => {
     setDeviceError(null)
     try {
-      const status = await api.setAudioDevice(backend, device, bufferFrames)
-      props.onStatus(status)
-      if (!status.audioAvailable) setDeviceError(status.audioError ?? 'device did not open')
+      const next = await api.setAudioDevice(backend, device === '' ? null : device, null)
+      props.onStatus(next)
     } catch (e) {
       setDeviceError(String(e))
-    } finally {
-      setSwitching(false)
     }
   }
 
   return (
-    <div class="modal-backdrop" onClick={props.onClose}>
-      <div class="modal settings" onClick={(e) => e.stopPropagation()} role="dialog">
-        <h2 class="modal-title">Settings</h2>
+    <ix-modal ref={open} size="720">
+      <ix-modal-header heading="Settings" subHeading="Device, library, appearance" />
+      <ix-modal-content>
+        <div class="modal-form">
+          {/* ---------------------------------------------------------- audio */}
+          <section class="settings-section">
+            <h3>Output device</h3>
 
-        <section class="settings-section">
-          <h3>Audio</h3>
-
-          <label class="setting">
-            <span class="setting-label">Output device</span>
-            <select
-              value={`${activeBackend()}:${props.status?.deviceName ?? ''}`}
-              disabled={switching()}
-              onChange={(e) => {
-                // A driver name can contain a colon, so only the first one splits.
-                const value = e.currentTarget.value
-                const at = value.indexOf(':')
-                const backend = value.slice(0, at)
-                const device = value.slice(at + 1)
-                void apply(backend, device || null, null)
-              }}
+            <Show
+              when={props.status?.audioAvailable}
+              fallback={
+                <div class="setting-hint" style={{ color: 'var(--theme-color-alarm-text)' }}>
+                  {props.status?.audioError ?? 'no audio device open'}
+                </div>
+              }
             >
-              <Show when={wasapi().length > 0}>
-                <optgroup label="WASAPI (shared)">
-                  <For each={wasapi()}>
-                    {(device) => (
-                      <option value={`WASAPI:${device.name}`}>
-                        {device.label}
-                        {device.default ? ' — default' : ''}
-                      </option>
-                    )}
-                  </For>
-                </optgroup>
-              </Show>
-              <Show when={asio().length > 0}>
-                <optgroup label="ASIO">
-                  <For each={asio()}>
-                    {(device) => (
-                      <option value={`ASIO:${device.name}`} disabled={!device.available}>
-                        {device.label}
-                        {device.channels ? ` — ${device.channels} ch` : ''}
-                        {device.available ? '' : ' — unavailable'}
-                      </option>
-                    )}
-                  </For>
-                </optgroup>
-              </Show>
-            </select>
-          </label>
+              <div class="setting-hint">
+                {props.status?.backend} · {props.status?.deviceName} · {props.status?.sampleRate} Hz ·{' '}
+                {props.status?.channels} ch · {props.status?.sampleFormat} · engine period{' '}
+                {props.status?.enginePeriodMs?.toFixed(2)} ms
+              </div>
+            </Show>
 
-          <Show when={activeBackend() === 'ASIO'}>
-            <label class="setting">
-              <span class="setting-label">Buffer size</span>
-              <select
-                value={String(props.status?.endpointFrames ?? '')}
-                disabled={switching()}
-                onChange={(e) =>
-                  void apply(
-                    'ASIO',
-                    props.status?.deviceName ?? null,
-                    Number(e.currentTarget.value)
-                  )
-                }
-              >
-                {/* The driver's preferred size is not necessarily one of the
-                    standard ones, so it is shown when it is the running value. */}
-                <Show
-                  when={ASIO_BUFFERS.includes(props.status?.endpointFrames ?? 0)}
-                  fallback={
-                    <option value={String(props.status?.endpointFrames ?? '')}>
-                      {props.status?.endpointFrames} frames
-                    </option>
+            <div class="setting">
+              <span class="setting-label">Device</span>
+              <div style={{ width: '320px' }}>
+                <ix-select
+                  value={currentDevice()}
+                  allowClear={false}
+                  on:valueChange={(e: CustomEvent<string | string[]>) => {
+                    const [backend, ...rest] = String(e.detail).split('|')
+                    void switchDevice(backend ?? 'wasapi', rest.join('|'))
+                  }}
+                >
+                  <For each={devices()}>
+                    {(device) => (
+                      <ix-select-item
+                        value={`${device.backend}|${device.name}`}
+                        label={`${device.backend.toUpperCase()} · ${device.name}`}
+                      />
+                    )}
+                  </For>
+                </ix-select>
+              </div>
+            </div>
+
+            <Show when={!asioCompiled()}>
+              <div class="setting-hint">
+                ASIO is not compiled into this build. Rebuild with
+                <code> ./tools/build-app.sh --asio</code> to offer ASIO drivers.
+              </div>
+            </Show>
+            <Show when={deviceError()}>
+              {(err) => (
+                <div class="setting-hint" style={{ color: 'var(--theme-color-alarm-text)' }}>
+                  {err()}
+                </div>
+              )}
+            </Show>
+          </section>
+
+          {/* -------------------------------------------------------- library */}
+          <section class="settings-section">
+            <h3>Library</h3>
+
+            <Show
+              when={props.activeLibrary}
+              fallback={<div class="setting-hint">No library is open.</div>}
+            >
+              {(library) => (
+                <>
+                  <div class="setting">
+                    <span class="setting-label">{library().name}</span>
+                    <span class="setting-hint">
+                      {library().count.toLocaleString()} sounds · {library().root}
+                    </span>
+                  </div>
+                  <div class="setting">
+                    <span class="setting-label">Reveal the index</span>
+                    <ix-button
+                      variant="secondary"
+                      onClick={() => void api.revealInFolder(library().root)}
+                    >
+                      Open folder
+                    </ix-button>
+                  </div>
+                </>
+              )}
+            </Show>
+
+            <div class="setting">
+              <span class="setting-label">Add another library</span>
+              <ix-button variant="secondary" onClick={props.onAddLibrary}>
+                Open library…
+              </ix-button>
+            </div>
+
+            <div class="setting">
+              <span class="setting-label">
+                Rows per page
+                <div class="setting-hint">
+                  How many rows one search returns. Larger pages scroll further between
+                  fetches.
+                </div>
+              </span>
+              <div style={{ width: '140px' }}>
+                <ix-select
+                  value={String(props.settings.pageSize)}
+                  on:valueChange={(e: CustomEvent<string | string[]>) =>
+                    props.onChange({ pageSize: Number(e.detail) })
                   }
                 >
-                  <For each={ASIO_BUFFERS}>
-                    {(frames) => <option value={String(frames)}>{frames} frames</option>}
-                  </For>
-                </Show>
-              </select>
-            </label>
-          </Show>
+                  <ix-select-item value="200" label="200" />
+                  <ix-select-item value="500" label="500" />
+                  <ix-select-item value="1000" label="1000" />
+                  <ix-select-item value="2000" label="2000" />
+                </ix-select>
+              </div>
+            </div>
 
-          <Show when={!asioCompiled()}>
-            <p class="setting-note dim">This build has no ASIO support.</p>
-          </Show>
-          <Show when={asioCompiled() && asio().length === 0}>
-            <p class="setting-note dim">No ASIO driver installed.</p>
-          </Show>
+            <div class="setting">
+              <span class="setting-label">
+                Show the category column
+                <div class="setting-hint">
+                  Turn it off for a denser list. Filtering by category still works from the
+                  rail.
+                </div>
+              </span>
+              <ix-toggle
+                checked={props.settings.showCategory}
+                on:checkedChange={(e: CustomEvent<boolean>) =>
+                  props.onChange({ showCategory: e.detail })
+                }
+              />
+            </div>
+          </section>
 
-          <Show when={deviceError()}>
-            {(err) => <p class="setting-note bad">{err()}</p>}
-          </Show>
+          {/* ------------------------------------------------------ behaviour */}
+          <section class="settings-section">
+            <h3>Behaviour</h3>
 
-          <Show when={props.status?.audioAvailable}>
-            <p class="setting-note dim">
-              {props.status?.backend} · {props.status?.sampleRate} Hz ·{' '}
-              {props.status?.channels} ch · {props.status?.sampleFormat} ·{' '}
-              {props.status?.enginePeriodMs?.toFixed(2)} ms period
-            </p>
-          </Show>
-        </section>
+            <div class="setting">
+              <span class="setting-label">
+                Auto-play on select
+                <div class="setting-hint">
+                  Clicking a row auditions it. The same switch as AUTO PLAY in the dock.
+                </div>
+              </span>
+              <ix-toggle
+                checked={props.settings.autoPlay}
+                on:checkedChange={(e: CustomEvent<boolean>) => props.onChange({ autoPlay: e.detail })}
+              />
+            </div>
 
-        <section class="settings-section">
-          <h3>Playback</h3>
-          <label class="setting">
-            <input
-              type="checkbox"
-              checked={draft().autoPlay}
-              onChange={(e) => set('autoPlay', e.currentTarget.checked)}
-            />
-            <span>Play on click</span>
-          </label>
-        </section>
+            <div class="setting">
+              <span class="setting-label">
+                Infinite scroll
+                <div class="setting-hint">
+                  Fetch the next page as the list nears its end, instead of showing one page.
+                </div>
+              </span>
+              <ix-toggle
+                checked={props.settings.infiniteScroll}
+                on:checkedChange={(e: CustomEvent<boolean>) =>
+                  props.onChange({ infiniteScroll: e.detail })
+                }
+              />
+            </div>
+          </section>
 
-        <section class="settings-section">
-          <h3>List</h3>
-          <label class="setting">
-            <input
-              type="checkbox"
-              checked={draft().infiniteScroll}
-              onChange={(e) => set('infiniteScroll', e.currentTarget.checked)}
-            />
-            <span>Load more rows as I scroll</span>
-          </label>
-          <label class="setting">
-            <span class="setting-label">Rows per page</span>
-            <select
-              value={String(draft().pageSize)}
-              onChange={(e) => set('pageSize', Number(e.currentTarget.value))}
-            >
-              <For each={[200, 500, 1000, 2000]}>
-                {(n) => <option value={String(n)}>{n.toLocaleString()}</option>}
+          {/* ------------------------------------------------------ appearance */}
+          <section class="settings-section">
+            <h3>Appearance</h3>
+            <div class="setting-hint">
+              Themes repaint the Siemens iX token set, so every control, panel and the
+              waveform follow the same palette.
+            </div>
+            <div class="theme-grid">
+              <For each={THEMES}>
+                {(theme) => (
+                  <ThemeCard
+                    theme={theme}
+                    current={props.theme === theme.id}
+                    onPick={() => props.onTheme(theme.id)}
+                  />
+                )}
               </For>
-            </select>
-          </label>
-          <label class="setting">
-            <input
-              type="checkbox"
-              checked={draft().showCategory}
-              onChange={(e) => set('showCategory', e.currentTarget.checked)}
-            />
-            <span>Show the category column</span>
-          </label>
-        </section>
-
+            </div>
+            <div class="setting-hint">
+              Current: {findTheme(props.theme).label}
+            </div>
+          </section>
+        </div>
+      </ix-modal-content>
+      <ix-modal-footer>
         <div class="modal-actions">
           <div class="spacer" />
-          <button class="primary" onClick={props.onClose}>
+          <ix-button variant="primary" onClick={close}>
             Done
-          </button>
+          </ix-button>
         </div>
-      </div>
-    </div>
+      </ix-modal-footer>
+    </ix-modal>
   )
 }

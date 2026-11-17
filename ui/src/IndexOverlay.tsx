@@ -17,6 +17,9 @@ import type { IndexProgress } from './ipc'
  * - **A finished pass is not an instant.** The last phase (FTS rebuild, prune) has
  *   no per-file progress, so the label switches to "finishing" instead of leaving
  *   the bar pinned at 100% while the window is still blocked.
+ *
+ * The bar itself is `ix-progress-indicator`; the overlay around it is ours because
+ * iX has no blocking full-window variant.
  */
 export function IndexOverlay(props: {
   open: boolean
@@ -35,11 +38,13 @@ export function IndexOverlay(props: {
         <div class="index-card">
           <div class="index-title">{props.label}</div>
 
-          <div class={pct() === null ? 'index-bar indeterminate' : 'index-bar'}>
-            <div class="index-bar-fill" style={{ width: `${pct() ?? 30}%` }} />
-          </div>
+          <ix-progress-indicator
+            type="linear"
+            value={pct() ?? 0}
+            label={pct() === null ? 'walking the folder' : `${pct()}%`}
+          />
 
-          <div class="index-detail dim">
+          <div class="index-detail">
             <Show
               when={props.progress && props.progress.total > 0 ? props.progress : null}
               fallback={<span>walking the folder…</span>}
@@ -53,9 +58,9 @@ export function IndexOverlay(props: {
             </Show>
           </div>
 
-          <p class="index-note dim">
-            The window stays locked until this finishes. A 280k-file library takes
-            about a minute the first time and a few seconds after that.
+          <p class="index-note">
+            The window stays locked until this finishes. A 280k-file library takes about a
+            minute the first time and a few seconds after that.
           </p>
         </div>
       </div>

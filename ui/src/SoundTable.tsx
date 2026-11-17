@@ -14,7 +14,7 @@ import { startDrag, type SoundRow } from './ipc'
  * rather than an index because the list is re-sorted and re-queried underneath the
  * selection; an index would point at a different sound after any search.
  */
-const ROW_H = 26
+const ROW_H = 28
 const OVERSCAN = 8
 
 export type SortKey =
@@ -56,13 +56,13 @@ interface Column {
 }
 
 const COLUMNS: Column[] = [
-  { key: 'favorite', label: '★', width: '30px' },
+  { key: 'favorite', label: '★', width: '32px' },
   { key: 'filename', label: 'Name', width: 'minmax(180px, 2fr)' },
   { key: 'category', label: 'Category', width: 'minmax(140px, 1fr)' },
-  { key: 'durationS', label: 'Length', width: '82px', numeric: true },
-  { key: 'channels', label: 'Ch', width: '62px' },
-  { key: 'sampleRate', label: 'Rate', width: '76px', numeric: true },
-  { key: 'filesize', label: 'Size', width: '82px', numeric: true }
+  { key: 'durationS', label: 'Length', width: '84px', numeric: true },
+  { key: 'channels', label: 'Ch', width: '64px' },
+  { key: 'sampleRate', label: 'Rate', width: '78px', numeric: true },
+  { key: 'filesize', label: 'Size', width: '84px', numeric: true }
 ]
 
 /**
@@ -136,7 +136,7 @@ export function SoundTable(props: Props) {
   const [viewportH, setViewportH] = createSignal(600)
   /**
    * Width the body's scrollbar takes. The header is not inside the scrolling
-   * element, so without this its column tracks are 25px wider than the rows' and
+   * element, so without this its column tracks are 8px wider than the rows' and
    * every label sits to the left of the values under it.
    */
   const [scrollbarW, setScrollbarW] = createSignal(0)
@@ -228,10 +228,14 @@ export function SoundTable(props: Props) {
    */
   const onKeyDown = (event: KeyboardEvent) => {
     const el = document.activeElement as HTMLElement | null
+    // iX's own inputs render a native input inside a shadow root; `activeElement`
+    // is then the host, so the tag name is checked against the host's too.
+    const tag = el?.tagName ?? ''
     const inField =
-      el?.tagName === 'INPUT' ||
-      el?.tagName === 'TEXTAREA' ||
-      el?.tagName === 'SELECT' ||
+      tag === 'INPUT' ||
+      tag === 'TEXTAREA' ||
+      tag === 'SELECT' ||
+      tag.startsWith('IX-') ||
       el?.isContentEditable === true
 
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !inField) {
@@ -331,7 +335,7 @@ export function SoundTable(props: Props) {
           const measure = () => {
             setViewportH(el.clientHeight)
             // `offsetWidth - clientWidth` is the scrollbar, measured rather than
-            // assumed: this is 10px in the stylesheet but 0 when the OS overlays
+            // assumed: this is 8px in the stylesheet but 0 when the OS overlays
             // scrollbars, and hardcoding either breaks the alignment.
             setScrollbarW(el.offsetWidth - el.clientWidth)
           }
@@ -384,6 +388,12 @@ export function SoundTable(props: Props) {
                   draggable
                   onDragStart={(e) => onRowDragStart(row, e)}
                 >
+                  {/*
+                    Always a glyph, never an empty span: an empty cell has zero
+                    width, so the star could not be clicked until the sound was
+                    already a favorite — which made starring impossible from the
+                    row.
+                  */}
                   <span
                     class={row.favorite ? 'cell favorite on' : 'cell favorite'}
                     onClick={(e) => {
@@ -392,12 +402,6 @@ export function SoundTable(props: Props) {
                     }}
                     title={row.favorite ? 'Remove from favorites' : 'Add to favorites'}
                   >
-                    {/*
-                      Always a glyph, never an empty span: an empty cell has zero
-                      width, so the star could not be clicked until the sound was
-                      already a favorite — which made starring impossible from the
-                      row.
-                    */}
                     {row.favorite ? '★' : '☆'}
                   </span>
                   <span class="cell name" title={row.path}>
@@ -432,15 +436,18 @@ export function SoundTable(props: Props) {
         tells you the list is not the whole library.
       */}
       <Show when={props.rows.length > 0}>
-        <div class="table-foot dim">
-          <Show when={props.querying} fallback={
-            <>
-              {props.rows.length.toLocaleString()} of {props.matching.toLocaleString()}
-              <Show when={props.hasMore}>
-                <span> · scroll for more</span>
-              </Show>
-            </>
-          }>
+        <div class="table-foot">
+          <Show
+            when={props.querying}
+            fallback={
+              <>
+                {props.rows.length.toLocaleString()} of {props.matching.toLocaleString()}
+                <Show when={props.hasMore}>
+                  <span> · scroll for more</span>
+                </Show>
+              </>
+            }
+          >
             <span class="foot-querying">searching…</span>
           </Show>
         </div>

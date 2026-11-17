@@ -1,6 +1,6 @@
-# ReSlip 索引子系统
+# Mio Sound Manager 索引子系统
 
-`crates/reslip-index` 的模块细节。设计依据见 `docs/architecture.md` 第 5 节；本文件说代码怎么组织、为什么这么切、哪些地方与文档不一致以及原因。实测数字见 `docs/agent-log.md`。
+`crates/mio-index` 的模块细节。设计依据见 `docs/architecture.md` 第 5 节；本文件说代码怎么组织、为什么这么切、哪些地方与文档不一致以及原因。实测数字见 `docs/agent-log.md`。
 
 ## 模块
 
@@ -36,8 +36,8 @@ src/
 ## classify
 
 词典与打分模型都是本项目自己的产物。`tools/taxonomy.py` 是词表的源文件，
-`tools/gen-category-dict.py` 生成 `crates/reslip-index/src/classify/dictionary.rs`。
-改词表只改前者，然后重跑生成器与 `cargo test -p reslip-index`。
+`tools/gen-category-dict.py` 生成 `crates/mio-index/src/classify/dictionary.rs`。
+改词表只改前者，然后重跑生成器与 `cargo test -p mio-index`。
 
 这套词表是对着真实库写出来的（SoundLibrary 552,155 条路径，迭代用 271,350 条镜像）。
 每个词都查过命中量与它横跨的包数，所以 `epic` / `cinematic` / `game` 这类出现在几十个
@@ -89,7 +89,7 @@ src/
 剩下的未分类集中在两类：纯序号文件名（`VEH2 Houseloops - 091.wav`）与只有厂牌/分组词
 的文件名（`DPTE White FX - 090.wav`）。这两类本来就没有可分类的词，保持未分类是对的。
 
-`reslip-cli classify-diff` 仍然保留，但它是「旧库与当前词表有多少行不同」的对比工具，
+`mio-cli classify-diff` 仍然保留，但它是「旧库与当前词表有多少行不同」的对比工具，
 不是一致性验收：词表不同，结果本就不该一致。
 
 ## db

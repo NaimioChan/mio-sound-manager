@@ -1,9 +1,29 @@
 <!doctype html>
-<html lang="en">
+<!--
+  `data-ix-theme` / `data-ix-color-schema` are set here as well as by
+  `theme.ts`, so the very first paint already has the iX token block applied.
+  The script in the head re-applies the saved theme before the bundle loads; a
+  theme applied only from `main.tsx` would show one frame of the default palette.
+-->
+<html lang="en" data-ix-theme="classic" data-ix-color-schema="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ReSlip</title>
+    <title>Mio Sound Manager</title>
+    <script>
+      // Runs before the stylesheet and the bundle. Only the two attributes that
+      // pick iX's own token block; a custom palette needs the bundle, which is a
+      // few milliseconds later and lands before the first frame is painted.
+      try {
+        var id = localStorage.getItem('mio:theme') || 'classic-dark'
+        var schema = localStorage.getItem('mio:theme-schema')
+        if (schema !== 'light' && schema !== 'dark') {
+          schema = id.indexOf('light') >= 0 ? 'light' : 'dark'
+        }
+        document.documentElement.dataset.ixColorSchema = schema
+        document.documentElement.style.colorScheme = schema
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

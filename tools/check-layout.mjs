@@ -1,5 +1,10 @@
-// Layout sanity: catch overlap and clipping by measuring the real DOM, which is
-// more reliable than looking at a screenshot. Run against the live window.
+// Layout sanity for the rewritten UI: measure the real DOM instead of looking at
+// a screenshot.
+//
+//   node tools/check-layout.mjs [port]
+//
+// Reports overlaps, clipping without ellipsis, header/row column drift, and the
+// dock's control cluster order. Exits non-zero when a problem is found.
 import { createRequire } from 'node:module'
 
 const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
@@ -12,38 +17,32 @@ if (!page) {
   console.error('no page on the debugger')
   process.exit(1)
 }
+await page.waitForSelector('.app', { timeout: 20_000 })
+await page.waitForTimeout(800)
 
 const report = await page.evaluate(() => {
-  const out = { problems: [], facts: {} }
+  const problems = []
+  const facts = {}
 
-  /**
-   * Does this element's text overflow the box it was given?
-   *
-   * `text-overflow: ellipsis` makes overflow *intentional*: a long filename in a
-   * narrow column is supposed to end in `…`, and reporting it would mean the check
-   * only passes at one particular rail width. What this is looking for is text cut
-   * off with no ellipsis, which is the shape a column-track mismatch takes.
-   */
+  /** Text cut off with no ellipsis: the shape a column-track mismatch takes. */
   const clipped = (el, label) => {
-    const overflows = el.scrollWidth > el.clientWidth + 1
-    if (overflows && getComputedStyle(el).textOverflow !== 'ellipsis') {
-      out.problems.push(`${label}: text clipped (${el.scrollWidth} > ${el.clientWidth})`)
+    if (el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== 'ellipsis') {
+      problems.push(`${label}: text clipped (${el.scrollWidth} > ${el.clientWidth})`)
     }
     if (el.scrollHeight > el.clientHeight + 1 && el.clientHeight > 0) {
-      out.problems.push(`${label}: content clipped vertically (${el.scrollHeight} > ${el.clientHeight})`)
+      problems.push(`${label}: content clipped vertically (${el.scrollHeight} > ${el.clientHeight})`)
     }
   }
 
-  /** Do two elements' boxes intersect? */
   const overlaps = (a, b, label) => {
     const ra = a.getBoundingClientRect()
     const rb = b.getBoundingClientRect()
     const x = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left)
     const y = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top)
-    if (x > 1 && y > 1) out.problems.push(`${label}: overlap ${x.toFixed(0)}×${y.toFixed(0)}px`)
+    if (x > 1 && y > 1) problems.push(`${label}: overlap ${x.toFixed(0)}×${y.toFixed(0)}px`)
   }
 
-  // --- structure present
+  // --- structure
   const regions = {
     topbar: document.querySelector('.topbar'),
     sidebar: document.querySelector('.sidebar'),
@@ -52,13 +51,12 @@ const report = await page.evaluate(() => {
     statusbar: document.querySelector('.statusbar')
   }
   for (const [name, el] of Object.entries(regions)) {
-    if (!el) out.problems.push(`missing region: ${name}`)
+    if (!el) problems.push(`missing region: ${name}`)
   }
 
-  // --- the main regions must tile the window without overlapping
-  const order = ['topbar', 'sidebar', 'table', 'dock', 'statusbar']
-  out.facts.regions = order.map((name) => {
-    const r = regions[name]?.getBoundingClientRect()
+  // --- the regions tile the window
+  facts.regions = Object.entries(regions).map(([name, el]) => {
+    const r = el?.getBoundingClientRect()
     return r
       ? `${name} ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}×${Math.round(r.height)}`
       : `${name} absent`
@@ -66,49 +64,57 @@ const report = await page.evaluate(() => {
   if (regions.topbar && regions.sidebar) {
     const tb = regions.topbar.getBoundingClientRect()
     const sb = regions.sidebar.getBoundingClientRect()
-    if (sb.top < tb.bottom - 1) out.problems.push('sidebar starts above the top bar')
+    if (sb.top < tb.bottom - 1) problems.push('sidebar starts above the top bar')
+  }
+  if (regions.table && regions.dock) {
+    const t = regions.table.getBoundingClientRect()
+    const d = regions.dock.getBoundingClientRect()
+    if (Math.abs(t.bottom - d.top) > 1) {
+      problems.push(`table/dock gap: table ends ${t.bottom}, dock starts ${d.top}`)
+    }
   }
 
-  // --- table header must line up with the row grid
+  // --- header tracks must match the row tracks
   const head = document.querySelector('.table-head')
   const row = document.querySelector('.row')
   if (head && row) {
-    const parse = (value) => value.split(/\s+/).map((t) => Number.parseFloat(t))
-    const headTracks = parse(getComputedStyle(head).gridTemplateColumns)
-    const rowTracks = parse(getComputedStyle(row).gridTemplateColumns)
-    if (headTracks.length !== rowTracks.length) {
-      out.problems.push(`column count differs: head ${headTracks.length}, row ${rowTracks.length}`)
+    const parse = (v) => v.split(/\s+/).map((t) => Number.parseFloat(t))
+    const ht = parse(getComputedStyle(head).gridTemplateColumns)
+    const rt = parse(getComputedStyle(row).gridTemplateColumns)
+    if (ht.length !== rt.length) {
+      problems.push(`column count differs: head ${ht.length}, row ${rt.length}`)
     } else {
-      // Half a pixel of tolerance: the header is `100% - scrollbar` while the row
-      // is the body's content box, and the two can round apart by a subpixel.
-      // Anything above that is a visible drift.
-      const drift = headTracks.map((t, i) => Math.abs(t - rowTracks[i]))
-      const worst = Math.max(...drift)
+      const worst = Math.max(...ht.map((t, i) => Math.abs(t - rt[i])))
       if (worst > 0.5) {
-        out.problems.push(
-          `column tracks differ by ${worst.toFixed(2)}px:\n  head ${headTracks.join(' ')}\n  row  ${rowTracks.join(' ')}`
+        problems.push(
+          `column tracks differ by ${worst.toFixed(2)}px\n  head ${ht.join(' ')}\n  row  ${rt.join(' ')}`
         )
       }
     }
-    out.facts.columns = getComputedStyle(head).gridTemplateColumns
+    facts.columns = getComputedStyle(head).gridTemplateColumns
+    // Header right edge vs row right edge: the scrollbar allowance.
+    const hr = head.getBoundingClientRect()
+    const rr = row.getBoundingClientRect()
+    facts.headRight = Math.round(hr.right)
+    facts.rowRight = Math.round(rr.right)
+    if (Math.abs(hr.right - rr.right) > 9) {
+      problems.push(`header right edge off by ${Math.round(hr.right - rr.right)}px`)
+    }
+  } else {
+    problems.push('no table header or row to compare')
   }
 
-  // --- every visible cell must fit its track
+  // --- cells must fit
   document.querySelectorAll('.row .cell').forEach((cell, i) => {
     clipped(cell, `cell[${i}] ${cell.textContent?.slice(0, 20)}`)
   })
+  document.querySelectorAll('.head-cell').forEach((el, i) => clipped(el, `head-cell[${i}]`))
+  document.querySelectorAll('.facet, .folder, .lib-head').forEach((el, i) =>
+    clipped(el, `rail row[${i}] ${el.textContent?.slice(0, 24)}`)
+  )
 
-  // --- header labels must fit their buttons
-  document.querySelectorAll('.head-cell').forEach((el, i) => {
-    clipped(el, `head-cell[${i}]`)
-  })
-
-  // --- facets and folder rows
-  document.querySelectorAll('.facet, .folder').forEach((el, i) => {
-    clipped(el, `rail row[${i}]`)
-  })
-
-  // --- the dock's header line must not run into its buttons
+  // --- the dock's controls must not overlap, and the order must be
+  //     volume → AUTO PLAY → pause → stop
   const dockHead = document.querySelector('.dock-head')
   if (dockHead) {
     const kids = [...dockHead.children].filter((k) => k.getBoundingClientRect().width > 0)
@@ -116,39 +122,80 @@ const report = await page.evaluate(() => {
       overlaps(kids[i], kids[i + 1], `dock-head child ${i}/${i + 1}`)
     }
     clipped(dockHead, 'dock-head')
+    facts.dockOrder = kids.map((el) => {
+      const name = el.id || el.className?.toString().split(' ')[0] || el.tagName.toLowerCase()
+      const r = el.getBoundingClientRect()
+      return `${name} ${Math.round(r.left)}..${Math.round(r.right)}`
+    })
+
+    const volume = dockHead.querySelector('.volume')
+    const auto = dockHead.querySelector('#auto-play')
+    const toggle = dockHead.querySelector('#transport-toggle')
+    const stop = dockHead.querySelector('#transport-stop')
+    if (!volume) problems.push('no volume control in the dock')
+    if (!auto) problems.push('no AUTO PLAY toggle in the dock')
+    if (volume && auto) {
+      const v = volume.getBoundingClientRect()
+      const a = auto.getBoundingClientRect()
+      if (v.right > a.left + 1) problems.push('volume control is not left of AUTO PLAY')
+      if (a.left - v.right > 16) problems.push(`volume is ${Math.round(a.left - v.right)}px from AUTO PLAY`)
+    }
+    if (auto && toggle && stop) {
+      const a = auto.getBoundingClientRect()
+      const t = toggle.getBoundingClientRect()
+      const s = stop.getBoundingClientRect()
+      if (!(a.right <= t.left + 1 && t.right <= s.left + 1)) {
+        problems.push('transport order is not AUTO PLAY → pause → stop')
+      }
+    }
+    const slider = dockHead.querySelector('#volume-slider')
+    if (!slider) problems.push('no volume slider')
+    else {
+      const r = slider.getBoundingClientRect()
+      facts.volumeSlider = `${Math.round(r.width)}×${Math.round(r.height)} at ${Math.round(r.left)}`
+      if (r.width < 60 || r.width > 200) problems.push(`volume slider width ${r.width}px is out of range`)
+    }
   }
 
-  // --- status bar must not clip its own line
-  const status = document.querySelector('.statusbar')
-  if (status) clipped(status, 'statusbar')
-
-  // --- nothing may spill outside the viewport
-  document.querySelectorAll('.topbar > *, .statusbar > *, .dock-head > *').forEach((el, i) => {
-    const r = el.getBoundingClientRect()
-    if (r.right > window.innerWidth + 1) {
-      out.problems.push(`element spills past the right edge: ${el.className} (${Math.round(r.right)} > ${window.innerWidth})`)
+  // --- nothing may overflow the window
+  //
+  // Elements inside a scrolling container legitimately extend past the viewport:
+  // the rail scrolls, and so does the table. What this looks for is content that
+  // escapes the window *without* a scroll container to hide it, which is the shape
+  // a broken grid or an absolutely positioned panel takes.
+  const inScroller = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const overflow = getComputedStyle(p).overflowY
+      if (overflow === 'auto' || overflow === 'scroll' || overflow === 'hidden') return true
     }
-    if (r.left < -1) out.problems.push(`element spills past the left edge: ${el.className}`)
+    return false
+  }
+  const overflow = [...document.querySelectorAll('.app *')].filter((el) => {
+    const r = el.getBoundingClientRect()
+    if (r.width === 0) return false
+    const escapes = r.right > window.innerWidth + 1 || r.bottom > window.innerHeight + 1
+    return escapes && !inScroller(el)
   })
+  if (overflow.length > 0) {
+    problems.push(
+      `elements overflow the window: ${overflow
+        .slice(0, 4)
+        .map((el) => `${el.tagName.toLowerCase()}.${el.className?.toString().split(' ')[0]}`)
+        .join(', ')}`
+    )
+  }
 
-  out.facts.viewport = `${window.innerWidth}×${window.innerHeight}`
-  out.facts.rowsRendered = document.querySelectorAll('.row').length
-  out.facts.bodyScroll = `${document.body.scrollWidth}×${document.body.scrollHeight}`
-  return out
+  facts.rows = document.querySelectorAll('.row').length
+  facts.theme = document.documentElement.dataset.mioTheme ?? 'none'
+  return { problems, facts }
 })
 
-console.log('viewport:', report.facts.viewport, ' body:', report.facts.bodyScroll)
-console.log('rows rendered:', report.facts.rowsRendered)
-console.log('regions:')
-for (const line of report.facts.regions ?? []) console.log('  ', line)
-if (report.facts.columns) console.log('columns:', report.facts.columns)
-
+console.log(JSON.stringify(report.facts, null, 1))
 if (report.problems.length === 0) {
-  console.log('\nOK — no overlap, no clipping')
+  console.log('\nlayout: OK')
 } else {
-  console.log(`\n${report.problems.length} problem(s):`)
-  for (const p of report.problems) console.log('  -', p)
+  console.log('\nlayout problems:')
+  for (const p of report.problems) console.log(`  - ${p}`)
 }
-
 await browser.close()
 process.exit(report.problems.length === 0 ? 0 : 1)

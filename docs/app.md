@@ -1,11 +1,11 @@
-# ReSlip 桌面外壳
+# Mio Sound Manager 桌面外壳
 
-`crates/reslip-app` 的模块细节。架构依据见 `docs/architecture.md` 第 4、7 节；本文件说明外壳怎么切、每个决定为什么这么做、以及验收是怎么测的（不是靠人眼看窗口）。
+`crates/mio-app` 的模块细节。架构依据见 `docs/architecture.md` 第 4、7 节；本文件说明外壳怎么切、每个决定为什么这么做、以及验收是怎么测的（不是靠人眼看窗口）。
 
 ## 模块
 
 ```
-crates/reslip-app/
+crates/mio-app/
   src/main.rs        // 入口，release 下隐藏控制台
   src/lib.rs         // Tauri builder、invoke_handler、窗口、启动时恢复 session
   src/commands.rs    // IPC 线上类型 + 每个命令的薄壳
@@ -17,15 +17,20 @@ crates/reslip-app/
   tauri.conf.json    // 窗口、asset 协议、CSP
   capabilities/      // ACL：core:default + drag + dialog + opener
   tests/ipc.rs       // 不打开窗口就能跑完的验收
-ui/                  // SolidJS + Vite，构建产物被编进 exe
+ui/                  // SolidJS + Vite + @siemens/ix，构建产物被编进 exe
+  src/main.tsx           // 注册 iX 自定义元素、应用主题、挂载
   src/App.tsx            // 状态、搜索、选择、快捷键、分页、菜单装配
   src/SoundTable.tsx     // 虚拟列表、多选、键盘、拖拽起点、无限滚动
   src/Sidebar.tsx        // 按库分组的分类 facet / 文件夹树
-  src/WaveformDock.tsx   // 波形、播放头、暂停
-  src/ContextMenu.tsx    // 右键菜单
-  src/CategoryDialog.tsx // 手动分类
-  src/SettingsDialog.tsx // 设置页
-  src/IndexOverlay.tsx   // 阻塞式索引的读条遮罩
+  src/WaveformDock.tsx   // 波形、播放头、暂停、输出音量
+  src/ContextMenu.tsx    // 右键菜单（视口坐标，非 iX dropdown）
+  src/CategoryDialog.tsx // 手动分类（iX modal）
+  src/SettingsDialog.tsx // 设置页（iX modal，含主题选择）
+  src/IndexOverlay.tsx   // 阻塞式索引的遮罩
+  src/theme.ts           // 配色主题系统：调色板 → iX token 覆盖
+  src/icons.ts           // 用到的 iX 图标名，集中一处
+  src/ix-elements.d.ts   // iX 自定义元素的 Solid JSX 类型
+  src/styles.css         // 布局与几何，颜色一律取自 iX token
   src/ipc.ts             // 线上类型 + 命令封装
 tools/               // run-app / kill-app / CDP 驱动与验收脚本
 ```
@@ -54,7 +59,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 ## 会话持久化（P5）
 
-`session.rs` 把「打开了哪些库」和「上次活跃的是哪个」写进 `%APPDATA%\com.naimio.reslip\session.json`。
+`session.rs` 把「打开了哪些库」和「上次活跃的是哪个」写进 `%APPDATA%\com.naimio.miosound\session.json`。
 
 - **存在应用配置目录，不存在库文件夹里。** 索引属于文件夹，而「哪些文件夹开着」属于这台机器上的这个人；把库拷到另一台机器不该带上「它曾在这台机器上打开过」。
 - **读失败永不致命。** 文件缺失就是「还没有库」；文件损坏就记一条日志然后当成空的重写。丢掉这个列表的代价是重选一次目录，比一个起不来的应用好得多。
@@ -94,7 +99,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 3. **`PlaybackMonitor`。** `Engine::monitor()` 克隆一份 `Arc<Shared>` 加格式信息，给 webview 轮询用。`drain_reports()` 也在上面，所以状态栏能显示**实测**的 `publish → 出声`，而不是文档里的目标值。
 4. **`pause` / `resume`。** `stop` 清槽并把播放头归零，这是 Stop 该做的；空格需要的是原地冻结。`pause` 只翻一个 `AtomicBool`，渲染回调看到它就写静音、不动 `pos_frames`，clip 留在槽里，所以 `resume` 是一次原子写，不重新解码、不重新 seek，播放头从听众停下的那一帧继续。`publish` 会清掉这个标志——留着它会让新发布的音频静音播放，那是唯一看起来像引擎坏掉的状态。暂停期间也不计下溢：槽里还有 clip，写静音是正确行为。
 
-波形加了 `reslip-engine::waveform`：`Decoder::decode_source` 把文件解成原始采样率与声道数的交错 f32（不做重采样、不做声道映射、不打包字节），`bucket_peaks` 再把它压成 1000 个峰值。
+波形加了 `mio-engine::waveform`：`Decoder::decode_source` 把文件解成原始采样率与声道数的交错 f32（不做重采样、不做声道映射、不打包字节），`bucket_peaks` 再把它压成 1000 个峰值。
 
 **桶边界是精确的，不是按 256 帧块量化的。** 参考实现先按 256 帧取块最大值再合并到桶，桶边界被量化到 256 帧；在 2 秒文件的 1000 桶视图上，这意味着每个桶的边界最多偏 5.8ms，一个尖锐的瞬态会画到隔壁的柱子上。现在的实现直接按 `[b*frames/buckets, (b+1)*frames/buckets)` 遍历每一帧。
 
@@ -113,13 +118,15 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `pause` | `()` | 原地冻结，clip 留在槽里 |
 | `resume` | `()` | 从冻结的那一帧继续 |
 | `get_playback_position` | `PlaybackPosition` | 原子读，给 rAF 轮询；带 `paused` |
+| `set_gain(gain)` | `f32` | 输出增益，`1.0` 为单位增益；返回引擎实际持有的（夹过的）值 |
+| `get_gain` | `f32` | 引擎当前增益，给音量滑杆回读 |
 | `get_waveform(path, buckets?)` | `WaveformDto` | ~1000 个 f32，附带解码耗时 |
 | `add_library(root, full?, onProgress)` | `LibraryStatus` | **阻塞**到索引跑完；进度走 Channel |
 | `list_libraries` | `LibraryStatus[]` | 每个打开库的名字、计数、是否活跃 |
 | `remove_library(root)` | `LibraryStatus[]` | 关掉一个库，活跃的自动落到下一个 |
 | `set_active_library(root)` | `LibraryStatus[]` | 切换显示哪个库 |
 | `reindex_library(root?, full?, onProgress)` | `LibraryStatus` | **阻塞**，同上；`root` 缺省是活跃库 |
-| `search(request)` | `SoundDto[]` | 同 `reslip-index` 的过滤条件，上限 5000 行 |
+| `search(request)` | `SoundDto[]` | 同 `mio-index` 的过滤条件，上限 5000 行 |
 | `count_matching(request)` | `u64` | 当前过滤命中总数，表尾的 "500 of 27,525" |
 | `list_matching_paths(request)` | `string[]` | 全选用的纯路径列表，不受 5000 行上限 |
 | `list_folders` | `FolderNodeDto` | 从索引构建的树，不读 `readdir` |
@@ -150,7 +157,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **拖拽导出用 `preventDefault` 拦住 DOM drag。** Tauri 的拖拽插件自己发起原生 OLE 拖拽，让 WebView2 同时再起一个 DOM 拖拽会让系统看到两个竞争的拖拽源。插件命令的 `onEvent` 是 `Channel` 且**必填**——不传整条命令直接报 `missing required key onEvent`，拖拽根本不会开始。P0 已实测这个通道从不触发，传它是为了满足签名。
 
-**侧栏宽度可拖。** 把手是 `.rail` 里的绝对定位元素（`right: -3px`），不是 `.body` 的第三个 grid 子元素——那会多出一列并把表格挤走。宽度写进 `localStorage`，范围 160–520px。
+**侧栏宽度可拖。** 把手是 `.rail` 里的绝对定位元素（`right: -3px`），不是 `.body` 的第三个 grid 子元素——那会多出一列并把表格挤走。宽度写进 `localStorage`，范围 180–520px。
 
 **搜索框在列表列顶部，不在窗口顶部。** 它过滤的是列表，所以它属于列表。窗口顶部留给「我在哪个库」、undo/redo 和设置（图标）。播放的三个控件在波形 dock 的右端聚成一组：`AUTO PLAY` 是文字按钮，暂停/继续与停止是图标——前者的状态是「点一行会不会响」这条策略，12px 的图标说不出来。
 
@@ -164,21 +171,69 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **第一页查询在进行中时 `data-querying="true"`。** 列表不阻塞：旧行还在、还能点，但查询落地时要整批换掉。这个标志既是表尾的 `searching…`，也是 `tools/` 里 CDP 脚本等待的信号——之前脚本靠 sleep 猜，猜早了点在即将被卸载的行上，选中跟着丢，看起来像点击处理器坏了。
 
-**文件夹树按需挂载，展开状态按库持久化。** 子节点只在展开时进 DOM：真实库有 27 万个文件，全量渲染一遍再靠 CSS 隐藏，每次侧栏重绘都要建几千个节点。展开集合存在 `localStorage` 的 `reslip:folders-expanded:<root>` 里，切库时跟着换——不存的话每次重绘都折叠回根，深目录根本点不进去。`.twisty` 是可点的 12px 方块（3px 宽的三角点不中），行本身点击是选筛选，双击是展开/折叠。
+**文件夹树按需挂载，展开状态按库持久化。** 子节点只在展开时进 DOM：真实库有 27 万个文件，全量渲染一遍再靠 CSS 隐藏，每次侧栏重绘都要建几千个节点。展开集合存在 `localStorage` 的 `mio:folders-expanded:<root>` 里，切库时跟着换——不存的话每次重绘都折叠回根，深目录根本点不进去。`.twisty` 是可点的 12px 方块（3px 宽的三角点不中），行本身点击是选筛选，双击是展开/折叠。
 
 **类名不要用 `.empty`。** 它是整窗空状态（`padding: 40px`、`height: 100%`），任何 `.foo.empty` 都会连带命中。叶子节点那个占位 twisty 因此叫 `.twisty.spacer`。
+
+## 西门子 iX 设计系统
+
+前端用 `@siemens/ix` 5.3 的 web components 重写，布局与交互不变。组件层面用到的：`ix-button`、`ix-icon-button`、`ix-toggle-button`、`ix-slider`、`ix-input`、`ix-toggle`、`ix-select`、`ix-chip`、`ix-pill`、`ix-modal`、`ix-progress-indicator`、`ix-icon`。表格、侧栏、右键菜单、波形 dock 仍是自己的 DOM——iX 没有虚拟化表格，而 27 万行的列表不能交给一个每行都建组件的实现。
+
+**颜色一律来自 `--theme-*`。** `styles.css` 里没有一个字面色值（只有几何尺寸）。这是主题系统能工作的前提：主题改一次 token，iX 组件、自有 CSS、canvas 三处一起变。
+
+**Solid 与 iX 的接线有三处要注意：**
+
+1. **普通属性绑定就够。** `value={signal()}` 会写成 property，signal 变化时 iX 组件跟着更新（浏览器里验过，不需要 `prop:` 前缀）。
+2. **CustomEvent 用 `on:` 前缀。** `on:valueChange`、`on:checkedChange`、`on:pressedChange`、`on:closeChip`。Solid 走 `addEventListener`，`detail` 在 `event.detail` 上。
+3. **`aria-label` 会被 iX 搬走。** iX 的 `InheritAriaAttributesMixin` 把 host 上的 `aria-*` 移到 shadow root 内的 `<button>` 上并**从 host 删除**。所以 CDP 脚本读标签要读内层按钮，读 host 会拿到 `null`。
+
+**iX 元素在 Solid 里需要类型声明。** `src/ix-elements.d.ts` 给用到的每个标签声明了属性；基础类型继承 `JSX.DOMAttributes<HTMLElement>`，否则连 `onClick` 都不认。`children` 也要显式声明——Solid 的 JSX 不自动加。
+
+**modal 是命令式打开的。** 渲染出 `ix-modal` 之后调 `showModal()`（内部 `dialog.showModal()` 加动画）。host 在 `.visible` 之前是 `display: none`，而内层 `dialog` 是 `position: fixed`，所以**量 host 的 `getBoundingClientRect()` 永远是 0×0**，检查要量 shadow root 里的 `dialog`。
+
+**`ix-dropdown` 不用于右键菜单。** 它锚定元素，而右键菜单要开在光标处、针对一行可能下一帧就被卸载的行。菜单是自己写的面板，颜色取 `--theme-menu--*` 与 `--theme-color-ghost--*`，看起来仍是这套设计系统。
+
+## 配色主题系统
+
+`ui/src/theme.ts`。一个主题由**八个颜色**描述（背景、前景中性色、两个强调色、对比色、success/warning/alarm/info/neutral），其余两百多个 token 由它们推导：中性 ramp 从背景混到前景，ghost 与 component 填充是前景色带 alpha，选中态是强调色带 alpha，语义色的 hover/active 是向黑白各混一点。
+
+**为什么不逐个主题手写 token 表。** 六套主题各写一份两百行 token 是六次写错 hover 与 base 不匹配的机会。推导保证六套主题的对比节奏一致。
+
+**覆盖块的优先级是量过的，不是猜的。** iX 自己的 token 块选择器是 `[data-ix-theme=classic][data-ix-color-schema=dark]`（0,2,0），我们的覆盖块是 `html[data-ix-theme][data-ix-color-schema]`（0,2,1），与源码顺序无关地胜出。
+
+**内置六套：** Classic Dark（iX 原样）、Classic Light（iX 反色）、Studio Dark（石墨 + 紫）、Studio Light（纸白 + 靛）、Amber Console（近黑 + 琥珀，暗房用）、Frost（冷蓝灰，低眩光）。`classic-*` 的 `palette` 是 `null`，也就是**不注入覆盖块**，这是「iX 原样」的实现方式。
+
+**对比度是量出来的，不是看出来的。** `tools/check-themes.mjs` 对每套主题跑 WCAG 比值：正文 4.5:1，元信息 3:1。第一版 soft-text 用 0.66 alpha，在 Studio Dark 的侧栏底色上是 3.99:1，被这个检查抓到；现在 0.78/0.58 是**通过检查的那组数字**，不是看着顺眼的那组。
+
+**主题只有一个拥有者。** 存在 `localStorage` 的 `mio:theme`（给 `index.html` 的头部脚本读，首帧就带主题），**不**再复制进设置 blob。第一版两处都存，重载后设置里的旧值赢，主题静默回退到默认——`check-themes.mjs` 的重载断言抓到了。
+
+**canvas 要自己跟着换。** 波形只画一次，主题切换不会自动重绘，所以 `WaveformDock` 用 `MutationObserver` 盯根元素的 `data-mio-theme` / `data-ix-color-schema`。
+
+## 输出音量
+
+波形 dock 里 `AUTO PLAY` 左边一组：静音按钮 + 横向滑杆（104px）+ 百分比读数。
+
+**增益在引擎里，不在前端。** `Shared` 里一个 `AtomicU32` 存 `f32` 的位模式；渲染回调读到非单位增益时对拷进 scratch 的字节按设备采样格式原地缩放（f32 直接乘，i16/i32 用饱和转换）。代价是一次原子读加一次乘法，**不重新解码、不重新发布**，所以拖滑杆时正在响的那一段立刻变。
+
+**单位增益走零开销路径。** 增益等于 1.0 时跳过缩放，回调仍是纯 memcpy。
+
+**换设备时增益要带过去。** 新引擎从单位增益起，`open_audio` 在替换前把记住的值写进新引擎——否则切设备会静默把音量重置，而滑杆还显示旧位置。
+
+**没有设备时也记得住。** `AppState` 在音频锁之外另存一份 `gain_bits`，设备打不开时设置仍然成功并返回值，下次开设备时生效。
+
+**电平是输出的属性，不是 clip 的属性。** 没有加载任何声音时滑杆也能动，所以它永不 disabled。
 
 ## 验证
 
 **Rust 侧 97 个测试，不需要窗口**（`cargo test --release --workspace`）：
 
-- `tests/ipc.rs` 25 个，跑在真实设备上（本机 FxSound；`RESLIP_TEST_DEVICE` 可换）。P3/P4 部分覆盖：状态报真实设备格式、设备缺失报引擎原文、播放推进播放头、`startAt` 偏移、同文件重播不重新解码、被取代的播放不播旧音频、非音频路径提前拒绝、波形 1000 点且响/静可分辨、桶数夹住、文件夹树来自索引、无库时报错可显示；P5 新增 6 个——两个库同时打开且切换后搜索只看活跃库、关掉活跃库自动落到下一个、切到未打开的库被拒、undo 恢复收藏且 redo 放回、undo 恢复的是**旧分类和旧归属**、多行编辑一次撤销。
+- `tests/ipc.rs` 25 个，跑在真实设备上（本机 FxSound；`MIO_TEST_DEVICE` 可换）。P3/P4 部分覆盖：状态报真实设备格式、设备缺失报引擎原文、播放推进播放头、`startAt` 偏移、同文件重播不重新解码、被取代的播放不播旧音频、非音频路径提前拒绝、波形 1000 点且响/静可分辨、桶数夹住、文件夹树来自索引、无库时报错可显示；P5 新增 6 个——两个库同时打开且切换后搜索只看活跃库、关掉活跃库自动落到下一个、切到未打开的库被拒、undo 恢复收藏且 redo 放回、undo 恢复的是**旧分类和旧归属**、多行编辑一次撤销。
 - `commands.rs` 7 个：时长/声道标签格式、排序白名单、分页上限钳制。
 - `session.rs` 5 个：缺文件是空会话、往返、损坏文件降级、消失的文件夹跳过但保留、活跃库优先。
 - `history.rs` 3 个：新编辑清空 redo、栈有上限、标签描述将要发生的事。
-- `reslip-index` 44 个、`reslip-engine` 13 个。
+- `mio-index` 44 个、`mio-engine` 13 个。
 
-**真实 28 万文件库（`D:\reslip-test-library`，本机默认设备 FxSound）：**
+**真实 28 万文件库（`D:\mio-test-library`，本机默认设备 FxSound）：**
 
 | 口径 | 实测 |
 | --- | --- |
@@ -188,12 +243,19 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | Ctrl+A 全选 | **271,350** 条路径 |
 | 无限滚动到 1500 行 | 6 次滚到底，全部追加成功 |
 
-**窗口内交互用 CDP 驱动真实窗口验证，不靠人看：**
+**窗口内交互用 CDP 驱动真实窗口验证，不靠人看**（先 `./tools/run-app.sh` 起窗口，再跑脚本）：
 
-- `tools/check-workspace.mjs`（29 项）——加两个库、侧栏分组、切换库、无限滚动、星标、undo/redo（按钮与快捷键两条路径）、设置页含 Audio 节且不再有 Libraries 节、设备下拉列出两个后端、即时生效、拖拽改侧栏宽度并持久化、搜索框在列表列、区域拼合无溢出。
-- `tools/check-index-overlay.mjs`（7 项）——遮罩立即出现、铺满窗口、光标为 progress、点击打不到列表、空格不会开始播放、结束后消失、列表可用。
-- `tools/check-browsing.mjs`（64 项，P4 回归）——分类筛选、方向键、多选、Ctrl+A、右键菜单、星标落库、分类对话框、排序（Length / Rate / Size 三列各自断言「查得到行」且「分类筛选在换排序后仍然生效」）、点击到波形、空格暂停、dock 的图标按钮顺序与 `aria-pressed`、文件夹树的展开/折叠/子节点卸载/跨重载持久化、拖拽命令。
-- `tools/check-layout.mjs`——按真实 DOM 几何断言五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、无元素溢出视口。
+- `tools/check-interactions.mjs`——列表渲染、点击选中与激活、Ctrl/Shift 多选、状态栏计数、点列头排序并翻转方向、搜索过滤与空结果、右键菜单、分类 modal 打开/尺寸/Escape 关闭、`AUTO PLAY` 文字与切换并持久化、播放头推进/暂停冻结/Stop 归零、波形点击 seek、设置 modal 与主题卡片。
+- `tools/check-themes.mjs`——六套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、浅色主题的背景确实比文字亮、`classic-*` 不残留覆盖块、重载后主题仍在，最后对十处文本元素跑 WCAG 对比度。
+- `tools/check-volume.mjs`——滑杆经 `valueChange` 改值后读**引擎的** `get_gain`（另一条命令，只改前端状态的实现过不了这一项）、静音/取消静音、重载后电平仍在且被推回引擎。
+- `tools/check-layout.mjs`——五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、dock 控件簇的**顺序**（音量 → AUTO PLAY → 暂停 → 停止）与间距、音量滑杆宽度、无元素逃出视口（滚动容器内的不算）。
+- `tools/shot.mjs` / `shot-themes.mjs`——截图，给人看，不做断言。
+
+**驱动 iX 组件的三条经验**（写脚本时都会踩到）：
+
+1. `host.click()` 没用，控件在 shadow root 里；要点 `host.shadowRoot.querySelector('button')`。
+2. 禁用的 iX 按钮有 `pointer-events: none`，Playwright 会一直重试到超时；先断言状态再点内层。
+3. 上一轮留下的 modal 会挡住后面所有点击——脚本开头先 `page.reload()`。
 
 ## 踩到的坑
 
@@ -205,17 +267,22 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **`State<'_, T>` 不能跨进 `spawn_blocking`。** 它借的是命令的栈帧。要在线程里用状态就拿 `AppHandle` 再 `app.state::<T>()`。
 
-**Windows 不允许替换正在映射的 exe。** `cargo build --release` 会在 `failed to remove file reslip.exe` 处失败。`tools/kill-app.sh` 用 PowerShell 的 `Stop-Process`（`taskkill //F` 在 git-bash 下会把 `//F` 弄坏）。
+**Windows 不允许替换正在映射的 exe。** `cargo build --release` 会在 `failed to remove file mio.exe` 处失败。`tools/kill-app.sh` 用 PowerShell 的 `Stop-Process`（`taskkill //F` 在 git-bash 下会把 `//F` 弄坏）。
 
 **想让 UI 可验证，必须能从外部连上 webview。** `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` 要在 webview 创建前设置，所以有 `tools/run-app.sh`。`playwright-core` 不是本仓库的依赖，它装在参考项目 `slip-sound/` 里；验收脚本用 `createRequire` 指向那个 `package.json`，因此可以从任何目录运行。
 
 **未收藏的星标单元格必须画出字形。** 空 span 宽度为零，点击目标不存在——于是"收藏"只能在已经收藏之后才点得动，等于从行上无法收藏。现在未收藏时画 `☆`，颜色退到边框色。
+
+**iX 的 CSS 是 254KB 的一份文件。** `@siemens/ix/dist/siemens-ix/siemens-ix.css` 里既有组件样式也有两套主题 token 块，`defineCustomElements()` 之后组件才真正注册。只 import CSS 不注册元素，页面上只有一堆无样式的空标签。
+
+**Siemens Sans 本机没有。** 字体链退到 `Segoe UI Variable Text` → `Segoe UI` → `Arial`，比例接近，不额外打包字体文件（iX 的字体是商业授权）。
 
 ## 已知未做
 
 - 分类侧栏的折叠状态不持久（展开/收起在会话内有效，重启回到全折叠）；文件夹树的展开状态、侧栏模式、宽度、设置项都是持久化的。
 - 长文件仍整段解码（P1 取舍）；波形因此也是一次整段解码，`decodeMs` 直接显示给用户。
 - undo 不跨重启，也不覆盖「删除」「改名」「重索引」。
-- `ui/src/icons.tsx` 的齿轮用的是 24px 视框的描边路径，其余三个是 12px 视框的填充图形；视觉粗细接近但不完全一致，换图标时注意别混用两种画法。
+- 主题只在 `localStorage`，没有「导入/导出一份主题」的界面；加一套主题要改 `theme.ts` 的 `THEMES` 数组。
+- 音量滑杆是线性的，没有做 dB 曲线；`0..100%` 直接映射到增益 `0..1`。
 - 拖拽时悬停的光标样式不变（P0 用户指出过）。
 - 不做 Slicer / Effects / Loop / Export，也不做 ASIO 后端——已从路线图移除。

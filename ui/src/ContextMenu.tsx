@@ -3,9 +3,14 @@ import { For, Show, createEffect, onCleanup, onMount } from 'solid-js'
 /**
  * A floating menu at a point, closed by Escape, a click elsewhere, or a scroll.
  *
- * Hand-rolled rather than a library: the app has one menu, it must be positioned
- * in viewport coordinates, and a library would add a focus trap this window does
- * not want (the keyboard belongs to the sound table).
+ * Hand-rolled rather than `ix-dropdown`: that component anchors to an *element*,
+ * and a right-click menu has to open at the cursor — on a row that may be scrolled
+ * away a frame later. The panel itself is drawn entirely from iX's menu tokens
+ * (`--theme-menu--*`, `--theme-color-ghost--*`), so it looks like the design
+ * system's menu while keeping viewport-coordinate positioning.
+ *
+ * A library would add a focus trap this window does not want: the keyboard belongs
+ * to the sound table.
  */
 export interface MenuItem {
   id: string
@@ -24,17 +29,20 @@ interface Props {
   onClose: () => void
 }
 
-const MENU_W = 236
+const MENU_W = 248
+/** iX's dropdown row height, 2.5rem, plus the panel's own padding. */
+const ROW_H = 40
+const PAD = 8
 
 export function ContextMenu(props: Props) {
   let el: HTMLDivElement | undefined
 
   /** Keep the menu inside the window; a right-click near the edge would clip it. */
   const position = () => {
-    const height = props.items.length * 26 + 12
+    const height = props.items.length * ROW_H + PAD * 2
     const left = Math.min(props.x, window.innerWidth - MENU_W - 8)
     const top = Math.min(props.y, window.innerHeight - height - 8)
-    return { left: `${Math.max(8, left)}px`, top: `${Math.max(8, top)}px` }
+    return { left: `${Math.max(8, left)}px`, top: `${Math.max(8, top)}px`, width: `${MENU_W}px` }
   }
 
   const onPointerDown = (event: PointerEvent) => {
@@ -61,7 +69,7 @@ export function ContextMenu(props: Props) {
     window.removeEventListener('resize', props.onClose)
   })
 
-  // A new position means a new menu; reset the transform so it does not animate
+  // A new position means a new menu; reset the opacity so it does not fade in
   // from the previous location.
   createEffect(() => {
     props.x
@@ -73,10 +81,7 @@ export function ContextMenu(props: Props) {
     <div ref={el} class="menu" style={position()} role="menu">
       <For each={props.items}>
         {(item) => (
-          <Show
-            when={!item.divider}
-            fallback={<div class="menu-divider" role="separator" />}
-          >
+          <Show when={!item.divider} fallback={<div class="menu-divider" role="separator" />}>
             <button
               class="menu-item"
               role="menuitem"

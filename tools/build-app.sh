@@ -62,9 +62,9 @@ fi
 (cd ui && npm run build)
 
 if [ "$WITH_ASIO" = "1" ]; then
-  cargo build -p reslip-app --release --features asio
+  cargo build -p mio-app --release --features asio
 else
-  cargo build -p reslip-app --release
+  cargo build -p mio-app --release
 fi
 
-echo "built target/release/reslip.exe"
+echo "built target/release/mio-sound-manager.exe"

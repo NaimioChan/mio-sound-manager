@@ -104,7 +104,7 @@ cargo build --release
 ./target/release/wave_fmt20.exe <某个 fmt chunk 为 20 字节的 wav>
 ```
 
-产品代码的兜底在 `crates/reslip-index/src/wav_header.rs`，只在 symphonia 拒绝时启用。
+产品代码的兜底在 `crates/mio-index/src/wav_header.rs`，只在 symphonia 拒绝时启用。
 
 ## 已知限制
 

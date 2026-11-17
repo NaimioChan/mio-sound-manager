@@ -1,4 +1,4 @@
-// ReSlip P0 probe — can a Tauri 2 window drag files into a real DAW on Windows?
+// Mio Sound Manager P0 probe — can a Tauri 2 window drag files into a real DAW on Windows?
 //
 // Deliberately minimal: one window, a static HTML page, no dev server, no npm.
 // The only thing under test is `plugin:drag|start_drag`, which CrabNebula's
