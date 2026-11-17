@@ -2,6 +2,29 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-17 · hermes · 分类只认 ASCII + 厂牌名不算描述
+
+- 改: `tools/taxonomy.py`（删掉全部中文提示词，133 个条目从三元组降到二元组；补 15 个实测缺口的英文词）；`tools/gen-category-dict.py`（不再生成 `hints` 字段）；`crates/reslip-index/src/classify/mod.rs`（删掉 Hint 结构、中文匹配两处调用与兜底分支、新增 `BRAND_TOKENS` 只在文件名首位跳过）；`docs/index.md`、`tools/README.md`
+- 验证: `cargo test --release` 106 个通过（index 49 / app 44 / engine 13）；271,350 条真实路径全量重索引 68s，未分类由 43.1%（旧词典）降到 4.7%
+- 遗留: 剩下的未分类是纯序号与只有厂牌名的文件名，无可分类词，保持原状
+
+### 用户的两条要求
+
+**一、不要中文词典。** 整条中文通路删掉，不是关掉。上一版把中文只从文件名取分、目录名兜底，实测能把未分类从 5.6% 压到 4.3%，代价是引入一族难维护的 414 条提示词和「中文只在某位置才取分」这种解释不清的规则。删掉后 4.7%，差距在噪声范围内，规则少一整套。
+
+**二、厂牌名不作分类依据。** 做法不是删词，而是加 `BRAND_TOKENS`，只在**文件名首位**跳过：`CHIME_vox_chop_male_ohh` 是 Chime 的人声切片，不是钟声；但 `temple bell chime 02` 里的 `chime` 仍然是钟声。同一个词两种含义都要保留，删词会把后一种也杀掉。
+
+### 词表补的 15 个词，每一个都有实测依据
+
+从 15,121 条未分类里统计文件名高频未匹配 token，只补有分类含义的：
+`break`（`KSHMR_Break_Beat_Loop`）、`percussive`、`upsweep`、`braaam`/`braaams`、
+`mech`/`mechs`、`bot`/`bots`、`vocalizing`、`animals`/`animal`/`birdsong`、
+`strike`/`strikes`、`liquid`/`suction`、`melodyloop`/`songstarter`/`melody`。
+
+**没有补的**：`fx`、`misc`、`loop`、`one`、`shot`、`house`、`houseloops`、`fields`。
+前五个是格式噪声；后三个是包的分组词（Vengeance 把每条都放在 `House Loops` 下），
+没有分类含义。试过往停用词里加后三个，分布一位没变，说明它们本来就不在词典里，加了等于没加，已撤回。
+
 ## 2026-11-17 · hermes · 分类词典与打分模型改为自有：GPL 汇编不能搬运
 
 - 改: 新增 `tools/taxonomy.py`（词表源文件）、`tools/gen-category-dict.py`（生成器）；删除 `tools/gen-category-dict.mjs`（它从 Slip Sound 的 `category-dictionary.ts` 直接转写，而那个文件是 GPL-3.0-or-later 的汇编）；重写 `crates/reslip-index/src/classify/mod.rs`（打分模型、中文提示词、两字符分词、短语归一化）；重新生成 `crates/reslip-index/src/classify/dictionary.rs`；`indexer.rs` 与 `crates/reslip-app/tests/ipc.rs` 的 `door_slam` 断言随词表改；`docs/index.md`（classify 一节重写）、`docs/architecture.md`（P2 行）、`AGENTS.md`、`tools/README.md`

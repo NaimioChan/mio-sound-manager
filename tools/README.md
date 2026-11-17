@@ -12,8 +12,8 @@ python tools/gen-category-dict.py > /dev/null   # 只写 stderr 的统计行
 cargo test -p reslip-index
 ```
 
-词表是数据不是逻辑：23 个分类、133 个 category/subcategory 条目、1,276 个关键词、
-68 条短语、413 条中文提示词。手抄必错，所以由脚本生成。
+词表是数据不是逻辑：23 个分类、133 个 category/subcategory 条目、1,291 个关键词、
+70 条短语。手抄必错，所以由脚本生成。只匹配 ASCII，中文路径不参与分类。
 
 **改词表之后必须跑一遍真实库**，不能只看单元测试：
 

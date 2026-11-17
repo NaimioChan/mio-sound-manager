@@ -23,8 +23,6 @@
 //! | Signal | Weight |
 //! | --- | --- |
 //! | multi-word phrase in the normalised path | 4 |
-//! | a Chinese hint in a directory name (the pack's stated theme) | 2 |
-//! | a Chinese hint in the filename | 1 |
 //! | a dictionary word in the filename, once per distinct word | 3 |
 //! | a dictionary word in a directory name, at most **once per target** | 1 |
 //!
@@ -33,14 +31,21 @@
 //! the file came from, not what the file is. The filename votes per word, so a
 //! name like `servo_metal_latch` can outvote its pack.
 //!
-//! ## Chinese hints
+//! ## Pack names and artists are not descriptions
 //!
-//! 30,585 of the 271,350 paths in the reference corpus carry Chinese text, and in
-//! the Epic Stock Media packs that text is the folder name and the pack's theme:
-//! `【现代化军事战争用户UI界面游戏音效】`, `【蒸汽朋克游戏音效】`. An ASCII-only
-//! tokenizer cannot see any of it. Hints are matched as substrings of directory
-//! names and, separately, of the filename, with the lower weight the filename
-//! deserves.
+//! A pack's name is usually the first word of every filename in it
+//! (`CHIME_vox_chop_male_ohh`, `Fox_tonal_loop_boops`), and those names are the
+//! artist or the label. they are skipped as first tokens rather than deleted from
+//! the dictionary, because the same words are real index terms elsewhere: `chime`
+//! is also a bell and `ghost` is also a spirit.
+//!
+//! ## ASCII only
+//!
+//! Chinese text in paths is not read. In the Epic Stock Media packs the Chinese
+//! folder name is a whole sentence about the pack's theme
+//! (`【现代化军事战争用户UI界面游戏音效】`), so any Chinese signal labels thousands
+//! of unrelated files at once; the sound's own description is in the ASCII part of
+//! the filename.
 //!
 //! ## Confidence
 //!
@@ -60,8 +65,6 @@ pub struct CategoryDefinition {
     pub category: &'static str,
     pub subcategory: Option<&'static str>,
     pub keywords: &'static [&'static str],
-    /// Chinese words and phrases, matched as substrings rather than tokens.
-    pub hints: &'static [&'static str],
     pub phrases: &'static [&'static str],
 }
 
@@ -74,7 +77,7 @@ pub struct Classification {
     pub confidence: f64,
     /// Pre-normalisation score. Kept because tuning the dictionary needs it.
     pub raw_score: u32,
-    /// The dictionary words, hints and phrases that fired, deduplicated.
+    /// The dictionary words and phrases that fired, deduplicated.
     pub matched_terms: Vec<String>,
 }
 
@@ -102,17 +105,11 @@ struct Phrase {
     target: Target,
 }
 
-struct Hint {
-    hint: &'static str,
-    target: Target,
-}
-
 /// Built once per process (or once per indexing run) and then shared across
 /// threads: it is immutable and contains no interior mutability.
 pub struct Classifier {
     keyword_to_target: HashMap<&'static str, Target>,
     phrases: Vec<Phrase>,
-    hints: Vec<Hint>,
 }
 
 impl Default for Classifier {
@@ -125,7 +122,6 @@ impl Classifier {
     pub fn new() -> Self {
         let mut keyword_to_target = HashMap::new();
         let mut phrases = Vec::new();
-        let mut hints = Vec::new();
         for def in CATEGORY_DICTIONARY {
             let target = Target {
                 category: def.category,
@@ -140,17 +136,10 @@ impl Classifier {
                     target: target.clone(),
                 });
             }
-            for hint in def.hints {
-                hints.push(Hint {
-                    hint,
-                    target: target.clone(),
-                });
-            }
         }
         Self {
             keyword_to_target,
             phrases,
-            hints,
         }
     }
 
@@ -193,14 +182,16 @@ impl Classifier {
         //    first is the one reported, so `matched_terms` explains the vote that
         //    actually happened instead of listing words that were ignored.
         //
-        //    Chinese hints are deliberately *not* read from the directory. In the
-        //    Epic Stock Media packs the Chinese text is the pack title — a whole
-        //    sentence about the pack's theme (`【史诗战斗武器魔法奇幻任务游戏
-        //    音效】`) — so reading it as a vote would label all 3,944 files in that
-        //    pack with every theme in the sentence. It is used as a last resort
-        //    instead, below.
+        //    Only ASCII words vote. Chinese text in a path is ignored: the Epic
+        //    Stock Media folder names are a whole sentence about the pack's theme,
+        //    so reading them would label thousands of files with all of it.
         let mut dir_voted: Vec<&Target> = Vec::new();
         for token in tokenize(&dir_part) {
+            // A brand token in a folder name is the pack's label, never its
+            // contents. `Fox Stevenson Universal Samples` is not about foxes.
+            if BRAND_TOKENS.contains(&token.as_str()) {
+                continue;
+            }
             let Some(target) = self.lookup(&token) else {
                 continue;
             };
@@ -211,11 +202,7 @@ impl Classifier {
             add(&mut scores, &mut matched, target, 1, &token);
         }
 
-        // 3. Filename: one vote per distinct word, whichever source it came from.
-        //    Chinese hints do belong here: the Sound Morph packs carry Chinese
-        //    folder names *and* Chinese in the filename, and the filename is the
-        //    sound's own description (`【车门重关03】Impacts Source - Car Door
-        //    BMW Heavy Slam 03.wav`).
+        // 3. Filename: one vote per distinct word.
         //
         //    A word that already voted from a folder does not vote again. A pack
         //    called `Epic.Stock.Media.Ocean.Game` makes every filename in it start
@@ -223,22 +210,23 @@ impl Classifier {
         //    `ESM_Ocean_Game_One_Shot_UI_Select` into two votes for water against
         //    one for the UI sound it actually is.
         let mut file_voted: Vec<&Target> = Vec::new();
-        for hint in &self.hints {
-            if !filename.contains(hint.hint) {
-                continue;
-            }
-            if file_voted.contains(&&hint.target) {
-                continue;
-            }
-            file_voted.push(&hint.target);
-            add(&mut scores, &mut matched, &hint.target, 1, hint.hint);
-        }
         let mut seen: Vec<String> = Vec::new();
+        let mut first = true;
         for token in tokenize(&filename) {
             if seen.contains(&token) {
                 continue;
             }
             seen.push(token.clone());
+            // A pack's own name is usually the first word of every filename in
+            // it — `FOX_STVNSN_BASS_SHOT`, `CHIME_vox_chop_male_ohh` — and it is
+            // the artist, not the sound. Those are skipped rather than deleted
+            // from the dictionary, because the same word is a real index term
+            // elsewhere: `chime` is a bell here, `Chime` is an artist.
+            let is_first = first;
+            first = false;
+            if is_first && BRAND_TOKENS.contains(&token.as_str()) {
+                continue;
+            }
             let Some(target) = self.lookup(&token) else {
                 continue;
             };
@@ -249,24 +237,7 @@ impl Classifier {
             add(&mut scores, &mut matched, target, 3, &token);
         }
 
-        // 4. Last resort: the Chinese words in the *folder* name, used only when
-        //    nothing else fired. `ESM_Braaam_Strike_041.wav` has no ASCII index
-        //    term, and its pack's Chinese title is then the only signal there is.
-        if scores.is_empty() {
-            let mut fallback: Vec<&Target> = Vec::new();
-            for hint in &self.hints {
-                if !dir_part.contains(hint.hint) {
-                    continue;
-                }
-                if fallback.contains(&&hint.target) {
-                    continue;
-                }
-                fallback.push(&hint.target);
-                add(&mut scores, &mut matched, &hint.target, 2, hint.hint);
-            }
-        }
-
-        // 5. Pick the winner; a subcategory-level match beats a bare-category
+        // 4. Pick the winner; a subcategory-level match beats a bare-category
         //    match on a tie, so `Weapons::Firearms` wins over `Weapons`.
         let mut best: Option<(Target, u32)> = None;
         for (target, score) in &scores {
@@ -324,8 +295,8 @@ impl Classifier {
 
 /// Split into (directory part with its separators intact, filename).
 ///
-/// The directory part keeps its separators so a Chinese hint can span a folder
-/// name without spanning two; tokenisation turns them into spaces on its own.
+/// The directory part keeps its separators; tokenisation turns them into spaces
+/// on its own, so a token never spans two folder names.
 fn split_path(full_path: &str) -> (String, String) {
     match full_path.rfind(['\\', '/']) {
         Some(index) => (
@@ -366,6 +337,16 @@ const STOP_WORDS: &[&str] = &[
     "essentials", "essential", "ultimate", "modern", "pro", "professional", "premium", "collection",
     "series", "part",
 ];
+
+/// Tokens that are a pack's own name and, being the first word of nearly every
+/// filename in that pack, are not a description of the sound.
+///
+/// These are only skipped when they are the *first* token of a filename. None of
+/// them is removed from the dictionary: `chime` is also a bell, `ghost` is also
+/// a spirit, and the corpus needs both readings. What the corpus does not need is
+/// `CHIME_vox_chop_male_ohh.wav` being filed as a bell because the artist is
+/// called Chime.
+const BRAND_TOKENS: &[&str] = &["fox", "chime", "ghost", "htech"];
 
 /// The shortest token the dictionary can match. Two characters, so `ui`, `hh`,
 /// `808` and `ak` reach the dictionary instead of being dropped as noise.
@@ -452,20 +433,15 @@ mod tests {
     }
 
     #[test]
-    fn chinese_pack_folders_are_read() {
-        // The folder name is the pack's theme, in Chinese, and no ASCII token can
-        // see it.
+    fn chinese_folder_names_are_ignored() {
+        // The Epic Stock Media packs name their folders with a whole sentence
+        // about the pack's theme. Reading it would label all ~4,000 files in the
+        // pack with every theme in the sentence, so Chinese text contributes
+        // nothing: the ASCII part of the filename has to decide.
         let c = classify(r"D:\lib\UnBought\SFX\帝国战争【武器 步枪 手枪 射击】\a_01.wav");
-        assert_eq!(c.category, "Weapons");
-        let c = classify(r"D:\lib\UnBought\SFX\【蒸汽朋克机械 齿轮】\a_01.wav");
+        assert_eq!(c.category, "Uncategorized");
+        let c = classify(r"D:\lib\UnBought\SFX\【蒸汽朋克机械 齿轮】\servo_latch.wav");
         assert_eq!(c.category, "Machinery");
-    }
-
-    #[test]
-    fn a_chinese_hint_beats_a_directory_word() {
-        // A 2-weight hint in the folder beats a 1-weight directory word.
-        let c = classify(r"D:\lib\【金属 撞击】\wood_plank.wav");
-        assert_eq!(c.category, "Impacts");
     }
 
     #[test]
@@ -503,6 +479,7 @@ mod tests {
 
     #[test]
     fn non_ascii_paths_do_not_panic_and_still_classify() {
+        // The Chinese part is invisible; `pistol` is what decides.
         let c = classify(r"D:\音效库\枪声_pistol.wav");
         assert_eq!(c.category, "Weapons");
     }
@@ -552,9 +529,6 @@ mod tests {
                     "phrase {phrase:?} must be lowercase and non-empty"
                 );
             }
-            for hint in def.hints {
-                assert!(!hint.is_empty(), "empty hint in {:?}", def.category);
-            }
         }
     }
 
@@ -572,6 +546,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_packs_own_name_is_not_a_description() {
+        // `CHIME_vox_chop_male_ohh` is a vocal chop by the artist Chime, not a
+        // bell; `Fox_tonal_loop_boops` is not an animal.
+        let vocal = classify(r"D:\lib\Chime pack\CHIME_vox_chop_male_ohh.wav");
+        assert_eq!(vocal.category, "Vocals");
+        let tonal = classify(r"D:\lib\Fox pack\Fox_tonal_loop_boops_05_124_B.wav");
+        assert_ne!(tonal.category, "Nature", "Fox is the artist, not an animal");
+        // The same word in a later position is still the dictionary word.
+        let bell = classify(r"D:\lib\x\temple bell chime 02.wav");
+        assert_eq!(bell.category, "Keys & Mallets");
     }
 
     #[test]

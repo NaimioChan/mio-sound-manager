@@ -22,8 +22,7 @@ HEADER = '''//! Category taxonomy: category → subcategory → the words that s
 //! marketing (`Epic.Stock.Media.Hybrid.Game.Sounds`) and are ignored by the
 //! matcher, filenames are the description (`ESM_SPG_fx_servo_metal_latch_02`),
 //! and the Epic Stock Media packs carry a Chinese folder name that states the
-//! pack theme (`【蒸汽朋克游戏音效】`), which is why there is a separate Chinese
-//! hint list.
+//! pack theme, which is deliberately not read: see `tools/taxonomy.py`.
 //!
 //! Do not hand-edit: `tools/gen-category-dict.py` generates this file. The
 //! vocabulary, the weights and the tokenizer are tuned together, so a word
@@ -62,22 +61,20 @@ def rust_list(items, indent):
 
 def main():
     out = [HEADER]
-    keywords = phrases = hints = 0
+    keywords = phrases = 0
     for cat, subs in taxonomy.TAXONOMY.items():
-        for sub, (kws, cjk, phs) in subs.items():
+        for sub, (kws, phs) in subs.items():
             sub_expr = "None" if sub == "__bare__" else f"Some({rust_string(sub)})"
             kw = kws.split()
             ph = [p.strip() for p in phs.split("|") if p.strip()]
-            cj = cjk.split()
             keywords += len(kw)
             phrases += len(ph)
-            hints += len(cj)
             out.append(
                 "    CategoryDefinition {\n"
                 f"        category: {rust_string(cat)},\n"
                 f"        subcategory: {sub_expr},\n"
                 f"        keywords: {rust_list(kw, 12)},\n"
-                f"        hints: {rust_list(cj, 12)},\n"
+
                 f"        phrases: {rust_list(ph, 12)},\n"
                 "    },\n"
             )
@@ -85,7 +82,7 @@ def main():
     sys.stdout.write("".join(out))
     print(
         f"// entries {sum(len(v) for v in taxonomy.TAXONOMY.values())}, "
-        f"keywords {keywords}, phrases {phrases}, hints {hints}",
+        f"keywords {keywords}, phrases {phrases}",
         file=sys.stderr,
     )
 
