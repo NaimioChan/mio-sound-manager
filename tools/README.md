@@ -37,12 +37,18 @@ node tools/check-interactions.mjs   # 列表/选择/排序/搜索/菜单/modal/A
 node tools/check-themes.mjs         # 六套主题应用、重载保留、WCAG 对比度
 node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音，重载
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
+node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/shot.mjs [out.png]       # 截图
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 ```
 
-四个 `check-*` 都以退出码表示结果，可以串起来跑。它们互不干扰（每个都先 `reload()`），
-顺序任意。
+四个 `check-*.mjs` 都以退出码表示结果，可以串起来跑。它们互不干扰（每个都先 `reload()`），
+顺序任意。这四个都断言英文文案，所以开头会把 `mio:locale` 固定成 `en`——在中文机器上
+不固定就会因为找不到 locator 而失败，那是脚本的前提问题而不是功能坏了。列头与菜单项另有
+`data-sort-key` / `data-menu-id`，选元素不依赖翻译。
+
+`check-i18n.mjs` 不需要窗口：它直接读 `ui/src/locales/*.ts` 的源码，检查三语键集是否齐平、
+每个语种有没有丢掉或凭空多出 `{placeholder}`。`tsc` 管得到漏键，管不到占位符。
 
 **iX 组件的三个坑**，写脚本时都会踩到：
 

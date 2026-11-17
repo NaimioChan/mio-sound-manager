@@ -6,8 +6,10 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 - 改: `ui/src/assets/icons/*.svg`（新增 11 个，从 `@siemens/ix-icons/svg/` 复制）、`ui/src/icons.ts`（改为导入本地 SVG → data URL）、`ui/src/i18n.ts` + `ui/src/locales/{en,zh,ja}.ts`（新增，151 键）、`ui/src/styles.css`（`.setting ix-select/ix-input` 拉满）、`ui/src/{App,SoundTable,Sidebar,WaveformDock,CategoryDialog,SettingsDialog,IndexOverlay,theme,main,ipc}.tsx?`（全部文案接 `t()`）、`crates/mio-app/src/{history,state,commands}.rs`（undo/redo 由英文 label 改为 `EditKind` 枚举；删 `SoundDto.channel_label`）、`tools/check-i18n.mjs`（新增）、四个 `check-*.mjs`（固定英文 locale + 改用 `data-sort-key`/`data-menu-id` 选元素）、`docs/app.md`（新增「多语言」节、图标与 ix-select 两个坑）
 - 验证: `cargo test --release` 105 个通过（engine 13 / index 49 / app lib 18 / ipc 25）；`tsc --noEmit` 干净；`check-i18n.mjs` 三语各 151 键、占位符一致；`check-interactions.mjs` / `check-layout.mjs` / `check-themes.mjs` / `check-volume.mjs` 全通过；三语逐一切换后实测 DOM 文案正确（表头/侧栏/搜索框/dock/状态栏）、零文本溢出、dock 不超界；图标逐个截图取点阵确认渲染出真实字形（齿轮/文件夹/喇叭/暂停/停止），主界面 6 个 + 设置 13 个零空图标
-- 遗留: ① `AGENTS.md` 的命令表与目录说明没改成（新增 `check-i18n.mjs`、`i18n.ts`、`locales/`）——受保护写入被拦，未绕行；② 分类名是数据库里的英文数据，只翻译了 `Uncategorized` 这一个 schema 哨兵值，其余分类名不随语言变（有意为之，翻它会让 facet 筛选发出库里没有的字符串）；③ `tools/shot*.mjs` 未固定 locale，截图会跟随系统语言
-- 下一步: 需要时把 AGENTS.md 那三行补上（`node tools/check-i18n.mjs`、`ui/src/i18n.ts`、`ui/src/locales/`）
+- 遗留: ① 分类名是数据库里的英文数据，只翻译了 `Uncategorized` 这一个 schema 哨兵值，其余分类名不随语言变（有意为之，翻它会让 facet 筛选发出库里没有的字符串）；② `tools/shot*.mjs` 未固定 locale，截图会跟随系统语言
+- 下一步: 无
+
+> 补记（同日）：`AGENTS.md` 已在用户批准后补齐——命令表加 `check-i18n.mjs`、Where things live 加 `i18n.ts`/`locales/`/`assets/icons/`、Stack 加多语言与图标两条、Rules 加「不写字面量文案」、Status 加 P8。
 
 ### 三个问题各自的根因
 

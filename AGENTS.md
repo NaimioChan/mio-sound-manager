@@ -2,7 +2,7 @@
 
 Mio Sound Manager: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8 及之后不做。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。
+Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9 及之后不做。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。
 
 ## Stack (decided)
 
@@ -12,6 +12,8 @@ Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + s
 - `wasapi` crate 0.27 直接对接 Windows 音频（**不用 cpal**：需要 `IAudioClient3` 周期查询与 `get_current_padding` 排队量，cpal 拿不到）
 - 输出后端：**WASAPI 共享模式为默认**（实测 17.5ms 点击到出声，不抢设备）；**ASIO 为可选 feature 并已在设置里可选**（实测 64 帧下 5.31ms 点击到出声，SDK 专有许可 + 构建需 libclang）；**WASAPI 独占否决**（实测会让用户开着的 DAW 静音）
 - 前端：**SolidJS + `@siemens/ix` 5.3 web components**（西门子设计系统）。颜色一律走 `--theme-*` token，不写字面色值；主题系统见 `ui/src/theme.ts`
+- 多语言：**中 / 英 / 日**，`ui/src/i18n.ts` 加 `ui/src/locales/{en,zh,ja}.ts`。英文是键集基准，另两语类型化为 `Record<MessageKey, string>`，漏键即编译错误。只翻外壳文案，不翻数据（分类名、文件名）
+- 图标：**SVG 复制进仓库** `ui/src/assets/icons/`，`?raw` 导入拼 data URL 交给 `ix-icon`。不按名字取（`ix-icon` 拿名字会去 fetch `svg/<name>.svg`，产物里没有该目录）；不用 `encodeURIComponent`（iX 只调 `decodeURI`，`%3D` 不还原会让 SVG 解析成空框）。离线可用是硬要求
 - SQLite 索引：`rusqlite` bundled + WAL + FTS5
 - ffmpeg 保留为外部进程，只用于导出与特效渲染；播放路径不经过 ffmpeg
 - 只做 Windows（不做 macOS/Linux）
@@ -28,6 +30,7 @@ Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + s
 - **Colours come from iX tokens, never from literals.** `ui/src/styles.css` holds geometry only; every colour is a `--theme-*` variable so the theme system repaints the iX components, our CSS and the waveform canvas from one override block. A literal hex in a component is a colour that will not follow the theme.
 - **The theme has one owner.** `ui/src/theme.ts` writes `mio:theme`; it must not also live in the settings blob — two writers made a reload fall back to the default.
 - **Volume is engine state, not renderer state.** `set_gain` writes one atomic the render callback reads; the slider's signal is a mirror. A volume control that only updated the UI would pass a DOM check and do nothing.
+- **Nothing user-facing is written as a literal string.** Every label goes through `t()`; the backend sends *kinds* (`EditKind`), never English prose for the renderer to display — a string born in Rust can never be translated. Category names, file names and sample rates are data and stay untranslated; `Uncategorized` is the one exception, because it is a schema sentinel rather than a classifier guess.
 - **Gapless decoding is mandatory, not an optimisation.** With `FormatOptions::enable_gapless` off, MP3 keeps 25.1ms of LAME encoder delay at the head; MP4/AAC keeps 1024 priming frames (23.2ms) because symphonia's isomp4 parses `elst` but never surfaces it. Both are the same order of magnitude as the entire device path, so a missing trim is felt as a late trigger.
 
 ## Commands
@@ -68,11 +71,14 @@ node tools/check-interactions.mjs   # 列表/选择/排序/搜索/菜单/modal/A
 node tools/check-themes.mjs         # 六套主题应用、重载保留、WCAG 对比度
 node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音，重载
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
+node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/shot.mjs [out.png]       # 截图（给人看）
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 ```
 
 They resolve `playwright-core` from `slip-sound/package.json` through `createRequire`, so they run from any directory — that module is not a dependency of this repo. See `docs/app.md`.
+
+The four `check-*.mjs` drive a real window, so they assert on English copy and pin `mio:locale` to `en` before reloading — on a Chinese or Japanese machine they would otherwise fail on a missing locator rather than a broken feature. Column headers and menu items are also addressable by `data-sort-key` / `data-menu-id`, so a selector never depends on translated text. Copy coverage belongs to `check-i18n.mjs`.
 
 ## Where things live
 
@@ -83,6 +89,8 @@ They resolve `playwright-core` from `slip-sound/package.json` through `createReq
 | Tauri 外壳（IPC 命令、应用状态、库生命周期） | `crates/mio-app/` |
 | 前端（SolidJS + Vite + @siemens/ix，构建产物编进 exe） | `ui/` |
 | 配色主题系统（八色调色板 → iX token 推导） | `ui/src/theme.ts` |
+| 多语言（语言信号 + `t()`，三语字典） | `ui/src/i18n.ts`、`ui/src/locales/` |
+| 图标资源（从 `@siemens/ix-icons` 复制，离线可用） | `ui/src/assets/icons/` |
 | 命令行验收工具（P1 / P2 的验收产物） | `crates/mio-cli/` |
 | 架构决策（后端选型、线程模型、技术栈、实施顺序） | `docs/architecture.md` |
 | 引擎模块细节 | `docs/engine.md` |
