@@ -70,7 +70,7 @@ src/asio.rs
   list_devices()   // 枚举 + 逐个探测（通道、首选缓冲、采样率）
 ```
 
-**为什么是 feature。** ASIO SDK 是 Steinberg 专有许可，不能随 GPL 二进制分发；`asio-sys` 用 bindgen 构建它，需要 `libclang.dll`。crate 的默认 feature 因此完全不碰它（裸 `cargo build` / `cargo test` 不需要 SDK），产品构建走 `./tools/build-app.sh`，它默认就带 ASIO；`--no-asio` 才构建纯 WASAPI 的开发版。
+**为什么是 feature。** `asio-sys` 用 bindgen 构建 SDK，需要 `libclang.dll`，所以 crate 的默认 feature 完全不碰它（裸 `cargo build` / `cargo test` 不需要 SDK）。产品构建走 `./tools/build-app.sh`，它默认就带 ASIO；`--no-asio` 才构建纯 WASAPI 的开发版。许可方面：SDK 自己给出「专有许可或 GPLv3」二选一，本项目按 AGPL-3.0-or-later 发布，走 GPLv3 那一支，产物里因此包含 SDK 的 `common/*.cpp` 与 `host/**`，见 `THIRD-PARTY-NOTICES.md`。
 
 **构建前提。** SDK 解压到 `%LOCALAPPDATA%\mio\asio_sdk`（`CPAL_ASIO_DIR` 可覆盖；放在 `LOCALAPPDATA` 而不是 `%TEMP%`，因为 Windows 会清临时目录，构建前提不能是被随时回收的东西），`LIBCLANG_PATH` 指向含 `libclang.dll` 的目录（pip 的 `libclang` wheel 就带一个）。`./tools/build-app.sh` 默认就带 ASIO；`--no-asio` 才构建纯 WASAPI 的开发版。
 

@@ -2,12 +2,27 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-18 00:05 · hermes · 许可证改成 AGPL：清掉仓库里的 MIT 残留与「SDK 不能随 GPL 分发」的旧结论
+
+- 改: `Cargo.toml`（`[workspace.package] license` `MIT` → `AGPL-3.0-or-later`，四个 crate 都继承它）、`AGENTS.md`（技术栈那条去掉「SDK 专有许可」）、`docs/architecture.md`（ASIO 小节与否决表两处）、`docs/engine.md`（ASIO feature 一节）、`THIRD-PARTY-NOTICES.md`（新增）
+- 验证: `cargo metadata --no-deps` 四个 crate 均报 `AGPL-3.0-or-later`；`git ls-files -z | xargs -0 grep -nw MIT` 只剩三条正当引用（iX 图标的 MIT、agent-log 里的历史记录）；`LICENSE` 实为 AGPL v3（661 行，`GNU AFFERO GENERAL PUBLIC LICENSE`），不是 GPL v3
+- 遗留: ① 上一个 release 的产物（v0.1.0）是在 MIT 声明下打的，二进制本身没变，只是元数据不同——重打要重新上传，是否值得由用户定；② `docs/agent-log.md` 里 `MIT` 的历史记录按规则保持原样
+- 下一步: README；给 release 附件附 `THIRD-PARTY-NOTICES.md`（AGPL 二进制分发要求）
+
+### 判断依据
+
+**「SDK 不能随 GPL 分发」是错的结论，且与本项目的发布方式冲突。** 打开 `%LOCALAPPDATA%\mio\asio_sdk\LICENSE.txt` 可以看到 SDK 原文给的是二选一：a) Steinberg 专有许可，b) **GNU General Public License v3**。`asio-sys` 的 `build.rs` 把 `common/*.cpp` 与 `host/**` 直接编译进二进制，所以带 ASIO 的产物里确实含 SDK 目标代码——按 GPLv3 一支走就是合法的，按专有许可则要先和 Steinberg 签协议。本项目整体 AGPL-3.0-or-later，与 GPLv3 兼容（AGPL §13），所以走 b 支成立。之前文档把「不能随 GPL 分发」写成既定事实，导致把 AGPL 项目自己的许可也判成不合规，属于把 SDK 的两条路只读了前一条。
+
+**MIT 的残留分两类，处理方式不同。** `Cargo.toml` 的 `license` 字段是真错，必须改；`@siemens/ix-icons` 的 MIT 是那份独立作品的许可，AGPL 项目里照旧保留署名即可，不能改。`docs/agent-log.md` 里「整体继续按 MIT 发布就不合规」是当时的历史判断记录，保持原样。
+
+**AGPL 的对应源码义务。** 仓库公开、release 页面指向仓库，满足 §6 的主干要求。ASIO SDK 源码不 vendored，用户在构建时自取——这是本项目的构建前提，写进了 `THIRD-PARTY-NOTICES.md` 与 `docs/engine.md`。
+
 ## 2026-11-17 22:35 · hermes · 顶栏去库标签、打包 v0.1.0 试用版并发 GitHub
 
 - 改: `ui/src/App.tsx`（删品牌名右侧的 `ix-pill.lib-chip`）、`ui/src/styles.css`（删 `.lib-chip`）、`crates/mio-app/tauri.conf.json`（bundle active + nsis + currentUser + 三语安装界面；`beforeBuildCommand` 改成 `npm run build`）、`ui/package.json` + lock（`@tauri-apps/cli` 进 devDependencies）
 - 验证: `tsc --noEmit` 干净；`check-layout` / `check-interactions` / `check-tags` 全通过；`tauri build --features asio --bundles nsis` 产出 4.97 MiB 安装包与 17.2 MB 便携版；**打包后的 exe 单独启动过**（CDP 9224）：顶栏只有 `Mio Sound Manager`、零个 pill、`asio_compiled=true`、设备表 7 个 WASAPI + 1 个 ASIO
-- 遗留: ① 仓库没有 README（用户明确说先不写）；② 没有 LICENSE 文件，而 `Cargo.toml` 写着 `license = "MIT"`——要发开源得补；③ 安装包只在当前机器上验证了「能生成」，没有实际跑一遍安装流程
-- 下一步: 补 README 与 LICENSE；下一个版本把 `%APPDATA%` 下的配置改成便携版可覆盖（目前便携版也写 APPDATA）
+- 遗留: ① 仓库没有 README（用户明确说先不写）；② 已由用户补上 AGPL v3 LICENSE，`Cargo.toml` 的 `license` 与三处「SDK 不能随 GPL 分发」的表述随后修正，见当天 23:20 那条；③ 安装包只在当前机器上验证了「能生成」，没有实际跑一遍安装流程
+- 下一步: 补 README；下一个版本把 `%APPDATA%` 下的配置改成便携版可覆盖（目前便携版也写 APPDATA）
 
 ### 这次的两件事
 

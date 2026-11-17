@@ -10,7 +10,7 @@ Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + s
 - Tauri 2 shell (WebView2 on Windows)
 - `symphonia` for decoding (`all-formats` + `all-codecs`)
 - `wasapi` crate 0.27 直接对接 Windows 音频（**不用 cpal**：需要 `IAudioClient3` 周期查询与 `get_current_padding` 排队量，cpal 拿不到）
-- 输出后端：**WASAPI 共享模式为默认**（实测 17.5ms 点击到出声，不抢设备）；**ASIO 为可选 feature 并已在设置里可选**（实测 64 帧下 5.31ms 点击到出声，SDK 专有许可 + 构建需 libclang）；**WASAPI 独占否决**（实测会让用户开着的 DAW 静音）
+- 输出后端：**WASAPI 共享模式为默认**（实测 17.5ms 点击到出声，不抢设备）；**ASIO 为可选 feature 并已在设置里可选**（实测 64 帧下 5.31ms 点击到出声，构建需 libclang，SDK 按 GPLv3 一支随产物分发）；**WASAPI 独占否决**（实测会让用户开着的 DAW 静音）
 - 前端：**SolidJS + `@siemens/ix` 5.3 web components**（西门子设计系统）。颜色一律走 `--theme-*` token，不写字面色值；主题系统见 `ui/src/theme.ts`
 - 多语言：**中 / 英 / 日**，`ui/src/i18n.ts` 加 `ui/src/locales/{en,zh,ja}.ts`。英文是键集基准，另两语类型化为 `Record<MessageKey, string>`，漏键即编译错误。只翻外壳文案，不翻数据（分类名、文件名）
 - 图标：**SVG 复制进仓库** `ui/src/assets/icons/`，`?raw` 导入拼 data URL 交给 `ix-icon`。不按名字取（`ix-icon` 拿名字会去 fetch `svg/<name>.svg`，产物里没有该目录）；不用 `encodeURIComponent`（iX 只调 `decodeURI`，`%3D` 不还原会让 SVG 解析成空框）。离线可用是硬要求
