@@ -315,9 +315,11 @@ mod tests {
             .get_by_path(&root.join(r"Foley\door_slam.wav").to_string_lossy())
             .unwrap()
             .unwrap();
-        // `door` is not a dictionary word; `slam` is, under Impacts/Blunt/Body.
-        assert_eq!(door.category, "Impacts");
-        assert_eq!(door.subcategory.as_deref(), Some("Blunt/Body"));
+        // Both words are index terms and both carry the same weight: `door` is
+        // Foley/Doors & Locks and `slam` is Impacts/Hard Hits. A door slam is a
+        // door sound, and `door` is the first token in the name, so Foley wins.
+        assert_eq!(door.category, "Foley");
+        assert_eq!(door.subcategory.as_deref(), Some("Doors & Locks"));
         let duration = door.duration_s.unwrap();
         assert!((duration - 0.1).abs() < 0.001, "duration {duration}");
 

@@ -1,26 +1,51 @@
 //! Path → category classification.
 //!
-//! A port of the reference implementation's classifier
-//! (`slip-sound/src/main/classifier.ts`). The scoring rules, the stop-word list,
-//! the stemming rules and the dictionary are reproduced exactly, because the
-//! point of the port is that an existing library does not get re-sorted into
-//! different categories when it moves to ReSlip.
+//! The vocabulary and the scoring model are this project's own, authored and
+//! measured against a real sample library (`tools/taxonomy.py` holds the
+//! vocabulary, `tools/gen-category-dict.py` writes [`dictionary.rs`]). Nothing
+//! here is a port: the reference implementation's dictionary was a GPL-licensed
+//! compilation and its scoring model misbehaves on this library (see below), so
+//! both were replaced.
 //!
-//! Parity is checked against a real database rather than asserted: `reslip-cli
-//! classify-diff` re-classifies every path in an existing Slip Sound index and
-//! reports any row whose category, subcategory, confidence or matched terms
-//! differ.
+//! ## Why the scoring is not the obvious one
 //!
-//! Scoring, as in the reference:
+//! A sample library path is
+//! `…\Bought\SFX\Epic.Stock.Media.Hybrid.Game.Sounds\…\
+//! ESM_SPG_fx_servo_metal_latch_02.wav`. The pack folder is marketing — the same
+//! words (`epic`, `cinematic`, `game`) appear in dozens of pack titles — while
+//! the filename states what the sound actually is. A model that scores a
+//! directory word above a filename word therefore scores the marketing and
+//! ignores the sound: on the 271k-file reference corpus that model put 92,876
+//! files (34%) into one category on the strength of the word `epic` alone.
+//!
+//! So the weights run the other way:
 //!
 //! | Signal | Weight |
 //! | --- | --- |
-//! | multi-word phrase in the raw path | 4 |
-//! | dictionary word in a directory name | 3 |
-//! | dictionary word in the filename | 1 |
+//! | multi-word phrase in the normalised path | 4 |
+//! | a Chinese hint in a directory name (the pack's stated theme) | 2 |
+//! | a Chinese hint in the filename | 1 |
+//! | a dictionary word in the filename, once per distinct word | 3 |
+//! | a dictionary word in a directory name, at most **once per target** | 1 |
 //!
-//! Confidence is `min(1, score / 8)`, so a lone filename hit is a weak signal and
-//! a directory + phrase + filename hit is near-certain.
+//! The directory cap is the important one. One folder can hold ten words that
+//! all point at `Weapons`, and it still casts one vote: a folder says which pack
+//! the file came from, not what the file is. The filename votes per word, so a
+//! name like `servo_metal_latch` can outvote its pack.
+//!
+//! ## Chinese hints
+//!
+//! 30,585 of the 271,350 paths in the reference corpus carry Chinese text, and in
+//! the Epic Stock Media packs that text is the folder name and the pack's theme:
+//! `【现代化军事战争用户UI界面游戏音效】`, `【蒸汽朋克游戏音效】`. An ASCII-only
+//! tokenizer cannot see any of it. Hints are matched as substrings of directory
+//! names and, separately, of the filename, with the lower weight the filename
+//! deserves.
+//!
+//! ## Confidence
+//!
+//! `min(1, raw_score / 8)`. A single filename word reads as 0.375 — enough to
+//! show up as a guess, not enough to look certain.
 
 mod dictionary;
 
@@ -29,11 +54,14 @@ use std::collections::HashMap;
 pub use dictionary::CATEGORY_DICTIONARY;
 
 /// One row of the dictionary: a category, an optional subcategory, and the words
-/// that point at it.
+/// that point at it. `subcategory == None` is the category-level entry (the words
+/// that name the category itself), not a missing value.
 pub struct CategoryDefinition {
     pub category: &'static str,
     pub subcategory: Option<&'static str>,
     pub keywords: &'static [&'static str],
+    /// Chinese words and phrases, matched as substrings rather than tokens.
+    pub hints: &'static [&'static str],
     pub phrases: &'static [&'static str],
 }
 
@@ -44,10 +72,9 @@ pub struct Classification {
     pub subcategory: Option<String>,
     /// 0–1, `raw_score / 8` clamped.
     pub confidence: f64,
-    /// Pre-normalisation score. Kept because tuning the dictionary needs it, and
-    /// because the reference's database stored it too.
+    /// Pre-normalisation score. Kept because tuning the dictionary needs it.
     pub raw_score: u32,
-    /// Dictionary words and phrases that fired, deduplicated.
+    /// The dictionary words, hints and phrases that fired, deduplicated.
     pub matched_terms: Vec<String>,
 }
 
@@ -64,21 +91,10 @@ impl Classification {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Target {
     category: &'static str,
     subcategory: Option<&'static str>,
-}
-
-impl Target {
-    /// `Category::Subcategory`, or just `Category`. Generic and specific matches
-    /// accumulate separately so a specific hit can win a tie.
-    fn key(&self) -> String {
-        match self.subcategory {
-            Some(sub) => format!("{}::{}", self.category, sub),
-            None => self.category.to_string(),
-        }
-    }
 }
 
 struct Phrase {
@@ -86,13 +102,17 @@ struct Phrase {
     target: Target,
 }
 
+struct Hint {
+    hint: &'static str,
+    target: Target,
+}
+
 /// Built once per process (or once per indexing run) and then shared across
 /// threads: it is immutable and contains no interior mutability.
 pub struct Classifier {
     keyword_to_target: HashMap<&'static str, Target>,
-    /// Phrases are checked against the lowercased path as substrings, so order
-    /// does not matter; kept as a Vec because it is short and cache-friendly.
     phrases: Vec<Phrase>,
+    hints: Vec<Hint>,
 }
 
 impl Default for Classifier {
@@ -105,18 +125,24 @@ impl Classifier {
     pub fn new() -> Self {
         let mut keyword_to_target = HashMap::new();
         let mut phrases = Vec::new();
+        let mut hints = Vec::new();
         for def in CATEGORY_DICTIONARY {
             let target = Target {
                 category: def.category,
                 subcategory: def.subcategory,
             };
             for kw in def.keywords {
-                // `kw` is `&&'static str`; deref to get the `&'static str` key.
                 keyword_to_target.insert(*kw, target.clone());
             }
             for phrase in def.phrases {
                 phrases.push(Phrase {
-                    phrase: *phrase,
+                    phrase,
+                    target: target.clone(),
+                });
+            }
+            for hint in def.hints {
+                hints.push(Hint {
+                    hint,
                     target: target.clone(),
                 });
             }
@@ -124,95 +150,162 @@ impl Classifier {
         Self {
             keyword_to_target,
             phrases,
+            hints,
         }
     }
 
     pub fn classify(&self, full_path: &str) -> Classification {
         let (dir_part, filename) = split_path(full_path);
-        let lower_full = full_path.to_lowercase();
 
-        // Scores are kept in first-insertion order, not in a `HashMap`, because
-        // the tie-break below walks them in that order. The reference iterates
-        // `Object.entries(scores)`, whose order is insertion order, so a
-        // HashMap here would pick a different winner than the reference on any
-        // tie between two equally specific targets — 3932 of 271350 rows in the
-        // real library, before this was fixed.
-        let mut scores: Vec<(String, u32)> = Vec::new();
+        // Phrases match a normalised copy of the whole path, so `drum_loop` and
+        // `Drum Loop` are one phrase and a separator inside a phrase cannot
+        // silently defeat it.
+        let normalised = normalise(full_path);
+
+        // Scores are first-insertion ordered rather than a `HashMap` because the
+        // tie-break walks them in that order: on a tie the first target that
+        // scored wins, which keeps classification deterministic and single-pass.
+        let mut scores: Vec<(Target, u32)> = Vec::new();
         let mut matched: Vec<String> = Vec::new();
 
-        let mut add = |target: &Target, weight: u32, term: &str| {
-            let key = target.key();
-            match scores.iter_mut().find(|(k, _)| *k == key) {
+        fn add(
+            scores: &mut Vec<(Target, u32)>,
+            matched: &mut Vec<String>,
+            target: &Target,
+            weight: u32,
+            term: &str,
+        ) {
+            match scores.iter_mut().find(|(t, _)| t == target) {
                 Some((_, score)) => *score += weight,
-                None => scores.push((key, weight)),
+                None => scores.push((target.clone(), weight)),
             }
             matched.push(term.to_string());
-        };
+        }
 
-        // 1. Phrases first: they are unambiguous, so they carry the highest weight
-        //    and are matched against the raw path (so "sawed-off" spans hyphens).
+        // 1. Phrases: unambiguous, so they carry the highest weight.
         for phrase in &self.phrases {
-            if lower_full.contains(phrase.phrase) {
-                add(&phrase.target, 4, phrase.phrase);
+            if normalised.contains(phrase.phrase) {
+                add(&mut scores, &mut matched, &phrase.target, 4, phrase.phrase);
             }
         }
 
-        // 2. Directory tokens. A sound filed under `Weapons/` is a stronger signal
-        //    than one whose filename merely mentions it.
+        // 2. Directory, at most one vote per target. Whichever keyword is seen
+        //    first is the one reported, so `matched_terms` explains the vote that
+        //    actually happened instead of listing words that were ignored.
+        //
+        //    Chinese hints are deliberately *not* read from the directory. In the
+        //    Epic Stock Media packs the Chinese text is the pack title — a whole
+        //    sentence about the pack's theme (`【史诗战斗武器魔法奇幻任务游戏
+        //    音效】`) — so reading it as a vote would label all 3,944 files in that
+        //    pack with every theme in the sentence. It is used as a last resort
+        //    instead, below.
+        let mut dir_voted: Vec<&Target> = Vec::new();
         for token in tokenize(&dir_part) {
-            if let Some(target) = self.lookup(&token) {
-                let target = target.clone();
-                add(&target, 3, &token);
+            let Some(target) = self.lookup(&token) else {
+                continue;
+            };
+            if dir_voted.contains(&target) {
+                continue;
             }
+            dir_voted.push(target);
+            add(&mut scores, &mut matched, target, 1, &token);
         }
 
-        // 3. Filename tokens.
+        // 3. Filename: one vote per distinct word, whichever source it came from.
+        //    Chinese hints do belong here: the Sound Morph packs carry Chinese
+        //    folder names *and* Chinese in the filename, and the filename is the
+        //    sound's own description (`【车门重关03】Impacts Source - Car Door
+        //    BMW Heavy Slam 03.wav`).
+        //
+        //    A word that already voted from a folder does not vote again. A pack
+        //    called `Epic.Stock.Media.Ocean.Game` makes every filename in it start
+        //    `ESM_Ocean_Game_...`, and without this rule that pack name turns each
+        //    `ESM_Ocean_Game_One_Shot_UI_Select` into two votes for water against
+        //    one for the UI sound it actually is.
+        let mut file_voted: Vec<&Target> = Vec::new();
+        for hint in &self.hints {
+            if !filename.contains(hint.hint) {
+                continue;
+            }
+            if file_voted.contains(&&hint.target) {
+                continue;
+            }
+            file_voted.push(&hint.target);
+            add(&mut scores, &mut matched, &hint.target, 1, hint.hint);
+        }
+        let mut seen: Vec<String> = Vec::new();
         for token in tokenize(&filename) {
-            if let Some(target) = self.lookup(&token) {
-                let target = target.clone();
-                add(&target, 1, &token);
+            if seen.contains(&token) {
+                continue;
+            }
+            seen.push(token.clone());
+            let Some(target) = self.lookup(&token) else {
+                continue;
+            };
+            if file_voted.contains(&target) {
+                continue;
+            }
+            file_voted.push(target);
+            add(&mut scores, &mut matched, target, 3, &token);
+        }
+
+        // 4. Last resort: the Chinese words in the *folder* name, used only when
+        //    nothing else fired. `ESM_Braaam_Strike_041.wav` has no ASCII index
+        //    term, and its pack's Chinese title is then the only signal there is.
+        if scores.is_empty() {
+            let mut fallback: Vec<&Target> = Vec::new();
+            for hint in &self.hints {
+                if !dir_part.contains(hint.hint) {
+                    continue;
+                }
+                if fallback.contains(&&hint.target) {
+                    continue;
+                }
+                fallback.push(&hint.target);
+                add(&mut scores, &mut matched, &hint.target, 2, hint.hint);
             }
         }
 
-        // 4. Pick the winner; a subcategory-level match beats a bare category
+        // 5. Pick the winner; a subcategory-level match beats a bare-category
         //    match on a tie, so `Weapons::Firearms` wins over `Weapons`.
-        let mut best_key = String::new();
-        let mut best_score = 0u32;
-        for (key, score) in &scores {
-            let more_specific = key.contains("::");
-            let current_more_specific = best_key.contains("::");
-            if *score > best_score
-                || (*score == best_score && more_specific && !current_more_specific)
-            {
-                best_score = *score;
-                best_key = key.clone();
+        let mut best: Option<(Target, u32)> = None;
+        for (target, score) in &scores {
+            let more_specific = target.subcategory.is_some();
+            let current_more_specific = best
+                .as_ref()
+                .map(|(t, _)| t.subcategory.is_some())
+                .unwrap_or(false);
+            let better = match &best {
+                None => true,
+                Some((_, best_score)) => {
+                    *score > *best_score
+                        || (*score == *best_score && more_specific && !current_more_specific)
+                }
+            };
+            if better {
+                best = Some((target.clone(), *score));
             }
         }
 
-        if best_score < 1 || best_key.is_empty() {
+        let Some((target, raw_score)) = best else {
+            return Classification::uncategorized();
+        };
+        if raw_score < 1 {
             return Classification::uncategorized();
         }
 
-        let (category, subcategory) = match best_key.split_once("::") {
-            Some((c, s)) => (c.to_string(), Some(s.to_string())),
-            None => (best_key.clone(), None),
-        };
+        // Saturation at 8: one filename word reads as weak, a phrase plus a
+        // filename word lands near 1.0.
+        let confidence = (raw_score as f64 / 8.0).min(1.0);
 
-        // Saturation at 8: a single filename hit reads as 0.125 (weak), while a
-        // directory + phrase + filename hit lands near 1.0.
-        let confidence = (best_score as f64 / 8.0).min(1.0);
-
-        // Global dedup, first occurrence kept — `[...new Set(matchedTerms)]` in
-        // the reference. `Vec::dedup` only removes adjacent duplicates, which
-        // left repeated terms whenever a phrase and a token both fired.
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        matched.retain(|term| seen.insert(term.clone()));
+        let mut seen_terms = std::collections::HashSet::new();
+        matched.retain(|term| seen_terms.insert(term.clone()));
 
         Classification {
-            category,
-            subcategory,
+            category: target.category.to_string(),
+            subcategory: target.subcategory.map(str::to_string),
             confidence,
-            raw_score: best_score,
+            raw_score,
             matched_terms: matched,
         }
     }
@@ -229,38 +322,69 @@ impl Classifier {
     }
 }
 
-/// Split into (directory part with separators normalised to spaces, filename).
+/// Split into (directory part with its separators intact, filename).
 ///
-/// The reference split on both separators and joined the directory components
-/// with spaces, which means a token never spans two directory names.
+/// The directory part keeps its separators so a Chinese hint can span a folder
+/// name without spanning two; tokenisation turns them into spaces on its own.
 fn split_path(full_path: &str) -> (String, String) {
-    let mut parts: Vec<&str> = full_path.split(['\\', '/']).collect();
-    let filename = parts.pop().unwrap_or("").to_string();
-    (parts.join(" "), filename)
+    match full_path.rfind(['\\', '/']) {
+        Some(index) => (
+            full_path[..index].to_string(),
+            full_path[index + 1..].to_string(),
+        ),
+        None => (String::new(), full_path.to_string()),
+    }
+}
+
+/// Lowercase, and turn everything that is not a letter or digit into a space.
+fn normalise(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_alphanumeric() {
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(' ');
+        }
+    }
+    out
 }
 
 /// Words the dictionary must not see: format names, version tags, and the
-/// generic nouns that appear in nearly every sample library path.
+/// generic nouns and marketing words that appear in nearly every sample library
+/// path.
+///
+/// This list is not cosmetic. `bit`, `sample`, `pack`, `game` and `epic` are in
+/// most pack folder names in this library, and every one of them that reached the
+/// dictionary would vote for a single category on tens of thousands of files.
 const STOP_WORDS: &[&str] = &[
-    "sfx", "sound", "audio", "stereo", "mono", "wav", "mp3", "ogg", "raw", "snd", "take", "final",
-    "master", "export", "render", "loop", "looped", "ver", "version",
+    "sfx", "sound", "sounds", "audio", "stereo", "mono", "wav", "mp3", "ogg", "aif", "aiff", "flac",
+    "raw", "snd", "take", "final", "master", "export", "render", "loop", "looped", "loops", "ver",
+    "version", "bit", "sample", "samples", "pack", "packs", "bundle", "edition", "complete",
+    "formats", "format", "custom", "library", "vol", "volume", "bpm", "kit", "kits", "epic",
+    "cinematic", "trailer", "game", "games", "source", "designed", "stock", "media", "sonniss",
+    "gdc", "aaa", "esm", "spg", "vedm", "dpte", "advanced", "mobile", "app", "starter",
+    "essentials", "essential", "ultimate", "modern", "pro", "professional", "premium", "collection",
+    "series", "part",
 ];
 
-/// Lowercase, replace everything that is not an ASCII letter with a space, drop
-/// short tokens and stop words.
+/// The shortest token the dictionary can match. Two characters, so `ui`, `hh`,
+/// `808` and `ak` reach the dictionary instead of being dropped as noise.
+const MIN_TOKEN_LEN: usize = 2;
+
+/// Lowercase, split on everything that is not an ASCII letter or digit, drop
+/// tokens shorter than [`MIN_TOKEN_LEN`] and stop words.
 ///
-/// Non-ASCII letters are dropped rather than transliterated. That is the
-/// reference behaviour, and keeping it is what makes a parity diff against an
-/// existing index meaningful; `Kemençe` contributes the token `kemen`, exactly as
-/// it did before.
+/// Two characters instead of the usual three is deliberate: `ui` is among the
+/// most common index terms in this library's game-audio packs, and a
+/// three-letter floor silently discarded it.
 fn tokenize(input: &str) -> Vec<String> {
     input
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_lowercase() { c } else { ' ' })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
         .collect::<String>()
         .split_whitespace()
-        .filter(|t| t.len() > 2 && !STOP_WORDS.contains(t))
+        .filter(|t| t.len() >= MIN_TOKEN_LEN && !STOP_WORDS.contains(t))
         .map(|t| t.to_string())
         .collect()
 }
@@ -294,68 +418,79 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_match_outweighs_a_filename_match() {
-        // `firearms` is a dictionary keyword, so a directory hit scores 3 and a
-        // filename hit scores 1. Verified against the reference implementation
-        // (`classifier.ts`) rather than assumed: there is no bare
-        // "weapon"/"weapons" keyword, so a folder merely named `Weapons`
-        // classifies nothing, and `door` is not in the dictionary either.
-        let by_dir = classify(r"D:\lib\Firearms\random_name_01.wav");
-        let by_file = classify(r"D:\lib\misc\gun_shot_01.wav");
-        assert_eq!(by_dir.category, "Weapons");
-        assert_eq!(by_file.category, "Weapons");
-        assert_eq!(by_dir.raw_score, 3);
-        assert_eq!(by_file.raw_score, 1);
-        assert_eq!(classify(r"D:\lib\Weapons\x.wav").category, "Uncategorized");
+    fn a_filename_word_outweighs_its_pack_folder() {
+        // The pack folder says "Epic Stock Media Hybrid Game Sounds", none of
+        // which is a keyword any more; the filename says what the sound is.
+        let by_file = classify(r"D:\lib\Epic.Stock.Media.Hybrid.Game.Sounds\servo_metal_latch.wav");
+        assert_eq!(by_file.category, "Machinery");
+        assert!(
+            by_file.raw_score > 1,
+            "two filename words should beat one folder vote, got {}",
+            by_file.raw_score
+        );
     }
 
     #[test]
-    fn subcategory_wins_over_bare_category() {
-        let c = classify(r"D:\lib\Weapons\Firearms\pistol_reload.wav");
+    fn one_folder_casts_one_vote_however_many_words_point_at_it() {
+        // `gun`, `rifle` and `pistol` all point at Weapons/Firearms. The folder
+        // must still contribute 1, not 3, so the filename can win.
+        let c = classify(r"D:\lib\gun_rifle_pistol\door_open.wav");
+        assert_eq!(c.category, "Foley");
+        assert_eq!(c.subcategory.as_deref(), Some("Doors & Locks"));
+    }
+
+    #[test]
+    fn marketing_words_are_stop_words() {
+        // Every one of these is in dozens of pack titles. As keywords they put a
+        // third of the corpus in one bucket.
+        for word in ["epic", "cinematic", "trailer", "game", "stock", "media"] {
+            assert!(
+                tokenize(word).is_empty(),
+                "{word} must not reach the dictionary"
+            );
+        }
+    }
+
+    #[test]
+    fn chinese_pack_folders_are_read() {
+        // The folder name is the pack's theme, in Chinese, and no ASCII token can
+        // see it.
+        let c = classify(r"D:\lib\UnBought\SFX\帝国战争【武器 步枪 手枪 射击】\a_01.wav");
+        assert_eq!(c.category, "Weapons");
+        let c = classify(r"D:\lib\UnBought\SFX\【蒸汽朋克机械 齿轮】\a_01.wav");
+        assert_eq!(c.category, "Machinery");
+    }
+
+    #[test]
+    fn a_chinese_hint_beats_a_directory_word() {
+        // A 2-weight hint in the folder beats a 1-weight directory word.
+        let c = classify(r"D:\lib\【金属 撞击】\wood_plank.wav");
+        assert_eq!(c.category, "Impacts");
+    }
+
+    #[test]
+    fn two_letter_tokens_reach_the_dictionary() {
+        // `ui` is among the most common index terms in the game-audio packs.
+        let c = classify(r"D:\lib\x\ui_button_click.wav");
+        assert_eq!(c.category, "UI & Game");
+    }
+
+    #[test]
+    fn phrases_match_across_separators() {
+        // `drum_loop` must fire the same phrase as `drum loop`; matching the raw
+        // path silently missed every underscored filename in the library.
+        let spaced = classify(r"D:\lib\x\drum loop 01.wav");
+        let underscored = classify(r"D:\lib\x\drum_loop_01.wav");
+        assert!(spaced.matched_terms.iter().any(|t| t == "drum loop"));
+        assert!(underscored.matched_terms.iter().any(|t| t == "drum loop"));
+        assert_eq!(spaced.category, underscored.category);
+    }
+
+    #[test]
+    fn subcategory_wins_over_bare_category_on_a_tie() {
+        let c = classify(r"D:\lib\Weapons\pistol.wav");
         assert_eq!(c.category, "Weapons");
         assert_eq!(c.subcategory.as_deref(), Some("Firearms"));
-    }
-
-    #[test]
-    fn phrases_score_higher_than_single_words() {
-        // Phrases are matched against the raw path, so a separator inside the
-        // phrase ("assault_rifle") defeats it — the reference behaves the same
-        // way. Compare with a space, where both the phrase (4) and the token
-        // "rifle" (1) fire, against a lone "gun" (1).
-        let phrase = classify(r"D:\lib\x\assault rifle 01.wav");
-        let single = classify(r"D:\lib\x\gun_01.wav");
-        assert_eq!(phrase.raw_score, 5);
-        assert_eq!(single.raw_score, 1);
-        assert!(phrase.matched_terms.contains(&"assault rifle".to_string()));
-
-        // Same words, underscore-separated: only the token survives.
-        let underscored = classify(r"D:\lib\x\assault_rifle_01.wav");
-        assert_eq!(underscored.raw_score, 1);
-    }
-
-    #[test]
-    fn confidence_saturates_at_one() {
-        let c = classify(r"D:\lib\Weapons\Firearms\gunshot_shell_casing_drop.wav");
-        assert!(c.confidence <= 1.0);
-        assert!(c.confidence > 0.5, "confidence {}", c.confidence);
-    }
-
-    #[test]
-    fn stop_words_and_short_tokens_are_ignored() {
-        // Format names, "sfx" and "loop" are stop words.
-        assert!(tokenize("SFX_wav_loop_snd").is_empty());
-        // The length filter is `len > 2`, so two-letter words go and three-letter
-        // words stay — "the" survives, which matches the reference.
-        assert_eq!(tokenize("a an of"), Vec::<String>::new());
-        assert_eq!(tokenize("the"), vec!["the"]);
-        assert_eq!(tokenize("Door_Slam"), vec!["door", "slam"]);
-    }
-
-    #[test]
-    fn stemming_reaches_the_dictionary_root() {
-        assert_eq!(stem("footsteps"), "footstep");
-        assert_eq!(stem("stepping"), "stepp");
-        assert_eq!(stem("glass"), "glass"); // no double-s strip
     }
 
     #[test]
@@ -368,28 +503,14 @@ mod tests {
 
     #[test]
     fn non_ascii_paths_do_not_panic_and_still_classify() {
-        let c = classify(r"D:\音效库\Weapons\枪声_pistol.wav");
+        let c = classify(r"D:\音效库\枪声_pistol.wav");
         assert_eq!(c.category, "Weapons");
     }
 
     #[test]
-    fn ties_resolve_by_insertion_order_like_the_reference() {
-        // Regression for a real parity bug: the reference iterates
-        // `Object.entries(scores)`, which is insertion order, so on a tie the
-        // first-inserted target wins. A `HashMap` has no such order, and using
-        // one put 3932 of 271350 rows of the real library in a different
-        // category than the reference.
-        //
-        // `hits` (Impacts/Blunt/Body, from a directory) and `digital`
-        // (Electronic, from a directory) both score 3; `Impacts` is inserted
-        // first, so it must win. Verified with `classifier.ts` on the real path.
-        let path = r"D:\lib\Bass - Sub Hits & Drops\Leviathan4_SubDrop_A_Digital_01.wav";
+    fn classification_is_deterministic() {
+        let path = r"D:\lib\Bought\SFX\【机器人 伺服电机 齿轮】\servo_gear_latch_02.wav";
         let first = classify(path);
-        assert_eq!(first.category, "Impacts");
-        assert_eq!(first.subcategory.as_deref(), Some("Blunt/Body"));
-
-        // Classification must be deterministic across instances, which it is not
-        // if any step depends on hash iteration order.
         for _ in 0..8 {
             let again = classify(path);
             assert_eq!(again.category, first.category);
@@ -400,12 +521,62 @@ mod tests {
 
     #[test]
     fn matched_terms_are_deduplicated_globally() {
-        // "magic spell" is a phrase and both words are also keywords, so the raw
-        // list is ["magic","spell","magic","spell","magic","spell"]; the
-        // reference's `new Set` collapses it to two entries.
-        let c = classify(
-            r"D:\lib\Ghosthack - 30 Free Magic Spell Sound Effects\SFX\Magic Spell_Arcane_11.wav",
+        let c = classify(r"D:\lib\x\magic sparkle spell_arcane_11.wav");
+        let mut sorted = c.matched_terms.clone();
+        sorted.sort();
+        let mut deduped = sorted.clone();
+        deduped.dedup();
+        assert_eq!(
+            sorted, deduped,
+            "terms must not repeat: {:?}",
+            c.matched_terms
         );
-        assert_eq!(c.matched_terms, vec!["magic", "spell"]);
+    }
+
+    #[test]
+    fn every_dictionary_entry_is_reachable() {
+        // A keyword the tokenizer can never emit is a dead entry that silently
+        // never fires. This is the cheap structural guard for that class of typo.
+        for def in CATEGORY_DICTIONARY {
+            for kw in def.keywords {
+                assert_eq!(
+                    tokenize(kw),
+                    vec![kw.to_string()],
+                    "keyword {kw:?} ({:?}) can never be produced by the tokenizer",
+                    def.category
+                );
+            }
+            for phrase in def.phrases {
+                assert!(
+                    !phrase.is_empty() && phrase.chars().all(|c| !c.is_uppercase()),
+                    "phrase {phrase:?} must be lowercase and non-empty"
+                );
+            }
+            for hint in def.hints {
+                assert!(!hint.is_empty(), "empty hint in {:?}", def.category);
+            }
+        }
+    }
+
+    #[test]
+    fn no_keyword_belongs_to_two_targets() {
+        let mut seen: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+        for def in CATEGORY_DICTIONARY {
+            for kw in def.keywords {
+                if let Some(previous) = seen.insert(kw, (def.category, def.subcategory)) {
+                    assert_eq!(
+                        previous,
+                        (def.category, def.subcategory),
+                        "keyword {kw:?} is listed under two targets"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn confidence_saturates_at_one() {
+        let c = classify(r"D:\lib\x\magic spell cast gunshot explosion 01.wav");
+        assert!(c.confidence <= 1.0);
     }
 }

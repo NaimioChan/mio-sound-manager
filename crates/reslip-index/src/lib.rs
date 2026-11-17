@@ -5,9 +5,10 @@
 //! * [`probe`] reads a file's container header only. No decoding, no PCM: the
 //!   index needs duration, channel count and sample rate, and all three are in
 //!   the header for every supported format except M4A's channel count.
-//! * [`classify`] turns a path into a category/subcategory guess. It is a
-//!   port of the reference implementation's classifier, dictionary included, so
-//!   an existing Slip Sound library classifies the same way after migration.
+//! * [`classify`] turns a path into a category/subcategory guess. The vocabulary
+//!   and the scoring model are this project's own, authored against a real sample
+//!   library; see that module's documentation for why the weights run the way
+//!   they do.
 //! * [`db`] owns the schema (SQLite + FTS5), the upsert that preserves user
 //!   edits across reindexes, and the search queries the UI issues.
 //!

@@ -85,5 +85,6 @@ They resolve `playwright-core` from `slip-sound/package.json` through `createReq
 | 外壳与 IPC 细节 | `docs/app.md` |
 | 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
 | 外壳的 CDP 驱动与检查脚本 | `tools/` |
-| 分类词典生成器（勿手改 `dictionary.rs`） | `tools/gen-category-dict.mjs` |
+| 分类词表（改这里，再跑生成器） | `tools/taxonomy.py` |
+| 分类词典生成器（勿手改 `dictionary.rs`） | `tools/gen-category-dict.py` |
 | Handoff log | `docs/agent-log.md` |

@@ -2,19 +2,31 @@
 
 不属于构建的辅助脚本。
 
-## gen-category-dict.mjs
+## taxonomy.py 与 gen-category-dict.py
 
-从 Slip Sound 参考实现生成 `crates/reslip-index/src/classify/dictionary.rs`。
-
-分类词典是数据不是逻辑：29 个分类条目、463 个关键词、51 个短语。手抄一定会漂移，所以用脚本从 TypeScript 源直接生成，生成物提交进仓库。
+`tools/taxonomy.py` 是分类词表的源文件，`tools/gen-category-dict.py` 把它生成为
+`crates/reslip-index/src/classify/dictionary.rs`。生成物提交进仓库，只在下述情况重跑。
 
 ```bash
-node tools/gen-category-dict.mjs [path-to-slip-sound]
+python tools/gen-category-dict.py > /dev/null   # 只写 stderr 的统计行
+cargo test -p reslip-index
 ```
 
-默认读同级目录的 `../slip-sound`。参考实现的词典变了才需要重跑；改 `dictionary.rs` 会被下一次生成覆盖。
+词表是数据不是逻辑：23 个分类、133 个 category/subcategory 条目、1,276 个关键词、
+68 条短语、413 条中文提示词。手抄必错，所以由脚本生成。
 
-生成后跑 `cargo test -p reslip-index` 与 `reslip-cli classify-diff <folder> <reference.db>` 确认分类结果没变。
+**改词表之后必须跑一遍真实库**，不能只看单元测试：
+
+```bash
+cargo build --release -p reslip-cli
+./target/release/reslip-cli.exe index <library> --full
+./target/release/reslip-cli.exe index-stats <library>
+```
+
+词表是对着真实库调的。每个词的命中量与横跨的包数都决定它能不能留在表里：一个出现
+在几十个包标题里的词（`epic`、`game`、`premium`）会把整个库吸进同一个分类，所以它
+进停用词而不是关键词。打分模型、中文提示词的取用位置与理由写在
+`crates/reslip-index/src/classify/mod.rs` 的模块文档里，实测数字写在 `docs/index.md`。
 
 ## CDP 脚本的运行顺序
 

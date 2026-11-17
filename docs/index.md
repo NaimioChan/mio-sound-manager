@@ -10,7 +10,7 @@ src/
   error.rs      // IndexError：整次操作失败，单个文件读不出不是错误
   probe.rs      // 文件 → AudioMeta，只读文件头
   wav_header.rs // symphonia 拒绝时的 RIFF 头兜底解析
-  classify/     // 路径 → 分类（移植自 Slip Sound）
+  classify/     // 路径 → 分类（自有词表，见下）
     mod.rs
     dictionary.rs  // 生成物，勿手改
   db.rs         // schema、upsert、prune、搜索、facets、文件夹树
@@ -35,16 +35,62 @@ src/
 
 ## classify
 
-参考实现的移植。词典由 `tools/gen-category-dict.mjs` 从 `slip-sound/src/main/category-dictionary.ts` 生成，不手抄——463 个关键词手抄必错。
+词典与打分模型都是本项目自己的产物。`tools/taxonomy.py` 是词表的源文件，
+`tools/gen-category-dict.py` 生成 `crates/reslip-index/src/classify/dictionary.rs`。
+改词表只改前者，然后重跑生成器与 `cargo test -p reslip-index`。
 
-**两处必须保持参考实现的语义，否则分类结果会变：**
+这套词表是对着真实库写出来的（用户 SoundLibrary 552,155 条路径，迭代用 271,350
+条镜像）。每个词都查过命中量与它横跨的包数，所以 `epic` / `cinematic` / `game`
+这类出现在几十个包标题里的营销词是停用词，而不是把整个库吸进同一个分类的关键词。
 
-- **同分裁决依赖插入顺序**。参考遍历 `Object.entries(scores)`，是插入顺序。用 `HashMap` 遍历顺序随机，实测让真实库 271,350 行中的 3,932 行归到了不同分类。现在用 `Vec<(String, u32)>` 保持插入顺序。
-- **`matched_terms` 是全局去重**（`[...new Set()]`），不是只去相邻重复。`Vec::dedup` 只合并相邻项，短语和单词同时命中时会留下重复。
+**打分方向与直觉相反，原因是实测。** 一条采样库路径长这样：
 
-一致性不是断言，是测量出来的：`reslip-cli classify-diff <folder> <reference.db>` 用 Rust 分类器重新分类旧库里的每条路径，逐字段比对。当前结果：271,350 行，category / subcategory / confidence / matched_terms 四项零差异。
+```
+…\Bought\SFX\Epic.Stock.Media.Hybrid.Game.Sounds\…\ESM_SPG_fx_servo_metal_latch_02.wav
+```
 
-**非 ASCII 字符被丢弃而不是转写。** 这是参考行为，保持它才能让一致性比对有意义：`Kemençe` 贡献的 token 是 `kemen`，和以前一样。
+包目录是营销文案（同样几个词出现在几十个包里），文件名才说这声音是什么。把目录
+权重给得比文件名高的模型，打的是营销分：在 271k 真实库上，那种模型仅凭 `epic`
+一个词就把 92,876 条（34%）塞进同一个分类。
+
+权重：
+
+| 信号 | 权重 |
+| --- | --- |
+| 归一化路径里的多词短语 | 4 |
+| 文件名里的词典词，每个不同词一次 | 3 |
+| 文件名里的中文提示词 | 1 |
+| 目录名里的词典词，每个目标最多一次 | 1 |
+
+**目录每个目标只投一票**是这里最关键的一条。一个目录里可能有十个词都指向
+`Weapons`，它仍然只算一票：目录说明文件来自哪个包，不说明文件是什么。文件名按词
+计票，所以 `servo_metal_latch` 这种名字能压过它的包名。
+
+**中文提示词单独一路。** 真实库 271,350 条路径里 30,585 条带中文，而 Epic Stock
+Media 那些包的中文就是包名，也就是包的主题（`【现代化军事战争用户UI界面游戏音效】`）。
+纯 ASCII 分词器对它们完全失明。中文只从**文件名**取分，因为 Sound Morph 那批包在
+文件名里也有中文（`【车门重关03】Impacts Source - Car Door BMW Heavy Slam 03.wav`）；
+包目录里的中文是整句主题，把它当票会把那个包三千多个文件全贴上同一个标签，因此它
+只在文件名一无所获时兜底。
+
+**中文提示词至少两个字。** 单字在中文里没有词边界，在这个库里会撞上完全无关的词：
+`手` 撞 `手机`（phone）、`电` 撞 `电影`（film）、`门` 撞 `门类`（category）、
+`风` 撞 `风格`（style）。词表里每个提示词都是库里真实出现过的词。
+
+**分词下限是两个字符。** `ui` 是这个库游戏音效包里最常见的索引词之一，三字符下限
+会把它直接丢掉。
+
+**短语匹配前先归一化。** `drum_loop` 与 `drum loop` 是同一条短语；匹配原始路径会
+静默漏掉库里所有下划线命名。
+
+**同分裁决依赖插入顺序**，用 `Vec` 而不是 `HashMap`，否则遍历顺序随机会让同一份
+输入每次分出不同结果。`matched_terms` 全局去重，不是只去相邻重复。
+
+实测（271,350 条真实路径）：未分类 4.3%（旧词典 43.1%），23 个分类，133 个
+category/subcategory 组合。分类阶段占总耗时约 17%（11.5s / 68s）。
+
+`reslip-cli classify-diff` 仍然保留，但它现在是「旧库与新词典有多少行不同」的对比
+工具，不再是一致性验收：两套词表不同，结果本就不该一致。
 
 ## db
 

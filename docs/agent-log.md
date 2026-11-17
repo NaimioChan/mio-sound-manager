@@ -2,6 +2,34 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-17 · hermes · 分类词典与打分模型改为自有：GPL 汇编不能搬运
+
+- 改: 新增 `tools/taxonomy.py`（词表源文件）、`tools/gen-category-dict.py`（生成器）；删除 `tools/gen-category-dict.mjs`（它从 Slip Sound 的 `category-dictionary.ts` 直接转写，而那个文件是 GPL-3.0-or-later 的汇编）；重写 `crates/reslip-index/src/classify/mod.rs`（打分模型、中文提示词、两字符分词、短语归一化）；重新生成 `crates/reslip-index/src/classify/dictionary.rs`；`indexer.rs` 与 `crates/reslip-app/tests/ipc.rs` 的 `door_slam` 断言随词表改；`docs/index.md`（classify 一节重写）、`docs/architecture.md`（P2 行）、`AGENTS.md`、`tools/README.md`
+- 验证: `cargo test --release` 全绿（index 49 + app 25 + 19 + 13）；271,350 条真实路径全量重索引 68s，未分类 43.1% → 4.3%，23 个分类 133 个 facet；分类阶段 11.5s，占总耗时 17%
+- 遗留: 词表可以继续按库里的实际错判迭代；`classify-diff` 现在是比较工具而不是一致性验收
+
+### 为什么必须重写
+
+Slip Sound 是 GPL-3.0-or-later。527 个关键词按 29 个类目的划分是汇编（选材与编排有独创性），逐条照搬不是署名问题而是 copyleft 问题：整体继续按 MIT 发布就不合规。单字词（`gun`、`shotgun`）本身不受版权保护，受保护的是「这 527 个词被这样分进这些类目」这份汇编，所以重写的对象是词表与分类结构，不是「换几个词」。
+
+### 顺带修掉的三个真实缺陷
+
+这些是重写过程中在 27 万条真实路径上量出来的，不是猜的。
+
+**一、目录权重高于文件名，打的是营销分。** 路径是 `…\Bought\SFX\Epic.Stock.Media.Hybrid.Game.Sounds\…\ESM_SPG_fx_servo_metal_latch_02.wav`：包目录是营销文案，文件名才是这声音是什么。旧模型（目录 3 / 文件名 1）仅凭 `epic` 一个词就把 92,876 条（34%）判成同一类。新模型反过来：文件名每词 3，目录每目标最多 1。
+
+**二、三字符分词下限丢掉了这个库最常见的索引词。** `ui` 在游戏音效包里出现 13,693 次，旧 tokenizer 的 `len > 2` 把它整个丢掉。下限改成 2。
+
+**三、短语匹配原始路径，漏掉所有下划线命名。** `drum_loop` 与 `drum loop` 本是同一条短语，旧实现只认后者。改为先归一化再匹配。
+
+### 中文是另一路信号
+
+271,350 条路径里 30,585 条带中文，而 Epic Stock Media 那些包的中文就是包名即主题（`【现代化军事战争用户UI界面游戏音效】`）。纯 ASCII 分词器对它完全失明。
+
+尝试过三种取法，只有第三种成立：把包目录里的中文当票 → 一个包 3,944 个文件全贴上同一句主题；完全不取 → 未分类升到 5%；**只在文件名取、目录中文仅作文件名一无所获时的兜底** → 4.3%。理由写进了模块文档。
+
+中文提示词全部两个字以上：单字在中文里没有词边界，实测 `手` 撞 `手机`、`电` 撞 `电影`、`门` 撞 `门类`、`风` 撞 `风格`。
+
 ## 2026-11-16 21:20 · hermes · P6：ASIO 后端 + 设备选择；试用反馈四项
 
 - 改: 新增 `crates/reslip-engine/src/asio.rs`（ASIO 后端：STA 渲染线程、驱动枚举、i32 大端处理、每声道 plane 拆分）、`crates/reslip-app/src/audio_config.rs`（`audio.json` 持久化所选设备）、`tools/build-app.sh`（`--asio` 检查 SDK 与 libclang 后带 feature 构建）；`crates/reslip-engine/src/output.rs`（`Backend` 枚举、`Mixer` 抽成两个后端共用、`DeviceChoice` + `list_devices`、`engine_period_ms` 随后端变、`StreamInfo`/`Shared`/`join_pro_audio_group` 开放给 ASIO 模块）、`decode.rs`（`DeviceSample::I32`）、`lib.rs`（feature 门）；`crates/reslip-app/src/state.rs`（`AudioSlot` 收拢引擎/格式/错误、`open_audio`/`set_audio_device`/`list_audio_devices`、`reindex_library` 接受 root、解码器随 job 走）、`commands.rs`（`list_audio_devices`/`asio_compiled`/`set_audio_device`、`AppStatus.backend`、`AudioDeviceDto`、`reindex_library(root)`）；`crates/reslip-cli/src/main.rs`（`--backend`/`--asio-frames`、`devices` 列两个后端）；`ui/src/SettingsDialog.tsx`（重写：Audio 节 + 设备下拉 + 缓冲大小，删 Libraries 节，`Play the row I click` → `Play on click`）、`Sidebar.tsx`（库头部右键菜单、删 `click to switch`）、`App.tsx`（`libMenu` 信号与菜单项、`reindexLibrary(root, full)`、状态栏后端标签、删空态与波形 dock 的说明文案）、`WaveformDock.tsx`（AUTO PLAY 文字按钮）、`CategoryDialog.tsx`（删说明段）、`styles.css`（`.ghost.auto`、库头部强调、`.setting-note`、`.backend-tag`，删 `.library-*`/`.lib-inactive`/`.settings-actions`/`.modal-note`）、`ipc.ts`（`AudioDevice`、`audioDevices`/`asioCompiled`/`setAudioDevice`、`reindexLibrary` 带 root）；`tools/check-workspace.mjs`（设置节断言改成 Audio 存在 / Libraries 不存在 / 设备下拉分组）、`check-index-overlay.mjs`（改走库右键菜单）、`check-browsing.mjs`（AUTO PLAY 文字断言）；`AGENTS.md`、`docs/architecture.md`（第 2 节 ASIO 数字补齐、P6 行）、`docs/engine.md`（两个后端、ASIO 一节含 STA 表格）、`docs/app.md`（设备选择、库右键菜单、视觉分层、删副标题的原则）

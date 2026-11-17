@@ -10,9 +10,12 @@
 //!   reslip-cli search <folder> <query> [--limit N]
 //!   reslip-cli classify-diff <folder> <reference-db>
 //!
-//! `classify-diff` is the parity check: it opens a database written by Slip Sound
-//! and re-classifies every path in it with the Rust classifier, then reports
-//! every row whose category, subcategory, confidence or matched terms differ.
+//! `classify-diff` re-classifies every path in an existing database with the
+//! current dictionary and reports every row whose category, subcategory,
+//! confidence or matched terms differ. It was written as a parity check against
+//! the reference implementation's index; now that the vocabulary is this
+//! project's own, it is the tool for asking "what did the new dictionary change"
+//! — useful before and after a vocabulary revision.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -168,7 +171,7 @@ pub fn run_search(args: &IndexArgs) -> Result<()> {
     Ok(())
 }
 
-/// Re-classify every path in a Slip Sound database and report disagreements.
+/// Re-classify every path in an existing database and report disagreements.
 ///
 /// This is the check that makes "the classifier is a faithful port" a measured
 /// claim instead of an assertion. Rows whose category was assigned by hand are
