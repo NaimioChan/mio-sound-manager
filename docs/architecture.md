@@ -314,30 +314,32 @@ FTS5 配置不变（`unicode61 remove_diacritics 2`，索引 `filename`/`categor
 
 ### 7.2 IPC 接口
 
-按 Slip Sound 的 preload 接口逐条映射，用 Tauri command 替代 `ipcMain.handle`。核心播放接口：
+按 Slip Sound 的 preload 接口逐条映射，用 Tauri command 替代 `ipcMain.handle`。P3 时只有播放的四条原型命令；现在共 34 条，完整清单与每个命令的语义见 `docs/app.md` 的「IPC 表面」一节（那里是唯一需要维护的表，本节不复制）。按子系统分组：
 
-```rust
-#[tauri::command]
-async fn play(state: State<'_, AppState>, path: String, start_at: Option<f64>) -> Result<(), String>;
+| 组 | 命令 |
+| --- | --- |
+| 状态与设备 | `get_status`、`list_audio_devices`、`asio_compiled`、`set_audio_device` |
+| 播放 | `play`、`stop`、`pause`、`resume`、`get_playback_position` |
+| 输出与波形 | `set_gain`、`get_gain`、`set_loop`、`get_loop`、`get_waveform`、`export_region` |
+| 库与索引 | `add_library`、`list_libraries`、`remove_library`、`set_active_library`、`reindex_library`、`get_library` |
+| 浏览与搜索 | `search`、`count_matching`、`list_matching_paths`、`list_folders`、`get_sidebar` |
+| 编辑与撤销 | `set_favorite`、`set_category`、`clear_category`、`undo`、`redo`、`get_history` |
+| 系统 | `pick_library_folder`、`reveal_in_folder` |
 
-#[tauri::command]
-async fn stop(state: State<'_, AppState>) -> Result<(), String>;
-
-#[tauri::command]
-fn get_playback_position(state: State<'_, AppState>) -> f64;
-
-#[tauri::command]
-async fn get_waveform(path: String) -> Result<Vec<f32>, String>;
-```
+这张表只说明分组，不重复签名：线上字段一律 camelCase，前端类型手写在 `ui/src/ipc.ts` 与 Rust 侧一一对应，改任何一条要同时改三处（`commands.rs` 的线上类型、`lib.rs` 的 `invoke_handler`、`ipc.ts`）。
 
 ### 7.3 播放状态回传
 
 webview 需要知道「播到哪了」来画播放头。不用事件推送（每次回调都发事件会淹没 IPC），用**轮询**：
 
-- 前端 `requestAnimationFrame` 里调 `get_playback_position`（一个原子读，成本 < 1µs）。
-- 后端维护 `played_frames: AtomicU64`，音频线程每回调递增。
+- 前端 `requestAnimationFrame` 里调 `get_playback_position`（几个原子读，成本 < 1µs）。
+- 后端维护 `pos_frames` 与 `active_frames`，音频线程每回调写前者；后者随 publish 一起写，所以时长不需要碰槽位。
+
+返回的是 `PlaybackPosition` 结构而不只是一个秒数：`positionS`、`durationS`、`playing`、`paused`、`finished`、`looping`、`loopRegionS`。UI 靠 `playing` 与 `paused` 决定空格键是暂停还是继续、靠 `finished` 决定按钮回不回 Play，都是引擎的事实而不是渲染层自己记的状态。
 
 这比 Slip Sound 现在的 `timeupdate` 事件更准（`timeupdate` 只有 ~4Hz）。
+
+**位置口径是「回调写到哪」，不是「听众听到哪」。** 共享模式下两者差一次排队量（约 12ms）。画播放头用前者是正确的：它随音频推进得平滑，而补偿那 12ms 需要知道设备实际排队深度，轮询路径拿不到也不该拿。
 
 ## 8. 实施顺序
 
@@ -352,8 +354,12 @@ webview 需要知道「播到哪了」来画播放头。不用事件推送（每
 | **P4** ✅ | 前端搬迁（列表、波形、搜索） | 能浏览、搜索、点击播放。**2026-11-16 通过**：列表虚拟化 + 键盘/多选/右键/拖拽导出、分类侧栏 facet 计数、原生目录选择、收藏与手动分类（批量事务，扛得住全量重索引）、空格暂停。`cargo test --release --workspace` 83 个通过；CDP 驱动真实 28 万库 40 项交互断言全绿，DOM 几何断言无重叠无裁切；点击到波形 30–36ms，Ctrl+A 选中 271,350 条路径。细节见 `docs/app.md` |
 | **P5** ✅ | 工作区（多库、持久化、undo、阻塞索引、设置） | 能当日常工具用。**2026-11-16 通过**：同时打开多个库并在侧栏分组切换、启动恢复上次的库、无限翻页、收藏与分类的 undo/redo、索引期间锁窗并显示读条、设置页、可拖拽宽度的侧栏、搜索框移到列表列顶部。`cargo test --release --workspace` 97 个通过；CDP 三份脚本（工作区 26 项、索引遮罩 7 项、P4 回归 40 项）全绿 |
 | **P6** ✅ | ASIO 后端 + 设置里的音频设备选择 | 用户试用后追加。**2026-11-16 通过**：`--features asio` 编译进 ASIO 后端，设置页有 Audio 节（WASAPI 端点与 ASIO 驱动一个下拉，ASIO 选中时多一个缓冲大小），选择持久化到 `audio.json` 并在启动时恢复。本机 TOPPING Pro 实测：128 帧周期 2.67ms、`publish → 出声` 5.13ms（64 帧）/ 14.4ms（256 帧），零下溢。`cargo test --release --workspace` 101 个通过；CDP 四份脚本全绿 |
+| **P7** ✅ | 改名 Mio Sound Manager + 前端按西门子 iX 重写 + 配色主题系统 + 输出音量 | **2026-11-17 通过**：crate/二进制/identifier/localStorage 前缀全部改名；前端用 `@siemens/ix` 5.3 web components 重写，布局与交互不变；六套主题由八色调色板推导两百多个 token；dock 加静音按钮 + 滑杆 + 百分比，增益存 `Shared.gain_bits`，渲染回调按设备采样格式原地缩放、不重新解码。`cargo test --release` 62 通过；CDP 换四份脚本（interactions 24 项 / layout / themes 6 套含 WCAG / volume）全绿 |
+| **P8** ✅ | 中英日三语 + 图标本地化 | **2026-11-17 通过**：`i18n.ts` + `locales/{en,zh,ja}.ts`，英文是键集基准、另两语 `Record<MessageKey, string>` 漏键即编译错误；后端 undo/redo 由英文 label 改为 `EditKind` 枚举；11 个图标 SVG 复制进仓库、`?raw` 拼 data URL（`ix-icon` 按名字会 fetch 不存在的 `svg/<name>.svg`，`encodeURIComponent` 会被 iX 的 `decodeURI` 解坏）。`cargo test --release` 105 通过；`check-i18n` 151×3 键齐平 |
+| **P9** ✅ | BPM 排序、tag 多选、文件夹自绘菜单、去掉副标题 | **2026-11-17 通过**：BPM 只从文件名取（`crates/mio-index/src/bpm.rs`），空值正反方向都排最后；分类与子分类 Ctrl+点击多选，两侧筛选语义分别是 OR 与 AND；文件夹行复用 `ContextMenu`；设置页删掉解释性小字与主题卡片描述。`check-tags` 45 项 |
+| **P10** ✅ | 波形框选、循环播放、选区拖出、静音记忆、拖拽修复 | **2026-11-18 通过**，发版 v0.1.1。行 `draggable` 写成裸属性会渲染成 `draggable=""`，枚举属性空串不合法 → 浏览器回落 `auto` → DOM 拖拽永不发起，整条拖进 DAW 的功能静默失效（判据：修复前 `row.draggable === false`）。循环是引擎状态：三个原子 + `Mixer::fill` 分段回绕，改选区不重新发布。选区按源格式写 WAV 进缓存再交给 `startDrag`，因为没有 DAW 接受帧范围。静音记 `mio:unmute-gain`，取消静音回到用户调的值。`cargo test --release --workspace` 全通过；`check-region` 16 项 + `check-volume` 12 项，其余四份脚本全绿 |
 
-**P7 及之后不做。** 「Slicer / Effects / Loop / Export」小工具仍不在路线图内：这一版的目标是一个好用的采样浏览器，不是 Slip Sound 的功能全集。ASIO 曾按此逻辑被移出，用户试用后重新要求，因此以 feature 形式实现（见第 2 节）。
+**路线图到 P10 为止。** 「Slicer / Effects / Loop / Export」小工具仍不在路线图内：这一版的目标是一个好用的采样浏览器，不是 Slip Sound 的功能全集。P10 加的循环是**试听用的循环播放**（把一段素材反复听），不是 Loop 工具（切片后重排），两者不要混淆。ASIO 曾按「不做」的逻辑被移出，用户试用后重新要求，因此以 feature 形式实现（见第 2 节）——用户的实际反馈优先于本表的边界。
 
 P0 必须先做：如果拖拽导出在 Tauri 2 + Windows 上无解，整个外壳选型要重新考虑（退回 Electron 的代价是体积和内存，但能保住交互）。
 

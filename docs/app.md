@@ -22,7 +22,7 @@ ui/                  // SolidJS + Vite + @siemens/ix，构建产物被编进 exe
   src/App.tsx            // 状态、搜索、选择、快捷键、分页、菜单装配
   src/SoundTable.tsx     // 虚拟列表、多选、键盘、拖拽起点、无限滚动
   src/Sidebar.tsx        // 按库分组的分类 facet / 文件夹树
-  src/WaveformDock.tsx   // 波形、播放头、暂停、输出音量
+  src/WaveformDock.tsx   // 波形、播放头、框选区、循环与暂停、输出音量、手势图例
   src/ContextMenu.tsx    // 右键菜单（视口坐标，非 iX dropdown）
   src/CategoryDialog.tsx // 手动分类（iX modal）
   src/SettingsDialog.tsx // 设置页（iX modal，含主题选择）
@@ -122,6 +122,9 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `get_playback_position` | `PlaybackPosition` | 原子读，给 rAF 轮询；带 `paused` |
 | `set_gain(gain)` | `f32` | 输出增益，`1.0` 为单位增益；返回引擎实际持有的（夹过的）值 |
 | `get_gain` | `f32` | 引擎当前增益，给音量滑杆回读 |
+| `set_loop(enabled, startS?, endS?)` | `LoopState` | 循环开关与区间；`startS`/`endS` 缺省或倒置表示整个文件。只写原子，不重新 publish |
+| `get_loop` | `LoopState` | 引擎当前的循环状态，给开关回读（设备切换后仍准确） |
+| `export_region(path, startS, endS)` | `string` | 把选区按源采样率与声道写成 32-bit float WAV 到缓存目录，返回路径。给「把框选拖出去」用 |
 | `get_waveform(path, buckets?)` | `WaveformDto` | ~1000 个 f32，附带解码耗时 |
 | `add_library(root, full?, onProgress)` | `LibraryStatus` | **阻塞**到索引跑完；进度走 Channel |
 | `list_libraries` | `LibraryStatus[]` | 每个打开库的名字、计数、是否活跃 |
@@ -138,6 +141,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `clear_category(paths)` | `u64` | 交还分类器，记入 undo |
 | `undo` / `redo` | `string?` | 返回被撤销/重做的编辑名 |
 | `get_history` | `HistoryState` | undo/redo 的标签，给按钮文案 |
+| `get_library` | `LibraryStatus?` | 活跃库的状态；无库时 `null`。`get_status` 里也带一份，这条给只关心库的调用方 |
 | `pick_library_folder` | `string?` | 原生目录选择，取消返回 `null` |
 | `reveal_in_folder(path)` | `()` | Explorer 里选中该文件 |
 
@@ -278,15 +282,36 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **电平是输出的属性，不是 clip 的属性。** 没有加载任何声音时滑杆也能动，所以它永不 disabled。
 
+## 打包与发版
+
+产物有两种形态，都从同一个 release 构建出来：
+
+| 产物 | 怎么来 | 里面是什么 |
+| --- | --- | --- |
+| 安装版 `Mio-Sound-Manager_<ver>_x64-setup.exe` | `tauri build --features asio --bundles nsis` | NSIS 安装器，当前用户安装、不弹 UAC、三语安装界面 |
+| 便携版 `Mio-Sound-Manager_<ver>_x64-portable.zip` | `tools/package-portable.sh` | `Mio Sound Manager.exe` + `LICENSE` + `THIRD-PARTY-NOTICES.md` |
+
+**便携版是 zip 不是单 exe。** 单 exe 只是 `cargo` 产物的改名，而 AGPL 要求二进制分发时许可与第三方声明跟着走——把那三样拆开，用户下载的那个文件就不再是能用的东西，旁边该有什么只能靠猜。zip 把内容说清楚。
+
+没有 DLL：`tauri` 静态链 WebView2Loader，webview 资源经 `custom-protocol` 编进 exe，所以解压出来的目录确实自包含。`package-portable.sh` 在 `target/release` 下发现任何 `.dll` 时**直接失败**，而不是打一个缺依赖的包出去——那个错误会发生在用户机器上，而这里能提前知道。
+
+**版本号有两处，必须同步。** `Cargo.toml` 的 `[workspace.package] version` 决定 crate 版本与 zip 文件名（脚本从这里读），`crates/mio-app/tauri.conf.json` 的 `version` 决定安装包文件名。只改前者会得到「exe 是 0.1.1、安装包叫 0.1.0」。
+
+**构建前必须关掉正在运行的应用。** Windows 不允许替换已映射的 exe，报的是 `failed to remove file … (os error 5)`——看起来像权限问题，实际是文件锁。`tools/kill-app.sh` 现在同时结束 `mio-sound-manager`（cargo 产物与安装版）与 `Mio Sound Manager`（便携版 exe）两个进程名。
+
+**`tauri build` 要在仓库根执行。** `ui/` 下没有 `tauri.conf.json`，在 `ui/` 里跑会报 `Couldn't recognize the current folder as a Tauri project`。
+
+发版流程、附件清单与 `check-shipped.mjs` 的用法见 `tools/README.md` 的「发版」一节——那里是唯一需要维护的那份。
+
 ## 验证
 
-**Rust 侧 105 个测试，不需要窗口**（`cargo test --release --workspace`）：
+**Rust 侧 124 个测试，不需要窗口**（`cargo test --release --workspace`）：
 
 - `tests/ipc.rs` 25 个，跑在真实设备上（本机 FxSound；`MIO_TEST_DEVICE` 可换）。P3/P4 部分覆盖：状态报真实设备格式、设备缺失报引擎原文、播放推进播放头、`startAt` 偏移、同文件重播不重新解码、被取代的播放不播旧音频、非音频路径提前拒绝、波形 1000 点且响/静可分辨、桶数夹住、文件夹树来自索引、无库时报错可显示；P5 新增 6 个——两个库同时打开且切换后搜索只看活跃库、关掉活跃库自动落到下一个、切到未打开的库被拒、undo 恢复收藏且 redo 放回、undo 恢复的是**旧分类和旧归属**、多行编辑一次撤销。
 - `commands.rs` 6 个：时长标签格式（含 59.999s 进位）、排序白名单、分页上限钳制。声道标签测试随 `channel_label` 一起删了，词改在前端。
 - `session.rs` 5 个：缺文件是空会话、往返、损坏文件降级、消失的文件夹跳过但保留、活跃库优先。
 - `history.rs` 3 个：新编辑清空 redo、栈有上限、`EditKind` 描述将要发生的事。
-- `mio-index` 49 个、`mio-engine` 13 个、`mio-app` lib 18 个。
+- `mio-index` 61 个、`mio-engine` 16 个（含 P10 新增的 3 个选区导出：只保留自己那段的帧、超出末尾被夹住、倒置区间写出合法的空 WAV）。
 
 **真实 28 万文件库（`D:/reslip-test-library`，本机默认设备 FxSound）：**
 
@@ -301,13 +326,16 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 **窗口内交互用 CDP 驱动真实窗口验证，不靠人看**（先 `./tools/run-app.sh` 起窗口，再跑脚本）：
 
 - `tools/check-interactions.mjs`——列表渲染、点击选中与激活、Ctrl/Shift 多选、状态栏计数、点列头排序并翻转方向、搜索过滤与空结果、右键菜单、分类 modal 打开/尺寸/Escape 关闭、`AUTO PLAY` 文字与切换并持久化、播放头推进/暂停冻结/Stop 归零、波形点击 seek、设置 modal 与主题卡片。
+- `tools/check-region.mjs`——行真的可拖（`row.draggable === true` 且 `draggable="true"`）、波形拖拽选出区域、循环开关读到引擎且带选区、Esc 清选区后循环回落到整个文件、`export_region` 写出 WAV 并返回路径、最后真派发一次 `dragstart`。**这一份跑完 webview 会因原生 OLE 拖拽而不再响应 IPC**，必须单独跑、跑完重启应用。
 - `tools/check-themes.mjs`——六套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、浅色主题的背景确实比文字亮、`classic-*` 不残留覆盖块、重载后主题仍在，最后对十处文本元素跑 WCAG 对比度。
-- `tools/check-volume.mjs`——滑杆经 `valueChange` 改值后读**引擎的** `get_gain`（另一条命令，只改前端状态的实现过不了这一项）、静音/取消静音、重载后电平仍在且被推回引擎。
-- `tools/check-layout.mjs`——五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、dock 控件簇的**顺序**（音量 → AUTO PLAY → 暂停 → 停止）与间距、音量滑杆宽度、无元素逃出视口（滚动容器内的不算）。
+- `tools/check-volume.mjs`——滑杆经 `valueChange` 改值后读**引擎的** `get_gain`（另一条命令，只改前端状态的实现过不了这一项）、静音→取消静音回到设定值（不是 100%）、静音后重载仍回到那个值、重载后电平仍在且被推回引擎。
+- `tools/check-layout.mjs`——五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、dock 控件簇的**顺序**（音量 → AUTO PLAY → 循环 → 暂停 → 停止）与间距、音量滑杆宽度、无元素逃出视口（滚动容器内的不算）。
+- `tools/check-tags.mjs`——分类/文件夹切换按钮的边框、设置弹窗反复重开、BPM 列与排序、tag 多选、文件夹右键菜单、界面缩放在 `innerWidth` 上真的生效、设置页无解释小字/无副标题。
 - `tools/check-i18n.mjs`——三语字典的键集与占位符一致性（`tsc` 管不到的那部分）。
+- `tools/check-shipped.mjs`——对着**打包产物**而不是 `target/release`：解压 zip、用调试端口起那个 exe，断言窗口标题、`asio_compiled=true`、引擎开到设备、`#transport-loop` / `#volume-mute` / `.dock-hints` 存在、`get_loop` 有应答。对着开发目录跑它会漏掉打包环节的问题。
 - `tools/shot.mjs` / `shot-themes.mjs`——截图，给人看，不做断言。
 
-**CDP 脚本固定英文 locale 再断言。** 四个 `check-*.mjs` 断言的文案是英文（`Length`、`AUTO PLAY`、`Resume`），在中文机器上会因为找不到 locator 而失败——那是脚本的前提问题，不是功能坏了。所以脚本开头写 `localStorage.setItem('mio:locale', 'en')` 再 reload；列头和菜单项另有 `data-sort-key` / `data-menu-id`，选元素时不依赖翻译。文案覆盖由 `check-i18n.mjs` 负责。
+**CDP 脚本固定英文 locale 再断言。** 六份会驱动窗口的 `check-*.mjs` 断言的文案是英文（`Length`、`AUTO PLAY`、`Resume`），在中文机器上会因为找不到 locator 而失败——那是脚本的前提问题，不是功能坏了。所以脚本开头写 `localStorage.setItem('mio:locale', 'en')` 再 reload；列头和菜单项另有 `data-sort-key` / `data-menu-id`，选元素时不依赖翻译。文案覆盖由 `check-i18n.mjs` 负责。
 
 **驱动 iX 组件的三条经验**（写脚本时都会踩到）：
 
@@ -343,4 +371,4 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 - 主题只在 `localStorage`，没有「导入/导出一份主题」的界面；加一套主题要改 `theme.ts` 的 `THEMES` 数组。
 - 音量滑杆是线性的，没有做 dB 曲线；`0..100%` 直接映射到增益 `0..1`。
 - 拖拽时悬停的光标样式不变（P0 用户指出过）。
-- 不做 Slicer / Effects / Loop / Export，也不做 ASIO 后端——已从路线图移除。
+- 不做 Slicer / Effects / Export，也不做 macOS / Linux 版本。ASIO 后端曾按此逻辑被移出，用户试用后要求，P6 已实现（见 `docs/engine.md`）；P10 加的循环是试听用的循环播放，不是 Loop 工具（切片后重排）。

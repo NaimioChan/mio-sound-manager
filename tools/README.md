@@ -39,14 +39,17 @@ node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静
 node tools/check-region.mjs         # 行可拖、框选、循环跟随框选、区域导出 WAV、Esc 清除
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
+node tools/check-tags.mjs           # 分段控件边框、设置弹窗重开、BPM 列、tag 多选、无副标题
+node tools/check-shipped.mjs [port] # 打包产物：版本、ASIO、设备、新控件（跑解压出来的 exe）
 node tools/shot.mjs [out.png]       # 截图
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 ```
 
-六个 `check-*.mjs` 都以退出码表示结果，可以串起来跑。它们互不干扰（每个都先 `reload()`），
-顺序任意。这六个都断言英文文案，所以开头会把 `mio:locale` 固定成 `en`——在中文机器上
-不固定就会因为找不到 locator 而失败，那是脚本的前提问题而不是功能坏了。列头与菜单项另有
-`data-sort-key` / `data-menu-id`，选元素不依赖翻译。
+七份 `check-*.mjs` 都以退出码表示结果，可以串起来跑。它们互不干扰（每个都先 `reload()`），
+顺序任意。需要驱动窗口的那六份都断言英文文案，所以开头会把 `mio:locale` 固定成 `en`——在中文
+机器上不固定就会因为找不到 locator 而失败，那是脚本的前提问题而不是功能坏了。列头与菜单项另有
+`data-sort-key` / `data-menu-id`，选元素不依赖翻译。`check-i18n.mjs` 读源码，`check-shipped.mjs`
+只断言 DOM 结构与 IPC 应答、不读任何文案，两者都不需要固定 locale。
 
 **`check-region.mjs` 必须单独跑，且跑完要重启应用。** 它最后一项会真的派发一次
 `dragstart`，那会进入原生 OLE 拖拽循环，`start_drag` 直到拖拽结束才返回，之后所有 IPC

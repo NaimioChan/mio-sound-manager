@@ -95,9 +95,9 @@ src/asio.rs
 **枚举会真加载驱动。** `list_devices()` 逐个 `load_driver` 读通道/缓冲/采样率再 drop。拔了线的驱动会在这一步失败，此时条目仍然列出但标 `available: false`——「你的接口没插」比「列表里什么都没有」有用。
 
 
-## 给 UI 的入口（P3 加播放，P4 加暂停）
+## 给 UI 的入口（P3 加播放，P4 加暂停，P10 加循环）
 
-`publish` / `publish_from` / `stop` / `pause` / `resume` 都取 `&self`：它们只写原子量与 `arc-swap`，不需要独占引用。IPC 的命令线程因此可以直接发布，不必再搭一个控制线程把调用排队。
+`publish` / `publish_from` / `stop` / `pause` / `resume` / `set_gain` / `set_loop` 都取 `&self`：它们只写原子量与 `arc-swap`，不需要独占引用。IPC 的命令线程因此可以直接发布，不必再搭一个控制线程把调用排队。
 
 - `publish_from(clip, offset_frames)` 是 IPC `start_at` 的落点。seek 不重新解码，只是在不可变缓冲上换一个起始位置，代价与普通播放相同的一次原子写。
 - `stop()` 清空两个槽并把 `finished` 置位。它不碰流，所以下一次 `publish` 仍是一次原子写。共享模式排不掉已进 endpoint 的音频，停会有一小段尾巴，这是设备行为不是实现缺陷。
@@ -159,9 +159,25 @@ src/asio.rs
 
 测量点位于「第一个能真正写入该 clip 的回调」。两次切换落进同一个引擎周期时，被取代的那次 publish 不会有报告——这是正确行为，不是丢数据。
 
+## export（P10 加）
+
+选区拖出到 DAW 需要先落成一个真文件：DAW 接受的是文件投放，不是帧范围。
+
+```rust
+pub fn write_wav(path, samples, channels, sample_rate) -> Result<()>
+pub fn write_wav_region(path, source: &SourceAudio, start_s, end_s) -> Result<usize>
+```
+
+**按源文件的采样率与声道数写，不按设备格式。** 导出是素材的副本，不是监听路径：把选区重采样成当前接口的格式，会悄悄改变用户拖进工程的那个文件。所以这里读的是 `decode_source`（原始交错 f32），不是 `decode`（已转设备格式）。
+
+**写 32-bit IEEE float WAV。** 解码侧产出的就是 f32，写 float 意味着整个导出路径没有一次量化。44 字节标准头，`fmt` 的 audio format 是 3。
+
+区间按帧夹住：`[start, end)` 之外的采样丢弃，超出末尾的部分只导出存在的部分，倒置区间写出合法的空文件（44 字节头）而不是报错。这三条各有单测——它们是「选区边界」的全部情况，而边界错了会静默导出错误的内容。
+
 ## 已知未做
 
 - 切换不做交叉淡化（架构文档 4.1 的可选项），目前是硬切
 - MP4/M4A 与 OGG 尾部仍有编码器填充（956–1980 帧），只影响末尾静音
 - MMCSS 线程提升是 best-effort，失败不报错也不阻塞播放
 - 长文件整段解码进内存
+- 选区导出每次都往缓存目录写一个新 WAV，没有清理策略

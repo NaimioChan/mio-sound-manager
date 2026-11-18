@@ -2,7 +2,7 @@
 
 Mio Sound Manager: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9（BPM 排序、tag 多选、文件夹自绘菜单、去掉副标题）已通过。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。
+Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9（BPM 排序、tag 多选、文件夹自绘菜单、去掉副标题）已通过。P10（波形框选、循环播放、选区拖出、静音记忆、拖拽修复）已通过，发版 v0.1.1。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。发版流程见 `tools/README.md` 的「发版」一节。
 
 ## Stack (decided)
 
@@ -58,6 +58,8 @@ cargo run --release -p mio-cli -- probe-bench <folder> --limit 20000    # per-fo
 cargo build -p mio-app --release
 ./tools/build-app.sh                     # 产品构建：WASAPI + ASIO（检查 SDK 与 libclang 后带 feature 构建）
 ./tools/build-app.sh --no-asio           # 纯 WASAPI 的开发构建，不需要 ASIO SDK
+./ui/node_modules/.bin/tauri build --features asio --bundles nsis   # 安装包（仓库根执行，先 kill-app）
+./tools/package-portable.sh              # 便携版 zip → dist/（exe + LICENSE + 第三方声明）
 ./tools/run-app.sh                      # launches with the webview debugger on :9223
 ./tools/kill-app.sh                     # Windows won't replace a mapped exe
 ```
@@ -71,17 +73,21 @@ The shell is not a default workspace member: `cargo build`/`cargo test` at the r
 ```bash
 node tools/check-interactions.mjs   # 列表/选择/排序/搜索/菜单/modal/AUTO PLAY/播放头/seek/设置
 node tools/check-themes.mjs         # 六套主题应用、重载保留、WCAG 对比度
-node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音，重载
+node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音记忆，重载
+node tools/check-region.mjs         # 行可拖、框选、循环跟随框选、区域导出 WAV、Esc 清除（跑完要重启）
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/check-tags.mjs           # 分类/文件夹切换按钮的边框、设置弹窗重开、BPM 列与排序、tag 多选、文件夹右键菜单、无副标题
+node tools/check-shipped.mjs [port] # 对着打包产物验版本/ASIO/设备/新控件（解压 zip 后起那个 exe 再跑）
 node tools/shot.mjs [out.png]       # 截图（给人看）
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 ```
 
 They resolve `playwright-core` from `slip-sound/package.json` through `createRequire`, so they run from any directory — that module is not a dependency of this repo. See `docs/app.md`.
 
-The four `check-*.mjs` drive a real window, so they assert on English copy and pin `mio:locale` to `en` before reloading — on a Chinese or Japanese machine they would otherwise fail on a missing locator rather than a broken feature. Column headers and menu items are also addressable by `data-sort-key` / `data-menu-id`, so a selector never depends on translated text. Copy coverage belongs to `check-i18n.mjs`.
+The six `check-*.mjs` that drive a window assert on English copy and pin `mio:locale` to `en` before reloading — on a Chinese or Japanese machine they would otherwise fail on a missing locator rather than a broken feature. Column headers and menu items are also addressable by `data-sort-key` / `data-menu-id`, so a selector never depends on translated text. Copy coverage belongs to `check-i18n.mjs`.
+
+**`check-region.mjs` 会进入原生 OLE 拖拽循环，跑完 webview 不再响应 IPC**：它必须单独跑，之后要 `kill-app.sh` 再起窗口。详情见 `tools/README.md`。
 
 ## Where things live
 
@@ -101,6 +107,7 @@ The four `check-*.mjs` drive a real window, so they assert on English copy and p
 | 外壳与 IPC 细节 | `docs/app.md` |
 | 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
 | 外壳的 CDP 驱动与检查脚本 | `tools/` |
+| 发版（安装包、便携版 zip、产物验收） | `tools/README.md`「发版」一节 |
 | BPM 解析（只从文件名取，不从音频推断） | `crates/mio-index/src/bpm.rs` |
 | 分类词表（改这里，再跑生成器） | `tools/taxonomy.py` |
 | 分类词典生成器（勿手改 `dictionary.rs`） | `tools/gen-category-dict.py` |
