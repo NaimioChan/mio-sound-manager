@@ -2,6 +2,29 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-18 15:30 · hermes · 发 0.1.1 到 release，便携版改打 zip
+
+- 改: `Cargo.toml` + `crates/mio-app/tauri.conf.json`（版本 0.1.0 → 0.1.1）、`tools/package-portable.sh`（新增）、`tools/check-shipped.mjs`（新增）、`tools/kill-app.sh`（改为按两个进程名结束）、`tools/README.md`（新增「发版」一节）
+- 验证: `tauri build --features asio --bundles nsis` 产出 5253200 字节安装包；`package-portable.sh` 产出 6443256 字节 zip（内含 17262080 字节 exe + LICENSE + 第三方声明，无 DLL）；**解压后的 exe 单独启动过**（CDP 9227）并跑 `check-shipped` 7/7：标题、`asio_compiled=true`、引擎开到设备、`#transport-loop`、`#volume-mute`、5 条手势图例、`get_loop` 应答；release v0.1.1 的四个附件 `gh release view` 全部 `uploaded`，逐个 `curl -L` 返回 200 且字节数匹配（5253200 / 6443256 / 35184 / 2229）；tag `v0.1.1` 已推并 `git ls-remote` 回读
+- 遗留: ① 想改 `AGENTS.md` 的命令表（加 `tauri build` 与 `package-portable.sh` 两行）被保护机制拦下（审批超时），**现状是没改**——`AGENTS.md` 的 Commands 节仍只有 `build-app.sh`，发版第二步要读 `tools/README.md`；② 框选拖进真实 DAW 与循环听感仍未人工验收（同上一轮）；③ 便携版配置仍写 `%APPDATA%`
+- 下一步: 找用户拿自动播放那台的复现条件；真实 DAW 里拖一次选区 WAV；给 `exports/` 加清理策略
+
+### 便携版为什么不再做单 exe
+
+单 exe 是对「跑起来的到底是什么」的谎报。它一直只是 `target/release/mio-sound-manager.exe` 的改名，而当 `LICENSE` 与 `THIRD-PARTY-NOTICES.md` 必须跟着二进制走（AGPL 分发要求），那个改名就成了陷阱：用户下载的那个文件不再是能用的东西，旁边还该有什么只能靠猜。
+
+zip 里固定三件：`Mio Sound Manager.exe`、`LICENSE`、`THIRD-PARTY-NOTICES.md`。没有 DLL——`tauri` 静态链 WebView2Loader，webview 资源经 `custom-protocol` 编进 exe，目录确实是自包含的。脚本会在 `target/release` 下发现任何 `.dll` 时直接失败，而不是打一个缺依赖的包出去。
+
+### 两个把构建卡住过的坑
+
+**`tauri build` 必须在仓库根跑。** 在 `ui/` 下执行 `npx tauri build` 报 `Couldn't recognize the current folder as a Tauri project`——配置在 `crates/mio-app/`，Tauri 会往上找，但起点得在仓库根。
+
+**`kill-app.sh` 只认一个进程名。** 它原先只 `Stop-Process -Name mio-sound-manager`，而便携版的 exe 叫 `Mio Sound Manager.exe`，进程名不同。于是便携版还在跑、exe 被映射，构建报 `failed to remove file … 拒绝被访问 (os error 5)`——看起来像权限问题，实际是文件锁。现在两个名字都结束。
+
+### 版本号有两处
+
+`Cargo.toml` 的 `[workspace.package] version` 决定 crate 版本与 zip 文件名（脚本从这里读），`crates/mio-app/tauri.conf.json` 的 `version` 决定安装包文件名。只改前者会得到「exe 是 0.1.1、安装包叫 0.1.0」。这次两处都改了。
+
 ## 2026-11-18 13:30 · hermes · 修拖拽失效、静音记忆，加波形框选/循环/选区拖出
 
 - 改: `ui/src/SoundTable.tsx`（`draggable` → `draggable={true}`）、`ui/src/WaveformDock.tsx`（框选手势、选区画在播放头层、循环开关、`.dock-hints` 图例、区域读数与清除按钮）、`ui/src/App.tsx`（`readStoredGain`、`toggleMute` + `mio:unmute-gain`、`toggleLoop`、`changeRegion`、`dragRegionOut`、Esc 清选区、L 开关循环、onMount 回读 `get_loop`）、`ui/src/ipc.ts`（`setLoop` / `loop` / `exportRegion`、`LoopState`、`PlaybackPosition` 加两字段）、`ui/src/icons.ts` + `ui/src/assets/icons/loop.svg`、`ui/src/locales/{en,zh,ja}.ts`（14 个新键）、`ui/src/styles.css`（`.wave-wrap.selecting`、`.wave-region`、`.dock-hints`）、`crates/mio-engine/src/output.rs`（`Shared` 三个循环原子、`Mixer::fill` 分段回绕、`set_loop` / `loop_state`、`PlaybackSnapshot` 两字段、`publish` 清范围）、`crates/mio-engine/src/export.rs`（新增，WAV 写入 + 3 个单测）、`crates/mio-app/src/state.rs`（`LoopSetting` / `LoopState`、`set_loop` / `loop_state`、`export_region`、`sanitize_file_name`、`open_audio` 恢复循环）、`crates/mio-app/src/{commands,lib}.rs`（三条新命令）、`tools/check-region.mjs`（新增 17 项）、`tools/check-volume.mjs`（静音断言改为回到设定值）、`tools/check-interactions.mjs`（AUTO PLAY 持久化改读 `mio:settings`）、`docs/{app,engine}.md`、`tools/README.md`
