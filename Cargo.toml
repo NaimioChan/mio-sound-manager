@@ -14,7 +14,7 @@ members = [
 default-members = ["crates/mio-engine", "crates/mio-index", "crates/mio-cli"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 

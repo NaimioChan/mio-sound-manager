@@ -136,6 +136,7 @@ export const ja: Record<MessageKey, string> = {
   'dock.loopOn': 'ループ: オン',
   'dock.loopOff': 'ループ: オフ',
   'dock.loopHint': '選択範囲を再生します。選択がないときはファイル全体を再生します (L)',
+  'dock.loopWhole': 'ファイル全体',
   'dock.exporting': '選択範囲を書き出し中…',
   'dock.clearRegion': '選択範囲を解除',
 
@@ -144,7 +145,10 @@ export const ja: Record<MessageKey, string> = {
   'hint.select': '範囲を選択',
   'hint.click': 'クリック',
   'hint.seek': 'シーク',
-  'hint.dragOut': '選択範囲を外部へドラッグ',
+  'hint.dragTop': '上部をドラッグ',
+  'hint.dragOut': '選択範囲を外部へドラッグ（選択なしなら全体）',
+  'hint.dragEdge': '端をドラッグ',
+  'hint.resizeRegion': '範囲を調整',
   'hint.clearRegion': '選択範囲を解除',
   'hint.loop': 'ループ切替',
 

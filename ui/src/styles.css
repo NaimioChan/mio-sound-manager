@@ -718,6 +718,26 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+/* The loop switch, on. iX's `secondary` pressed state is the accent at 16%, which
+   on a dark dock is barely darker than the panel behind it — measured, the loop
+   was on and off in the same pixel colour. So "on" is the accent itself with
+   contrast text, the one filled control in the transport row, and it stays that
+   way through hover and press so the state never flickers. */
+#transport-loop.on {
+  --theme-btn-tertiary--background: var(--theme-color-primary);
+  --theme-btn-tertiary--background--hover: var(--theme-color-primary--hover);
+  --theme-btn-tertiary--background--active: var(--theme-color-primary--active);
+  --theme-btn-tertiary--background--pressed: var(--theme-color-primary);
+  --theme-btn-tertiary--background--pressed-hover: var(--theme-color-primary--hover);
+  --theme-btn-tertiary--background--pressed-active: var(--theme-color-primary--active);
+  --theme-btn-tertiary--color: var(--theme-color-primary--contrast);
+  --theme-btn-tertiary--color--hover: var(--theme-color-primary--contrast);
+  --theme-btn-tertiary--color--active: var(--theme-color-primary--contrast);
+  --theme-btn-tertiary--color--pressed: var(--theme-color-primary--contrast);
+  --theme-btn-tertiary--color--pressed-hover: var(--theme-color-primary--contrast);
+  --theme-btn-tertiary--color--pressed-active: var(--theme-color-primary--contrast);
+}
+
 .wave-wrap {
   position: relative;
   margin: 0 12px 10px;
@@ -736,13 +756,47 @@ button {
 }
 
 .wave {
-  cursor: crosshair;
+  /* A vertical bar, not a crosshair: the only gesture a press can start on the
+     body of the panel is a selection, and a selection is horizontal. */
+  cursor: text;
 }
 
-/* While the pointer is down the crosshair is wrong: the gesture in progress is a
+/* While the pointer is down the text caret is wrong: the gesture in progress is a
    selection, and the cursor is the only feedback that the drag is being taken. */
 .wave-wrap.selecting .wave {
   cursor: ew-resize;
+}
+
+/* The top third hands the material to another window. Both the highlight and the
+   cursor come from `.grab`, so hovering there says "this is a handle" before the
+   button goes down — which is the whole reason the modifier key could go away. */
+.wave-wrap.grab .wave {
+  cursor: grab;
+}
+
+.wave-wrap.grab .wave-grab {
+  opacity: 1;
+}
+
+.wave-grab {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 33.3333%;
+  opacity: 0;
+  pointer-events: none;
+  background: var(--theme-color-ghost-primary--hover);
+  border-bottom: 1px solid var(--theme-color-primary);
+  transition: opacity 120ms ease-out;
+}
+
+/* A region boundary under the pointer. `col-resize` is the same cursor the two
+   dividers in this window use, so "drag this edge" already has a vocabulary. */
+.wave-wrap.edge-start .wave,
+.wave-wrap.edge-end .wave,
+.wave-wrap.edge-drag .wave {
+  cursor: col-resize;
 }
 
 .wave-head {

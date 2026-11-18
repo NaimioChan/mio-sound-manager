@@ -33,8 +33,16 @@ interface Props {
   onGain: (gain: number) => void
   onSeek: (seconds: number) => void
   onRegion: (region: Region | null) => void
-  /** Alt+press: hand the selection (or the whole clip) to the OS as a file drop. */
-  onDragOut: () => void
+  /**
+   * Drag-out, started from the top third of the waveform: hand the selection (or
+   * the whole clip) to the OS as a file drop.
+   *
+   * `atSeconds` is where inside the panel the gesture began. The app decides what
+   * that means — a point inside the selection drags the selection, anywhere else
+   * drags the source file — because the selection is app state and the panel only
+   * knows the pointer position.
+   */
+  onDragOut: (atSeconds: number) => void
   /** Decode cost of the waveform, reported to the status bar only. */
   onDecoded: (ms: number) => void
 }
@@ -65,6 +73,32 @@ const DRAG_SLOP = 3
 const MIN_REGION_S = 0.01
 
 /**
+ * The share of the panel's height that drags out instead of selecting.
+ *
+ * The top third is the handle: pressing there takes the material out of the app,
+ * pressing anywhere below it draws a selection. The split is spatial rather than
+ * a modifier key because the gesture a DAW user makes is one continuous motion —
+ * hold, drag, release over the other window — and a chord has to be re-established
+ * every time the pointer leaves.
+ */
+const DRAG_OUT_BAND = 1 / 3
+
+/**
+ * How close to a region edge a press counts as grabbing that edge, in pixels.
+ *
+ * Wide enough to hit with a mouse, narrow enough that the middle of a short
+ * selection still draws a new one.
+ */
+const EDGE_HIT_PX = 5
+
+/** `m:ss.cc`, the same shape the playhead readout uses. */
+const fmtTime = (seconds: number): string => {
+  const m = Math.floor(seconds / 60)
+  const s = (seconds % 60).toFixed(2).padStart(5, '0')
+  return `${m}:${s}`
+}
+
+/**
  * The waveform dock.
  *
  * Draws ~1000 peaks from the backend on a canvas. No audio data ever reaches this
@@ -78,6 +112,8 @@ const MIN_REGION_S = 0.01
  */
 export function WaveformDock(props: Props) {
   const [peaks, setPeaks] = createSignal<number[] | null>(null)
+  /** One envelope per channel for mono/stereo files; empty for wider ones. */
+  const [lanes, setLanes] = createSignal<number[][]>([])
   const [loadError, setLoadError] = createSignal<string | null>(null)
   const [loading, setLoading] = createSignal(false)
   const [height, setHeight] = createSignal(120)
@@ -85,6 +121,12 @@ export function WaveformDock(props: Props) {
   const [draft, setDraft] = createSignal<Region | null>(null)
   /** True while the pointer is down on the waveform, for the cursor. */
   const [selecting, setSelecting] = createSignal(false)
+  /** True while the pointer is over the drag-out band, so the panel says so. */
+  const [grabBand, setGrabBand] = createSignal(false)
+  /** True while a region edge is being dragged. */
+  const [edgeDrag, setEdgeDrag] = createSignal(false)
+  /** Which edge the pointer is over, for the resize cursor. */
+  const [hoverEdge, setHoverEdge] = createSignal<'start' | 'end' | null>(null)
 
   let waveCanvas: HTMLCanvasElement | undefined
   let headCanvas: HTMLCanvasElement | undefined
@@ -94,6 +136,7 @@ export function WaveformDock(props: Props) {
   createEffect(() => {
     const row = props.row
     setPeaks(null)
+    setLanes([])
     setLoadError(null)
     setDraft(null)
     if (!row) return
@@ -105,6 +148,7 @@ export function WaveformDock(props: Props) {
       .then((w) => {
         if (cancelled) return
         setPeaks(w.peaks)
+        setLanes(w.lanes)
         props.onDecoded(w.decodeMs)
       })
       .catch((e) => {
@@ -141,23 +185,37 @@ export function WaveformDock(props: Props) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     ctx.clearRect(0, 0, w, h)
-    const mid = h / 2
 
     // No background fill: the container already has the panel colour, and filling
     // it here is what turned the whole dock one colour on the first run.
     if (!data || data.length === 0) return
 
-    // A one-pixel zero line, so an all-silent sample reads as a flat line rather
-    // than as an empty panel.
-    ctx.fillStyle = token('--theme-color-3', '#3c484d')
-    ctx.fillRect(0, Math.round(mid), w, 1)
+    const wave = token('--mio-wave', '#00eaff')
+    const zero = token('--theme-color-3', '#3c484d')
+    // One lane per channel for mono and stereo; a wider file keeps the merged
+    // envelope in a single lane, because a third strip would be too thin to read.
+    const stacked = lanes()
+    const rows = stacked.length > 0 ? stacked : [data]
+    const laneH = h / rows.length
 
-    const barW = w / data.length
-    ctx.fillStyle = token('--mio-wave', '#00eaff')
-    for (let i = 0; i < data.length; i++) {
-      const peak = data[i] ?? 0
-      const barH = Math.max(1, peak * (h - 4))
-      ctx.fillRect(i * barW, mid - barH / 2, Math.max(1, barW - 0.5), barH)
+    for (let lane = 0; lane < rows.length; lane++) {
+      const series = rows[lane]!
+      const top = lane * laneH
+      const mid = Math.round(top + laneH / 2)
+
+      // A one-pixel zero line per lane, so an all-silent sample reads as a flat
+      // line rather than as an empty panel.
+      ctx.fillStyle = zero
+      ctx.fillRect(0, mid, w, 1)
+
+      const barW = w / series.length
+      ctx.fillStyle = wave
+      for (let i = 0; i < series.length; i++) {
+        const peak = series[i] ?? 0
+        // 2px of headroom inside the lane so adjacent lanes never touch.
+        const barH = Math.max(1, peak * (laneH - 2))
+        ctx.fillRect(i * barW, mid - barH / 2, Math.max(1, barW - 0.5), barH)
+      }
     }
   }
 
@@ -216,6 +274,7 @@ export function WaveformDock(props: Props) {
 
   createEffect(() => {
     peaks()
+    lanes()
     height()
     drawPeaks()
   })
@@ -265,23 +324,109 @@ export function WaveformDock(props: Props) {
     return fraction * props.durationS
   }
 
+  /** Whether a pointer at `clientY` is in the band that drags material out. */
+  const inGrabBand = (clientY: number): boolean => {
+    const canvas = waveCanvas
+    if (!canvas) return false
+    const rect = canvas.getBoundingClientRect()
+    if (rect.height === 0) return false
+    return (clientY - rect.top) / rect.height <= DRAG_OUT_BAND
+  }
+
   /**
-   * One pointer handler for both gestures the waveform has.
+   * Which region edge a pointer is on, if any.
    *
-   * A press that does not move seeks; a press that moves selects. Doing it from
-   * `pointerdown` rather than `click` is what makes the selection feel attached to
-   * the pointer: the region grows while the button is held, and a plain click
-   * still lands on the exact frame it always did.
+   * 5px either side of the edge, and only when the pointer is outside the
+   * drag-out band: the band is the whole top third of the panel, so a region whose
+   * edge happens to sit under it must not steal the grab.
+   */
+  const edgeAt = (clientX: number, clientY: number): 'start' | 'end' | null => {
+    const canvas = waveCanvas
+    const region = props.region
+    if (!canvas || !region || props.durationS <= 0 || inGrabBand(clientY)) return null
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width === 0) return null
+    const x0 = rect.left + (region[0] / props.durationS) * rect.width
+    const x1 = rect.left + (region[1] / props.durationS) * rect.width
+    // The nearer edge wins when the region is narrower than two hit zones, so a
+    // very short selection is still adjustable instead of being a dead zone.
+    const toStart = Math.abs(clientX - x0)
+    const toEnd = Math.abs(clientX - x1)
+    if (toStart <= EDGE_HIT_PX && toStart <= toEnd) return 'start'
+    if (toEnd <= EDGE_HIT_PX) return 'end'
+    return null
+  }
+
+  /** Hover state: the band highlight and the edge cursor both come from here. */
+  const onPointerMove = (event: PointerEvent) => {
+    if (selecting() || edgeDrag()) return
+    setGrabBand(inGrabBand(event.clientY))
+    setHoverEdge(edgeAt(event.clientX, event.clientY))
+  }
+
+  const onPointerLeave = () => {
+    setGrabBand(false)
+    setHoverEdge(null)
+  }
+
+  /**
+   * One pointer handler for every gesture the waveform has.
+   *
+   * Where the press lands decides what happens, and there are no modifier keys:
+   *
+   * - top third → drag out, as a file drop (the band highlights on hover)
+   * - on a region edge → move that edge
+   * - anywhere else → press and hold draws a selection; a press that does not
+   *   move seeks
+   *
+   * Doing it from `pointerdown` rather than `click` is what makes the selection
+   * feel attached to the pointer: the region grows while the button is held, and a
+   * plain click still lands on the exact frame it always did.
    */
   const onPointerDown = (event: PointerEvent) => {
     if (event.button !== 0 || !props.row || props.durationS <= 0) return
 
-    // Alt+press is "take this out of the app": the gesture a DAW user reaches for
-    // when they want the material, not playback. Started from the press for the
-    // same reason the row drag is — the OS drag has to begin with the button down.
-    if (event.altKey) {
+    // Drag out first: the OS drag has to begin with the button down, so this is
+    // the only moment it can start.
+    if (inGrabBand(event.clientY)) {
       event.preventDefault()
-      props.onDragOut()
+      props.onDragOut(secondsAt(event.clientX))
+      return
+    }
+
+    const edge = edgeAt(event.clientX, event.clientY)
+    if (edge) {
+      event.preventDefault()
+      const region = props.region
+      if (!region) return
+      setEdgeDrag(true)
+      setSelecting(true)
+      const anchor = edge === 'start' ? region[1] : region[0]
+      const move = (e: PointerEvent) => {
+        const to = secondsAt(e.clientX)
+        const from = Math.min(anchor, to)
+        let end = Math.max(anchor, to)
+        if (end - from < MIN_REGION_S) {
+          end = Math.min(props.durationS, from + MIN_REGION_S)
+        }
+        setDraft([from, end])
+      }
+      const up = (e: PointerEvent) => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+        setEdgeDrag(false)
+        setSelecting(false)
+        setDraft(null)
+        const to = secondsAt(e.clientX)
+        const from = Math.min(anchor, to)
+        let end = Math.max(anchor, to)
+        if (end - from < MIN_REGION_S) {
+          end = Math.min(props.durationS, from + MIN_REGION_S)
+        }
+        props.onRegion([from, end])
+      }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', up)
       return
     }
 
@@ -334,12 +479,22 @@ export function WaveformDock(props: Props) {
   const regionLabel = (): string | null => {
     const region = shownRegion()
     if (!region) return null
-    const fmt = (seconds: number) => {
-      const m = Math.floor(seconds / 60)
-      const s = (seconds % 60).toFixed(2).padStart(5, '0')
-      return `${m}:${s}`
-    }
-    return `${fmt(region[0])} – ${fmt(region[1])} · ${(region[1] - region[0]).toFixed(2)} s`
+    return `${fmtTime(region[0])} – ${fmtTime(region[1])} · ${(region[1] - region[0]).toFixed(2)} s`
+  }
+
+  /**
+   * What the loop switch is currently looping, as a sentence fragment.
+   *
+   * The switch alone cannot say this: "on" looks the same whether it repeats a
+   * 400ms selection or the whole three-minute file, and those are very different
+   * things to have armed. So the state is spelled out in the tooltip and in the
+   * accessible name, and the switch's filled style carries the on/off half.
+   */
+  const loopState = (): string => {
+    if (!props.looping) return t('dock.loopOff')
+    const region = props.region
+    if (!region) return `${t('dock.loopOn')} · ${t('dock.loopWhole')}`
+    return `${t('dock.loopOn')} · ${fmtTime(region[0])} – ${fmtTime(region[1])}`
   }
 
   /** Slider units (`0..100`) to gain. */
@@ -427,16 +582,22 @@ export function WaveformDock(props: Props) {
           played, and it reads the selection the waveform below holds. An icon
           rather than a word because the dock's head is already crowded and a loop
           is a recognised transport glyph.
+
+          `ix-icon-toggle-button`, not `ix-icon-button`: iX 5's icon button hard-codes
+          `selected: false` in its render, so the `selected` prop this used to pass
+          reached nothing and the switch had no on state at all. The toggle variant
+          forwards `pressed` to the same `.selected` class, and adds `aria-pressed`.
         */}
-        <ix-icon-button
+        <ix-icon-toggle-button
           id="transport-loop"
+          classList={{ on: props.looping }}
           size="24"
           variant="tertiary"
           icon={ICON.loop}
-          selected={props.looping}
-          title={`${props.looping ? t('dock.loopOn') : t('dock.loopOff')} — ${t('dock.loopHint')}`}
-          aria-label={props.looping ? t('dock.loopOn') : t('dock.loopOff')}
-          onClick={props.onToggleLoop}
+          pressed={props.looping}
+          title={`${loopState()} — ${t('dock.loopHint')}`}
+          aria-label={loopState()}
+          on:pressedChange={() => props.onToggleLoop()}
         />
 
         <ix-icon-button
@@ -464,11 +625,28 @@ export function WaveformDock(props: Props) {
 
       <div
         class="wave-wrap"
-        classList={{ selecting: selecting(), 'has-region': shownRegion() !== null }}
+        classList={{
+          selecting: selecting(),
+          'has-region': shownRegion() !== null,
+          grab: grabBand(),
+          'edge-start': hoverEdge() === 'start' && !selecting(),
+          'edge-end': hoverEdge() === 'end' && !selecting(),
+          'edge-drag': edgeDrag()
+        }}
         style={{ height: `${height()}px` }}
       >
-        <canvas ref={waveCanvas} class="wave" onPointerDown={onPointerDown} />
+        <canvas
+          ref={waveCanvas}
+          class="wave"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerLeave={onPointerLeave}
+        />
         <canvas ref={headCanvas} class="wave-head" />
+
+        {/* The drag-out band, drawn on its own layer so it appears on hover without
+            repainting the peaks. It says where the handle is; nothing else does. */}
+        <div class="wave-grab" aria-hidden="true" />
 
         <Show when={loading()}>
           <div class="wave-overlay">{t('dock.decoding')}</div>
@@ -501,9 +679,10 @@ export function WaveformDock(props: Props) {
       {/*
         The mouse legend, under the waveform it describes.
 
-        Every gesture here is invisible until it is tried, and the two that matter
-        most — drag a region, Alt+drag to take it out — are not guessable from the
-        panel. Kept to one line: this is a control legend, not documentation.
+        Only the gestures that cannot be discovered by trying them belong here: a
+        drag that selects and a drag that hands the file to another window look
+        identical until the pointer is over the panel, and the band is what tells
+        them apart. Kept to one line — this is a control legend, not documentation.
       */}
       <div class="dock-hints">
         <span>
@@ -513,7 +692,10 @@ export function WaveformDock(props: Props) {
           <kbd>{t('hint.click')}</kbd> {t('hint.seek')}
         </span>
         <span>
-          <kbd>Alt</kbd>+{t('hint.drag')} {t('hint.dragOut')}
+          <kbd>{t('hint.dragTop')}</kbd> {t('hint.dragOut')}
+        </span>
+        <span>
+          <kbd>{t('hint.dragEdge')}</kbd> {t('hint.resizeRegion')}
         </span>
         <span>
           <kbd>Esc</kbd> {t('hint.clearRegion')}

@@ -143,6 +143,7 @@ export const en = {
   'dock.loopOn': 'Loop on',
   'dock.loopOff': 'Loop off',
   'dock.loopHint': 'plays the selection, or the whole sound when nothing is selected (L)',
+  'dock.loopWhole': 'whole sound',
   'dock.exporting': 'writing the selection…',
   'dock.clearRegion': 'Clear the selection',
 
@@ -151,7 +152,10 @@ export const en = {
   'hint.select': 'select a region',
   'hint.click': 'Click',
   'hint.seek': 'seek',
-  'hint.dragOut': 'drag the selection out',
+  'hint.dragTop': 'Drag top',
+  'hint.dragOut': 'drag the selection out, or the whole file',
+  'hint.dragEdge': 'Drag edge',
+  'hint.resizeRegion': 'move a region boundary',
   'hint.clearRegion': 'clear the selection',
   'hint.loop': 'toggle loop',
 

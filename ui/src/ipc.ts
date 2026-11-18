@@ -78,6 +78,11 @@ export interface LoopState {
 
 export interface Waveform {
   peaks: number[]
+  /**
+   * One envelope per channel, left first, for mono and stereo files. Empty for
+   * files with more than two channels: those draw `peaks` in a single lane.
+   */
+  lanes: number[][]
   durationS: number
   sampleRate: number
   channels: number

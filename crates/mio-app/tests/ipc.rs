@@ -305,6 +305,15 @@ fn waveform_is_a_thousand_peaks_of_the_whole_file_and_no_pcm() {
     assert_eq!(wave.peaks.len(), mio_engine::DEFAULT_BUCKETS);
     assert_eq!(wave.sample_rate, 44_100);
     assert_eq!(wave.channels, 2);
+    assert_eq!(
+        wave.lanes.len(),
+        2,
+        "a stereo file carries one envelope per channel for the stacked display"
+    );
+    assert!(wave
+        .lanes
+        .iter()
+        .all(|lane| lane.len() == mio_engine::DEFAULT_BUCKETS));
     assert!(
         (wave.duration_s - 2.0).abs() < 0.02,
         "duration {}",

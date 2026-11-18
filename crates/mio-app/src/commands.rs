@@ -113,6 +113,9 @@ pub struct SidebarDto {
 #[serde(rename_all = "camelCase")]
 pub struct WaveformDto {
     pub peaks: Vec<f32>,
+    /// One envelope per channel, left first, for mono and stereo files. Empty for
+    /// wider files, which draw `peaks` in a single lane.
+    pub lanes: Vec<Vec<f32>>,
     pub duration_s: f64,
     pub sample_rate: u32,
     pub channels: usize,

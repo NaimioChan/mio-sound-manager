@@ -72,6 +72,25 @@ declare module 'solid-js' {
         selected?: boolean
         loading?: boolean
       }>
+      'ix-icon-toggle-button': IxElement<{
+        variant?:
+          | 'primary'
+          | 'secondary'
+          | 'tertiary'
+          | 'subtle-primary'
+          | 'subtle-secondary'
+          | 'subtle-tertiary'
+        icon?: string
+        size?: '12' | '16' | '24'
+        ghost?: boolean
+        outline?: boolean
+        oval?: boolean
+        /** iX's name for the pressed state. It reaches the `.selected` class. */
+        pressed?: boolean
+        disabled?: boolean
+        loading?: boolean
+        classList?: Record<string, boolean>
+      }>
       'ix-icon': IxElement<{ name?: string; size?: '12' | '16' | '24' | '32' | '48' }>
       'ix-slider': IxElement<{
         min?: number

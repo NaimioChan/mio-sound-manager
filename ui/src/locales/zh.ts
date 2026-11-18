@@ -132,6 +132,7 @@ export const zh: Record<MessageKey, string> = {
   'dock.loopOn': '循环：开',
   'dock.loopOff': '循环：关',
   'dock.loopHint': '播放框选区域；没有框选时播放整个文件（L）',
+  'dock.loopWhole': '整个文件',
   'dock.exporting': '正在写出框选…',
   'dock.clearRegion': '清除框选',
 
@@ -140,7 +141,10 @@ export const zh: Record<MessageKey, string> = {
   'hint.select': '框选区域',
   'hint.click': '单击',
   'hint.seek': '定位',
-  'hint.dragOut': '把框选拖到外部',
+  'hint.dragTop': '顶部拖拽',
+  'hint.dragOut': '把框选拖到外部，没有框选则拖整个文件',
+  'hint.dragEdge': '拖动边界',
+  'hint.resizeRegion': '改变框选范围',
   'hint.clearRegion': '清除框选',
   'hint.loop': '开关循环',
 

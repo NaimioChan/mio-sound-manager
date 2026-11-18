@@ -976,6 +976,7 @@ impl AppState {
 
         Ok(WaveformDto {
             peaks: waveform.peaks,
+            lanes: waveform.lanes,
             duration_s: waveform.duration_s,
             sample_rate: waveform.sample_rate,
             channels: waveform.channels,

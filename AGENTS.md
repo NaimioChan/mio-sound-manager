@@ -2,7 +2,7 @@
 
 Mio Sound Manager: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
 
-Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9（BPM 排序、tag 多选、文件夹自绘菜单、去掉副标题）已通过。P10（波形框选、循环播放、选区拖出、静音记忆、拖拽修复）已通过，发版 v0.1.1。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。发版流程见 `tools/README.md` 的「发版」一节。
+Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9（BPM 排序、tag 多选、文件夹自绘菜单、去掉副标题）已通过。P10（波形框选、循环播放、选区拖出、静音记忆、拖拽修复）已通过，发版 v0.1.1。P11（波形按落点分区的手势、声道分道显示、库文件改名 mio-sm.db、循环开关可见）已通过，版本 0.1.2。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。发版流程见 `tools/README.md` 的「发版」一节。
 
 ## Stack (decided)
 

@@ -2,6 +2,33 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-18 21:40 · hermes · 0.1.2：波形手势重做、声道分道、库文件改名、循环开关可见
+
+- 改: `crates/mio-engine/src/waveform.rs`（`lanes` 逐声道包络 + `bucket_peaks_lane`、`peaks_for` 共用内层循环、4 个新测试）、`crates/mio-engine/src/lib.rs`（导出 `bucket_peaks_lane`）、`crates/mio-index/src/db.rs`（`DB_FILENAME` → `mio-sm.db`、`LEGACY_DB_FILENAME`、`adopt_legacy_file` 连 `-wal`/`-shm` 一起改名、1 个新测试）、`crates/mio-index/src/indexer.rs`（文档串）、`crates/mio-app/src/commands.rs` + `state.rs`（`WaveformDto.lanes`）、`crates/mio-app/tests/ipc.rs`（断言双声道两条道）、`ui/src/WaveformDock.tsx`（顶部三分之一拖出带、边界拖动、竖杠光标、分层绘制、`ix-icon-toggle-button` 循环开关、`loopState()` 说清循环的是什么）、`ui/src/App.tsx`（`dragRegionOut(atSeconds)` 按起点决定拖选区还是拖源文件）、`ui/src/ipc.ts`（`Waveform.lanes`）、`ui/src/ix-elements.d.ts`（`ix-icon-toggle-button` 类型）、`ui/src/styles.css`（`.wave-grab` 带、三种光标、`#transport-loop.on` 实心覆盖）、`ui/src/locales/{en,zh,ja}.ts`（4 个新键 + `dock.loopWhole`）、`tools/check-region.mjs`（新增光标/拖出带/边界拖动/循环外观/声道道数/拖出落成 WAV 共 16 项）、`tools/README.md`、`docs/{app,engine,index}.md`
+- 验证: `cargo test --release --workspace` 124 全通过（engine 19 + index 62 + app 18 + ipc 25）；`tsc --noEmit` 干净；`check-i18n` 三语 155 键齐平；**`check-region` 36/36**；`check-layout` / `check-interactions` / `check-volume` / `check-themes` / `check-tags` 全通过；真实库（271900 行）打开后文件已是 `mio-sm.db`，行数与分类都在；画布像素实测：立体声 top 44% / mid 11% / bottom 45%（两条道），单声道 top 3% / mid 94% / bottom 3%（一条道）
+- 遗留: ① 拖出带只能验证到「落成 WAV + 交给 start_drag」，真的拖进 DAW 仍未人工验收（与 P0 同一限制：原生 OLE 拖拽无法从 CDP 合成）；② 拖出带「起点在选区外拖源文件」这条分支没有独立断言——`__TAURI_INTERNALS__.invoke` 是不可写的，桩不进去，而一次会话只能按一次带（按下即进原生拖拽循环），这条分支与「无选区」共用同一个 `!inside` 代码路径；③ 多声道（>2）退回单条只有单测覆盖，库里没有 5.1 素材可实测；④ `exports/` 仍无清理策略，这次又多了几个 WAV
+- 下一步: 在真实 DAW 里拖一次选区；给 `exports/` 加启动清理或上限；找一份 5.1 文件确认退回单条道
+
+### 循环开关「指示不明确」是个真 bug，不是样式问题
+
+`ix-icon-button` 的 `selected` 属性在 iX 5 里是死的：`icon-button.js` 的 `render()` 里硬写 `selected: false`，传什么进去都到不了内层按钮的 class。所以循环开着和关着在像素上完全一致——`getComputedStyle(button).backgroundColor` 两次都是 `rgba(0,0,0,0)`。
+
+换成 `ix-icon-toggle-button`（它把 `pressed` 转成同一个 `.selected` 类，并补 `aria-pressed`）之后才「有按下态」；但 iX 的 `secondary` 按下态是 accent 的 16%，在深色 dock 上仍看不出，所以 `#transport-loop.on` 用 `--theme-btn-tertiary--*` 一组 token 覆盖成实心 accent + 对比色文字，并把 hover/active/pressed 全状态一起覆盖，避免按下瞬间闪回淡色。
+
+判据不能是属性：`pressed === true` 在修好之前也是 false、修好之后仍是 true，中间那段「属性对但像素没变」的窗口只有读 `getComputedStyle` 才看得见。`check-region.mjs` 现在断言开/关两次的 `backgroundColor` 不同，实测 `rgb(0,189,227)` vs `rgba(255,255,255,0)`。
+
+### 手势为什么要按落点分区，而不是继续用 Alt
+
+Alt+拖拽在实现上没问题，但它把「拖出去」变成一个必须持续按住的组合键：指针一离开窗口、焦点一换，修饰键状态就断了，而拖拽本身是一次连续动作。改成空间分区（顶部三分之一 = 拖出，边界 ±5px = 改边界，其余 = 框选/定位）之后，面板用高亮带和 grab 光标自己说明哪里是把手，修饰键小字提示也可以删掉。
+
+拖出去带什么由起点决定：起点在选区内 → 渲染选区成 WAV；起点在选区外或没有选区 → 直接拖源文件。这样「拖整个文件」不需要记第二个手势。
+
+### 库文件改名要连 journal 一起改
+
+`slip-sound.db` → `mio-sm.db` 如果只改主文件，`-wal` 还叫旧名，SQLite 打开时会认为上次是干净关闭的，最后一个已提交事务就丢了。`adopt_legacy_file` 三个后缀一起 `rename`，且只在新名不存在时动手（两个都在说明迁移中途被打断，猜哪个是当前版本比留一个陈旧文件更糟）。
+
+真实库验证：打开后 `D:\Users\Naimio\Documents\SoundLibrary\mio-sm.db` 287MB、271900 行、133 个 facet，没有重新索引。
+
 ## 2026-11-18 15:30 · hermes · 发 0.1.1 到 release，便携版改打 zip
 
 - 改: `Cargo.toml` + `crates/mio-app/tauri.conf.json`（版本 0.1.0 → 0.1.1）、`tools/package-portable.sh`（新增）、`tools/check-shipped.mjs`（新增）、`tools/kill-app.sh`（改为按两个进程名结束）、`tools/README.md`（新增「发版」一节）

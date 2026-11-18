@@ -472,17 +472,22 @@ export function App() {
   }
 
   /**
-   * Alt+drag on the waveform: hand the selection (or the whole clip) to the OS.
+   * Drag-out from the waveform's top band: hand material to the OS as a file drop.
+   *
+   * Which material depends on where the gesture started, and that is the whole
+   * rule: a press inside the selection carries the selection, a press anywhere else
+   * carries the file. Nothing is exported speculatively — a drag that starts
+   * outside the selection is the source file, untouched.
    *
    * A DAW takes a file, not a frame range, so a selection is rendered to a WAV in
-   * the app's cache first and that path is what the drag carries. The whole clip
-   * needs no render — the source file itself is already a file a DAW can read.
+   * the app's cache first and that path is what the drag carries.
    */
-  const dragRegionOut = async () => {
+  const dragRegionOut = async (atSeconds: number) => {
     const row = active()
     if (!row) return
     const selected = region()
-    if (!selected) {
+    const inside = selected !== null && atSeconds >= selected[0] && atSeconds <= selected[1]
+    if (!selected || !inside) {
       await startDrag([row.path])
       return
     }
@@ -1308,7 +1313,7 @@ export function App() {
               if (row) void play(row, seconds)
             }}
             onRegion={changeRegion}
-            onDragOut={() => void dragRegionOut()}
+            onDragOut={(atSeconds) => void dragRegionOut(atSeconds)}
             onDecoded={setWaveMs}
           />
         </main>

@@ -11,11 +11,13 @@ src/
   decode.rs   // 文件 → 设备格式 PCM，可在任意线程跑
   output.rs   // 双槽调度 + WASAPI 常驻流
   asio.rs     // ASIO 后端（仅 --features asio）
-  waveform.rs // 文件 → ~1000 个峰值（UI 画波形用，PCM 不出进程）
+  waveform.rs // 文件 → ~1000 个峰值，另带每条声道一份（UI 画波形用，PCM 不出进程）
   export.rs   // 选区 → WAV（框选拖出到 DAW 用，按源格式写）
 ```
 
 decode 与 output 的契约是 `Arc<DecodedAudio>`：不可变、已转成设备格式、可随意共享。解码侧怎么慢都行，渲染侧只认这一份字节。waveform 复用 decode 的解码结果，但从原始采样率的交错 f32 取峰值，不经过设备格式转换。
+
+**波形带两份数据：合并包络与逐声道包络。** `peaks` 取每个 bucket 内所有声道的最大值，`lanes` 是每条声道各自的包络（左先）。单声道给一条、双声道给两条，**超过两条声道时 `lanes` 为空**，前端退回画 `peaks` 一条：第三条道在 120px 的面板里只有 40px 高，画出来是噪声不是信息。两条包络都来自同一次解码，`bucket_peaks_lane` 与 `bucket_peaks` 共用一个内层循环，所以两条路不会各算一套边界。载荷因此从 4KB 变成约 12KB（立体声），仍与文件长度无关。
 
 ## decode
 

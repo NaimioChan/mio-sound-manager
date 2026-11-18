@@ -36,7 +36,7 @@ cargo build --release -p mio-cli
 node tools/check-interactions.mjs   # 列表/选择/排序/搜索/菜单/modal/AUTO PLAY/播放头/seek/设置
 node tools/check-themes.mjs         # 六套主题应用、重载保留、WCAG 对比度
 node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音记忆，重载
-node tools/check-region.mjs         # 行可拖、框选、循环跟随框选、区域导出 WAV、Esc 清除
+node tools/check-region.mjs         # 行可拖、框选、顶部拖出带、拖边界、循环外观、声道分道、导出 WAV
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/check-tags.mjs           # 分段控件边框、设置弹窗重开、BPM 列、tag 多选、无副标题
@@ -59,11 +59,12 @@ node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 `check-i18n.mjs` 不需要窗口：它直接读 `ui/src/locales/*.ts` 的源码，检查三语键集是否齐平、
 每个语种有没有丢掉或凭空多出 `{placeholder}`。`tsc` 管得到漏键，管不到占位符。
 
-**iX 组件的三个坑**，写脚本时都会踩到：
+**iX 组件的四个坑**，写脚本时都会踩到：
 
 1. 控件在 shadow root 里，`host.click()` 无效；要点 `host.shadowRoot.querySelector('button')`。
 2. 禁用态有 `pointer-events: none`，Playwright 会一直重试到超时；先断言状态再点内层。
 3. 上一轮留下的 modal 会挡住后面所有点击；脚本开头先 `page.reload()`。
+4. **`ix-icon-button` 的 `selected` 属性是死的**——iX 5 在 `render()` 里硬写 `selected: false`，传进去没有任何效果。要按下态就用 `ix-icon-toggle-button` 的 `pressed`。验证时不要断言属性，要读内层按钮的 `className` 里有没有 `selected` 以及 `getComputedStyle().backgroundColor`，否则「属性是 true 但像素没变」会被当成通过。
 
 另外 `ix-modal` 的 host 永远是 0×0（内层 `dialog` 是 `position: fixed`），量尺寸要量
 shadow root 里的 `dialog`；`aria-label` 会被 iX 从 host 搬到内层按钮，读标签也要读内层。

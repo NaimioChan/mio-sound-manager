@@ -2,12 +2,19 @@
 //!
 //! The renderer never sees PCM. It gets a fixed small number of floats, one per
 //! horizontal pixel bucket, and draws bars from them. That keeps the IPC payload
-//! at 4KB regardless of whether the file is three seconds or three minutes, and
-//! it means the webview does no audio work at all.
+//! bounded by the panel width rather than the file length — ~12KB for a stereo
+//! file, the same for three seconds and three minutes — and it means the webview
+//! does no audio work at all.
 //!
 //! Peaks are computed from the same decode the engine plays, so a waveform can
 //! never disagree with what comes out of the speakers — including the gapless
 //! trim, which would otherwise shift every peak by 23–25ms against the sound.
+//!
+//! Two shapes come back: [`Waveform::peaks`], the merged envelope across every
+//! channel, and [`Waveform::lanes`], one envelope per channel for the files the
+//! panel stacks. Mono files draw one lane, stereo files two; anything wider falls
+//! back to the merged envelope, because a third lane would be a few pixels tall
+//! and say nothing.
 
 use std::path::Path;
 
@@ -23,6 +30,9 @@ pub const DEFAULT_BUCKETS: usize = 1000;
 pub struct Waveform {
     /// Max absolute amplitude per bucket, in `0.0..=1.0`, across all channels.
     pub peaks: Vec<f32>,
+    /// One envelope per channel, left first. Empty when the file has more than
+    /// two channels: those draw the merged envelope in a single lane.
+    pub lanes: Vec<Vec<f32>>,
     /// Source duration in seconds, before any resampling.
     pub duration_s: f64,
     pub sample_rate: u32,
@@ -46,8 +56,19 @@ impl Waveform {
         } else {
             source.samples.len() / source.channels
         };
+        // Only 1 and 2 channels get their own lane. A third lane would be drawn in
+        // a strip too thin to read, and the merged envelope already answers the
+        // question the panel asks: where in the file is the sound.
+        let lanes = if (1..=2).contains(&source.channels) {
+            (0..source.channels)
+                .map(|lane| bucket_peaks_lane(&source.samples, source.channels, lane, buckets))
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
             peaks: bucket_peaks(&source.samples, source.channels, buckets),
+            lanes,
             duration_s: frames as f64 / source.sample_rate.max(1) as f64,
             sample_rate: source.sample_rate,
             channels: source.channels,
@@ -68,6 +89,29 @@ impl Waveform {
 /// Clamped to 1.0 because a clipped source can decode slightly above full scale
 /// and a bar taller than the panel is just a layout bug.
 pub fn bucket_peaks(samples: &[f32], channels: usize, buckets: usize) -> Vec<f32> {
+    peaks_for(samples, channels, buckets, None)
+}
+
+/// Max absolute amplitude of **one channel** per bucket, for the stacked display.
+///
+/// `lane` is a channel index. An out-of-range lane reads as silence rather than
+/// panicking: this runs while drawing, and a wrong index must not take the window
+/// down.
+pub fn bucket_peaks_lane(
+    samples: &[f32],
+    channels: usize,
+    lane: usize,
+    buckets: usize,
+) -> Vec<f32> {
+    if lane >= channels {
+        return vec![0.0f32; buckets];
+    }
+    peaks_for(samples, channels, buckets, Some(lane))
+}
+
+/// The one bucketing loop. `lane == None` means "take the loudest channel"; a lane
+/// index restricts every bucket to that channel alone.
+fn peaks_for(samples: &[f32], channels: usize, buckets: usize, lane: Option<usize>) -> Vec<f32> {
     let mut out = vec![0.0f32; buckets];
     if channels == 0 || buckets == 0 {
         return out;
@@ -83,10 +127,20 @@ pub fn bucket_peaks(samples: &[f32], channels: usize, buckets: usize) -> Vec<f32
         let mut peak = 0.0f32;
         for frame in start..end {
             let base = frame * channels;
-            for &sample in &samples[base..base + channels] {
-                let magnitude = sample.abs();
-                if magnitude > peak {
-                    peak = magnitude;
+            match lane {
+                Some(index) => {
+                    let magnitude = samples[base + index].abs();
+                    if magnitude > peak {
+                        peak = magnitude;
+                    }
+                }
+                None => {
+                    for &sample in &samples[base..base + channels] {
+                        let magnitude = sample.abs();
+                        if magnitude > peak {
+                            peak = magnitude;
+                        }
+                    }
                 }
             }
         }
@@ -167,5 +221,58 @@ mod tests {
     fn samples_above_full_scale_are_clamped() {
         let peaks = bucket_peaks(&[2.5, -3.0], 2, 4);
         assert!(peaks.iter().all(|&p| p <= 1.0));
+    }
+
+    #[test]
+    fn a_hard_panned_clip_draws_two_different_lanes() {
+        // Left at 0.2, right at 0.8. The merged envelope follows the loud one; the
+        // lanes must not.
+        let samples = [0.2, 0.8, 0.2, 0.8];
+        let left = bucket_peaks_lane(&samples, 2, 0, 1);
+        let right = bucket_peaks_lane(&samples, 2, 1, 1);
+        assert!((left[0] - 0.2).abs() < 1e-6, "left {}", left[0]);
+        assert!((right[0] - 0.8).abs() < 1e-6, "right {}", right[0]);
+        assert!((bucket_peaks(&samples, 2, 1)[0] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_out_of_range_lane_is_silence_not_a_panic() {
+        let samples = [0.5, 0.5];
+        assert!(bucket_peaks_lane(&samples, 2, 7, 4)
+            .iter()
+            .all(|&p| p == 0.0));
+    }
+
+    #[test]
+    fn lanes_cover_mono_and_stereo_only() {
+        let mono = SourceAudio {
+            samples: vec![0.5; 8],
+            channels: 1,
+            sample_rate: 44_100,
+            trimmed_leading_frames: 0,
+        };
+        assert_eq!(Waveform::from_source(&mono, 4).lanes.len(), 1);
+
+        let stereo = SourceAudio {
+            samples: vec![0.5; 16],
+            channels: 2,
+            sample_rate: 44_100,
+            trimmed_leading_frames: 0,
+        };
+        let wave = Waveform::from_source(&stereo, 4);
+        assert_eq!(wave.lanes.len(), 2);
+        assert!(wave.lanes.iter().all(|lane| lane.len() == 4));
+
+        // Six channels: the panel draws the merged envelope, so there are no lanes
+        // and the merged one still carries the signal.
+        let surround = SourceAudio {
+            samples: vec![0.5; 48],
+            channels: 6,
+            sample_rate: 48_000,
+            trimmed_leading_frames: 0,
+        };
+        let wide = Waveform::from_source(&surround, 4);
+        assert!(wide.lanes.is_empty());
+        assert!((wide.peaks[0] - 0.5).abs() < 1e-6, "{}", wide.peaks[0]);
     }
 }

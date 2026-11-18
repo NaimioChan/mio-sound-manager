@@ -28,9 +28,16 @@ use crate::folders::{FolderNode, build_folder_tree, folder_range, relative_folde
 /// 2 added `bpm`, read from the file name when the indexer sees the file.
 pub const SCHEMA_VERSION: i64 = 2;
 
-/// File name of the index inside a library folder. Matches the reference so the
-/// two applications can share (and be compared against) one database.
-pub const DB_FILENAME: &str = "slip-sound.db";
+/// File name of the index inside a library folder.
+///
+/// Was `slip-sound.db` while this project shared the reference implementation's
+/// database; the name is ours now. [`LEGACY_DB_FILENAME`] is the one an existing
+/// library still has, and [`IndexDb::open`] renames it in place rather than
+/// leaving a user with an empty index and a reindex.
+pub const DB_FILENAME: &str = "mio-sm.db";
+
+/// The name earlier builds wrote. Only read, never written.
+pub const LEGACY_DB_FILENAME: &str = "slip-sound.db";
 
 /// One indexed file, ready to be written.
 #[derive(Debug, Clone, PartialEq)]
@@ -183,9 +190,45 @@ impl IndexDb {
         if !root.is_dir() {
             return Err(IndexError::BadRoot(root.display().to_string()));
         }
+        Self::adopt_legacy_file(&root)?;
         let path = root.join(DB_FILENAME);
         let conn = Connection::open(&path)?;
         Self::prepare(conn, root)
+    }
+
+    /// Rename a database an earlier build left behind, so the file name change is
+    /// not a reindex.
+    ///
+    /// Only when the new name is absent: a library that has both (a pass was
+    /// interrupted mid-migration, or the user ran two builds) keeps the new one and
+    /// leaves the old file alone, because guessing which of the two is current is
+    /// worse than leaving one stale file on disk.
+    ///
+    /// The `-wal` and `-shm` siblings move with it. SQLite recovers a WAL by name,
+    /// so a renamed database whose journal still carries the old name would be
+    /// opened as if it had been closed cleanly — the last committed transaction
+    /// would vanish.
+    fn adopt_legacy_file(root: &Path) -> Result<()> {
+        let legacy = root.join(LEGACY_DB_FILENAME);
+        let current = root.join(DB_FILENAME);
+        if !legacy.is_file() || current.exists() {
+            return Ok(());
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let from = root.join(format!("{LEGACY_DB_FILENAME}{suffix}"));
+            if !from.exists() {
+                continue;
+            }
+            let to = root.join(format!("{DB_FILENAME}{suffix}"));
+            std::fs::rename(&from, &to)?;
+        }
+        log::info!(
+            "renamed {} to {} in {}",
+            LEGACY_DB_FILENAME,
+            DB_FILENAME,
+            root.display()
+        );
+        Ok(())
     }
     /// An index in a temp file next to nothing, for tests and for probing.
     pub fn open_in_memory(root: impl AsRef<Path>) -> Result<Self> {
@@ -1216,6 +1259,52 @@ mod tests {
         assert_eq!(hits.len(), 1);
 
         drop(db);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_old_database_file_is_renamed_not_reindexed() {
+        // A library indexed by an earlier build still has `slip-sound.db`. Opening
+        // it has to adopt that file: writing a fresh empty database next to it would
+        // throw away the user's index and cost a full pass.
+        let root = std::env::temp_dir().join(format!(
+            "mio-db-rename-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        {
+            let mut db = IndexDb::open(&root).unwrap();
+            db.upsert_batch(&[row("C:/lib/Kick.wav", "Drums")]).unwrap();
+            db.rebuild_fts().unwrap();
+        }
+        // Put it back to the old name, journals included, which is what a library
+        // from before the rename looks like.
+        for suffix in ["", "-wal", "-shm"] {
+            let from = root.join(format!("{DB_FILENAME}{suffix}"));
+            if from.exists() {
+                std::fs::rename(&from, root.join(format!("{LEGACY_DB_FILENAME}{suffix}"))).unwrap();
+            }
+        }
+        assert!(!root.join(DB_FILENAME).exists());
+
+        let db = IndexDb::open(&root).expect("open adopts the legacy file");
+        assert!(root.join(DB_FILENAME).is_file(), "the file was renamed");
+        assert!(
+            !root.join(LEGACY_DB_FILENAME).exists(),
+            "the old name is gone, not left behind"
+        );
+        assert_eq!(db.count().unwrap(), 1, "the rows survived the rename");
+        assert!(db.get_by_path("C:/lib/Kick.wav").unwrap().is_some());
+
+        // A second open must be a plain open: no legacy file left to adopt.
+        drop(db);
+        let again = IndexDb::open(&root).unwrap();
+        assert_eq!(again.count().unwrap(), 1);
+
+        drop(again);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -33,5 +33,5 @@ pub use output::{
     Backend, DeviceChoice, Engine, EngineConfig, LatencyReport, PlaybackMonitor, PlaybackSnapshot,
     PublishSource,
 };
-pub use waveform::{DEFAULT_BUCKETS, Waveform, bucket_peaks};
+pub use waveform::{DEFAULT_BUCKETS, Waveform, bucket_peaks, bucket_peaks_lane};
 

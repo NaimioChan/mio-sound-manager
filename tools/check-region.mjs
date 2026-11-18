@@ -6,7 +6,9 @@
 //    as `""`, so no DOM drag ever started and the handler never ran)
 // 2. auto-play: a fresh profile plays on the first row click
 // 3. mute memory: mute then un-mute returns to the level the slider was at
-// 4. region: drag selects, the loop follows it, Alt+drag exports a WAV
+// 4. region: drag selects, the top third is the drag handle, a boundary drags,
+//    the loop switch looks on when it is on, and export_region writes a WAV
+// 5. lanes: a stereo file carries two envelopes, a mono file one
 import { createRequire } from 'node:module'
 
 const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
@@ -107,11 +109,15 @@ await page.waitForTimeout(900)
 const wave = await page.locator('.wave').boundingBox()
 check(!!wave, 'the waveform canvas has a box', JSON.stringify(wave))
 
+// The body of the panel is the selection band; the top third is the drag-out
+// handle. Every gesture below aims at the middle third on purpose.
+const bodyY = wave ? wave.y + wave.height * 0.6 : 0
+const grabY = wave ? wave.y + wave.height * 0.15 : 0
+
 if (wave) {
-  const y = wave.y + wave.height / 2
-  await page.mouse.move(wave.x + wave.width * 0.2, y)
+  await page.mouse.move(wave.x + wave.width * 0.2, bodyY)
   await page.mouse.down()
-  await page.mouse.move(wave.x + wave.width * 0.55, y, { steps: 8 })
+  await page.mouse.move(wave.x + wave.width * 0.55, bodyY, { steps: 8 })
   await page.mouse.up()
   await page.waitForTimeout(300)
 }
@@ -121,11 +127,94 @@ const regionText = await page.evaluate(
 )
 check(!!regionText, 'dragging across the waveform selects a region', regionText)
 
+// --- the cursor and the band: no modifier key, the top third is the handle
+const cursorAt = (y) =>
+  page.evaluate((y) => {
+    const canvas = document.querySelector('.wave')
+    const box = canvas.getBoundingClientRect()
+    const ev = new PointerEvent('pointermove', {
+      clientX: box.left + box.width / 2,
+      clientY: y,
+      bubbles: true
+    })
+    canvas.dispatchEvent(ev)
+    return {
+      cursor: getComputedStyle(canvas).cursor,
+      band: document.querySelector('.wave-wrap')?.classList.contains('grab') ?? null
+    }
+  }, y)
+
+const overBody = await cursorAt(bodyY)
+check(overBody.cursor === 'text', 'the body of the panel shows the bar cursor', overBody.cursor)
+check(overBody.band === false, 'the body of the panel does not light the drag band', String(overBody.band))
+
+const overBand = await cursorAt(grabY)
+check(overBand.cursor === 'grab', 'the top third shows the grab cursor', overBand.cursor)
+check(overBand.band === true, 'the top third lights the drag band', String(overBand.band))
+
+// --- a region edge can be dragged, which moves that boundary
+//
+// The geometry is read from the DOM rather than recomputed: the readout carries
+// the selection in seconds and the time readout carries the duration, so the two
+// numbers the canvas draws from are the two numbers this uses.
+const geom = await page.evaluate(() => {
+  const box = document.querySelector('.wave').getBoundingClientRect()
+  const parse = (t) => {
+    const [m, s] = t.trim().split(':')
+    return Number(m) * 60 + Number(s)
+  }
+  const region = (document.querySelector('[data-region]')?.textContent ?? '')
+    .split('·')[0]
+    .split('–')
+  const time = (document.querySelector('.wave-time')?.textContent ?? '').split('/')
+  return {
+    left: box.left,
+    top: box.top,
+    width: box.width,
+    height: box.height,
+    from: parse(region[0] ?? '0:00'),
+    to: parse(region[1] ?? '0:00'),
+    duration: parse(time[1] ?? '0:00')
+  }
+})
+const endX = geom.left + (geom.to / Math.max(geom.duration, 0.001)) * geom.width
+await page.mouse.move(endX, geom.top + geom.height * 0.6)
+await page.waitForTimeout(150)
+const edgeHover = await page.evaluate(() => ({
+  cursor: getComputedStyle(document.querySelector('.wave')).cursor,
+  cls: document.querySelector('.wave-wrap').className
+}))
+check(
+  edgeHover.cursor === 'col-resize',
+  'a region boundary shows the resize cursor',
+  `${edgeHover.cursor} (${edgeHover.cls})`
+)
+
+await page.mouse.down()
+await page.mouse.move(endX - geom.width * 0.12, geom.top + geom.height * 0.6, { steps: 8 })
+await page.mouse.up()
+await page.waitForTimeout(300)
+const regionAfter = await page.evaluate(
+  () => document.querySelector('[data-region]')?.textContent?.trim() ?? null
+)
+check(
+  !!regionAfter && regionAfter !== regionText,
+  'dragging a boundary moves it',
+  `${regionText} → ${regionAfter}`
+)
+
 // --- the loop switch reads back from the engine, and follows the selection
 const loopBefore = await invoke('get_loop')
 check(loopBefore.enabled === false, 'the loop starts off', JSON.stringify(loopBefore))
 
-await page.evaluate(() => document.querySelector('#transport-loop').click())
+const loopPress = await page.evaluate(() => {
+  const host = document.querySelector('#transport-loop')
+  const inner = host?.shadowRoot?.querySelector('button')
+  if (!inner) return 'no inner button'
+  inner.click()
+  return 'ok'
+})
+check(loopPress === 'ok', 'the loop switch has a clickable inner button', loopPress)
 await page.waitForTimeout(400)
 const loopAfter = await invoke('get_loop')
 check(loopAfter.enabled === true, 'the loop switch turns looping on', JSON.stringify(loopAfter))
@@ -134,6 +223,56 @@ check(
   'the loop carries the selected region',
   JSON.stringify(loopAfter.region)
 )
+
+// The switch has to *look* on, not just be on. `ix-icon-button`'s `selected` prop
+// reached nothing in iX 5, which is why this is now an `ix-icon-toggle-button` and
+// the check reads the rendered background rather than the prop.
+const loopLook = await page.evaluate(() => {
+  const host = document.querySelector('#transport-loop')
+  const inner = host?.shadowRoot?.querySelector('button')
+  return {
+    pressed: host?.pressed,
+    ariaPressed: inner?.getAttribute('aria-pressed'),
+    bg: inner ? getComputedStyle(inner).backgroundColor : null,
+    cls: inner?.className ?? ''
+  }
+})
+check(loopLook.pressed === true, 'the switch reports pressed', String(loopLook.pressed))
+check(loopLook.ariaPressed === 'true', 'the switch says pressed to assistive tech', String(loopLook.ariaPressed))
+check(
+  loopLook.cls.includes('selected'),
+  'the inner button carries the selected class',
+  loopLook.cls
+)
+
+// ...and off again looks different, which is the whole complaint about the old one.
+const offLook = await page.evaluate(() => {
+  const host = document.querySelector('#transport-loop')
+  const inner = host?.shadowRoot?.querySelector('button')
+  inner?.click()
+  return null
+})
+await page.waitForTimeout(400)
+const loopOff = await page.evaluate(() => {
+  const inner = document.querySelector('#transport-loop')?.shadowRoot?.querySelector('button')
+  return {
+    pressed: document.querySelector('#transport-loop')?.pressed,
+    bg: inner ? getComputedStyle(inner).backgroundColor : null,
+    cls: inner?.className ?? ''
+  }
+})
+check(loopOff.pressed === false, 'the switch turns off', String(loopOff.pressed))
+check(
+  loopOff.bg !== loopLook.bg,
+  'on and off do not render the same background',
+  `${loopLook.bg} vs ${loopOff.bg}`
+)
+
+// Turn it back on for the Escape check below.
+await page.evaluate(() => {
+  document.querySelector('#transport-loop')?.shadowRoot?.querySelector('button')?.click()
+})
+await page.waitForTimeout(400)
 
 // Esc clears the selection and the loop falls back to the whole clip
 await page.keyboard.press('Escape')
@@ -149,7 +288,30 @@ check(
   JSON.stringify(loopWhole)
 )
 
-// --- Alt+drag exports a WAV: the command is what a drag would carry
+// --- the stereo/mono lanes: a stereo file must draw two, a mono file one
+const lanes = await page.evaluate(async () => {
+  const rows = [...document.querySelectorAll('.row')]
+  const out = []
+  for (const row of rows.slice(0, 40)) {
+    const path = row.getAttribute('data-path')
+    if (!path) continue
+    const w = await window.__TAURI_INTERNALS__.invoke('get_waveform', { path, buckets: 64 })
+    out.push({ channels: w.channels, lanes: w.lanes.length, path })
+    if (out.length >= 3) break
+  }
+  return out
+})
+check(lanes.length > 0, 'get_waveform answers for the rows on screen', JSON.stringify(lanes.length))
+for (const item of lanes) {
+  const want = item.channels === 1 ? 1 : item.channels === 2 ? 2 : 0
+  check(
+    item.lanes === want,
+    `a ${item.channels}-channel file carries ${want} lane(s)`,
+    `${item.lanes} lanes for ${item.path.split(/[\\/]/).pop()}`
+  )
+}
+
+// --- a selection exports to a WAV: the command is what a drag would carry
 const exported = await page.evaluate(async () => {
   const path = document.querySelector('.row')?.getAttribute('data-path')
   if (!path) return 'no row'
@@ -169,6 +331,107 @@ check(
   typeof exported === 'string' && /\.wav$/i.test(exported),
   'exporting a region writes a WAV and returns its path',
   exported
+)
+
+// --- 5b. which file the top band hands over
+//
+// `__TAURI_INTERNALS__.invoke` is a non-writable, non-configurable property, so the
+// plugin call cannot be stubbed. What *is* observable is the side effect that
+// precedes it: a press inside the selection renders the selection to a WAV in the
+// export cache first, and a press outside it does not. So the check counts files in
+// that directory.
+//
+// Only one band press per app session is possible: the press enters the native OLE
+// drag loop, which parks every later IPC call. The outside-the-selection case shares
+// the same `!inside` branch as "no selection at all" — it hands over the source file
+// with no export — so it is not worth a second session here.
+const exportsDir = 'C:/Users/Naimio/AppData/Local/com.naimio.miosound/exports'
+// Name → mtime, not a bare list: the file name is derived from the path and the
+// selection, so running this twice exports to the same name and a count would not
+// move. A rewritten file is a newer mtime.
+const listExports = async () => {
+  try {
+    const { readdirSync, statSync } = await import('node:fs')
+    const out = {}
+    for (const f of readdirSync(exportsDir)) {
+      if (!/\.wav$/i.test(f)) continue
+      out[f] = statSync(`${exportsDir}/${f}`).mtimeMs
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+// Put a selection back (the Escape check above cleared it), then press inside it.
+if (wave) {
+  await page.mouse.move(wave.x + wave.width * 0.3, bodyY)
+  await page.mouse.down()
+  await page.mouse.move(wave.x + wave.width * 0.6, bodyY, { steps: 8 })
+  await page.mouse.up()
+  await page.waitForTimeout(300)
+}
+const bounds = await page.evaluate(() => {
+  const parse = (t) => {
+    const [m, s] = t.trim().split(':')
+    return Number(m) * 60 + Number(s)
+  }
+  const region = (document.querySelector('[data-region]')?.textContent ?? '').split('·')[0].split('–')
+  const time = (document.querySelector('.wave-time')?.textContent ?? '').split('/')
+  return {
+    from: parse(region[0] ?? '0:00'),
+    to: parse(region[1] ?? '0:00'),
+    duration: parse(time[1] ?? '0:00')
+  }
+})
+check(
+  bounds.to > bounds.from,
+  'a selection exists to drag out of',
+  `${bounds.from}s – ${bounds.to}s of ${bounds.duration}s`
+)
+
+const insideFraction = (bounds.from + bounds.to) / 2 / Math.max(bounds.duration, 0.001)
+const startedAt = Date.now()
+const before = await listExports()
+if (wave) {
+  const x = wave.x + wave.width * insideFraction
+  const y = wave.y + wave.height * 0.15 // inside the top third
+  await page.evaluate(
+    ([x, y]) => {
+      const canvas = document.querySelector('.wave')
+      canvas.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          clientX: x,
+          clientY: y,
+          button: 0,
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    },
+    [x, y]
+  )
+}
+// The export is an async IPC round trip plus a WAV write; poll the directory rather
+// than the DOM, because the drag that follows parks the webview.
+let written = []
+for (let i = 0; i < 40; i++) {
+  await new Promise((r) => setTimeout(r, 100))
+  const after = await listExports()
+  written = Object.entries(after)
+    .filter(([name, mtime]) => mtime > startedAt && (before[name] ?? 0) !== mtime)
+    .map(([name]) => name)
+  if (written.length > 0) break
+}
+check(
+  written.length === 1,
+  'a press in the band inside the selection renders the selection to a WAV',
+  written[0] ?? `nothing written (${Object.keys(before).length} files already there)`
+)
+check(
+  written.length === 1 && /\s\d+(\.\d+)?-\d+(\.\d+)?s\.wav$/i.test(written[0]),
+  'the written file is a selection render, named by its source and range',
+  written[0] ?? 'none'
 )
 
 // --- 1b. the drag handler is reachable, checked last

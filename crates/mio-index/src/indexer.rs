@@ -108,7 +108,7 @@ impl IndexReport {
     }
 }
 
-/// Index every audio file under `root` into the database at `root/slip-sound.db`.
+/// Index every audio file under `root` into the database at `root/mio-sm.db`.
 ///
 /// `on_progress(done, total)` is called after each batch, so a UI can show a
 /// bar; it runs on the calling thread, never inside the parallel section.
