@@ -25,6 +25,7 @@ import cogwheel from './assets/icons/cogwheel.svg?raw'
 import database from './assets/icons/database.svg?raw'
 import error from './assets/icons/error.svg?raw'
 import folderOpen from './assets/icons/folder-open.svg?raw'
+import loop from './assets/icons/loop.svg?raw'
 import pause from './assets/icons/pause.svg?raw'
 import play from './assets/icons/play.svg?raw'
 import redo from './assets/icons/redo.svg?raw'
@@ -53,6 +54,7 @@ export const ICON = {
   folderOpen: asDataUrl(folderOpen),
   sound: asDataUrl(soundLoud),
   mute: asDataUrl(soundMute),
+  loop: asDataUrl(loop),
   undo: asDataUrl(undo),
   redo: asDataUrl(redo),
   database: asDataUrl(database),

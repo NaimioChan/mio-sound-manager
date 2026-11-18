@@ -25,3 +25,6 @@ default = []
 # ASIO half of the device picker. `tools/build-app.sh` sets the two environment
 # variables `asio-sys` needs; see `src/asio.rs`.
 asio = ["dep:asio-sys"]
+
+[dev-dependencies]
+tempfile = "3"

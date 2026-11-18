@@ -312,6 +312,12 @@ export function SoundTable(props: Props) {
    * Drag out to a DAW. `preventDefault` on dragstart is deliberate: the Tauri
    * drag plugin starts a native OLE drag itself, and letting WebView2 also start
    * a DOM drag would hand the OS two competing drag sources.
+   *
+   * `draggable` must be bound as a boolean. A bare `draggable` attribute renders
+   * as `draggable=""`, which is not a valid value for this enumerated attribute:
+   * the element falls back to `auto`, `row.draggable` reads `false`, and the
+   * browser never starts a drag at all — so this handler never ran and dragging
+   * a row into a DAW silently did nothing.
    */
   const onRowDragStart = (row: SoundRow, event: DragEvent) => {
     event.preventDefault()
@@ -402,7 +408,7 @@ export function SoundTable(props: Props) {
                     const targets = sorted().filter((r) => selectedSet().has(r.path))
                     props.onRowMenu({ x: e.clientX, y: e.clientY, targets })
                   }}
-                  draggable
+                  draggable={true}
                   onDragStart={(e) => onRowDragStart(row, e)}
                 >
                   {/*

@@ -31,7 +31,7 @@ pub use commands::{
 pub use error::AppError;
 pub use history::EditKind;
 pub use library::Library;
-pub use state::AppState;
+pub use state::{AppState, LoopState};
 
 use tauri::Manager;
 
@@ -70,6 +70,9 @@ pub fn run() {
             commands::resume,
             commands::set_gain,
             commands::get_gain,
+            commands::set_loop,
+            commands::get_loop,
+            commands::export_region,
             commands::get_playback_position,
             commands::get_waveform,
             commands::add_library,

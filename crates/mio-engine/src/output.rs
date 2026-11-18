@@ -95,6 +95,10 @@ pub struct PlaybackSnapshot {
     /// resuming costs nothing and the position does not jump back to zero.
     pub paused: bool,
     pub finished: bool,
+    /// Whether the render thread is looping the clip.
+    pub looping: bool,
+    /// The looped region in seconds, or `None` when it is the whole clip.
+    pub loop_region_s: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +150,18 @@ pub(crate) struct Shared {
     /// freezes exactly where the listener heard it stop.
     paused: AtomicBool,
     finished: AtomicBool,
+    /// Loop the clip instead of stopping at its end.
+    ///
+    /// Three atomics rather than one `Option<(u64, u64)>` because the callback
+    /// cannot take a lock and an `Option` has no atomic form. The order is
+    /// start, end, then `looping` last: the callback only reads the range once
+    /// `looping` is already true, and a half-written range is clamped to the clip
+    /// anyway, so the worst case is one callback of the old region.
+    looping: AtomicBool,
+    /// First frame of the looped region. `end == 0` means the whole clip.
+    loop_start: AtomicU64,
+    /// One past the last frame of the looped region.
+    loop_end: AtomicU64,
     running: AtomicBool,
     measurements: ArrayQueue<LatencyReport>,
     /// Callbacks where the endpoint had run dry, i.e. audible gaps. Any non-zero
@@ -248,19 +264,71 @@ impl Mixer {
                 // slot so resuming is one flag flip, and the position the
                 // listener hears is the position the playhead shows.
             } else if clip_frame_bytes == frame_bytes && pos < clip.frames {
-                let n = (clip.frames - pos).min(want_frames);
-                let start = pos * clip_frame_bytes;
-                let dest = &mut self.scratch[..n * clip_frame_bytes];
-                dest.copy_from_slice(&clip.bytes[start..start + n * clip_frame_bytes]);
+                let looping = shared.looping.load(Ordering::Acquire);
+                // Clamp the region to the clip. An empty or inverted region — a
+                // selection left over from a longer file — falls back to the whole
+                // clip rather than playing silence nobody asked for.
+                let (loop_from, loop_to) = if looping {
+                    let frames = clip.frames;
+                    let from = (shared.loop_start.load(Ordering::Acquire) as usize).min(frames);
+                    let raw_to = shared.loop_end.load(Ordering::Acquire) as usize;
+                    let to = if raw_to == 0 { frames } else { raw_to.min(frames) };
+                    if to > from { (from, to) } else { (0, frames) }
+                } else {
+                    (0, clip.frames)
+                };
+
+                // A playhead outside the region means the selection moved while
+                // this clip was playing: enter at the region's start instead of
+                // playing the part the user just deselected.
+                let pos = if looping && (pos < loop_from || pos >= loop_to) {
+                    loop_from
+                } else {
+                    pos
+                };
+
+                // Copied in segments because a callback can straddle the loop
+                // point. The loop is bounded by `want_frames` and every iteration
+                // copies at least one frame (the region was proven non-empty
+                // above), so this cannot spin.
+                let mut written = 0usize;
+                let mut cursor = pos;
+                while written < want_frames {
+                    let segment_end = if looping { loop_to } else { clip.frames };
+                    let n = (segment_end - cursor).min(want_frames - written);
+                    if n == 0 {
+                        break;
+                    }
+                    let src = cursor * clip_frame_bytes;
+                    let dst = written * clip_frame_bytes;
+                    self.scratch[dst..dst + n * clip_frame_bytes]
+                        .copy_from_slice(&clip.bytes[src..src + n * clip_frame_bytes]);
+                    written += n;
+                    cursor += n;
+                    if cursor >= segment_end {
+                        if looping {
+                            cursor = loop_from;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
                 // Unity gain is the common case and skipping the multiply keeps
                 // the callback at one memcpy. Anything else scales in place, in
                 // the device's own sample format, which is why this has to know
-                // the format rather than working on `f32`.
-                if gain != 1.0 {
-                    apply_gain(dest, clip.format.sample, gain);
+                // the format rather than working on `f32`. Applied once over the
+                // whole copied region, so a looped callback scales the same way
+                // an unlooped one does.
+                if gain != 1.0 && written > 0 {
+                    apply_gain(
+                        &mut self.scratch[..written * clip_frame_bytes],
+                        clip.format.sample,
+                        gain,
+                    );
                 }
-                filled = n * clip_frame_bytes;
-                shared.pos_frames.store((pos + n) as u64, Ordering::Release);
+                filled = written * clip_frame_bytes;
+                shared.pos_frames.store(cursor as u64, Ordering::Release);
 
                 // The first callback able to write this publish is the moment the
                 // click becomes audio, so that is what gets measured.
@@ -280,7 +348,9 @@ impl Mixer {
                     });
                 }
 
-                if pos + n >= clip.frames {
+                // A looped clip is never finished: reaching the loop point is the
+                // point of the feature, not the end of playback.
+                if !looping && cursor >= clip.frames {
                     shared.finished.store(true, Ordering::Release);
                 }
             }
@@ -368,6 +438,14 @@ impl PlaybackMonitor {
             playing: frames > 0 && !finished && !paused,
             paused: frames > 0 && !finished && paused,
             finished,
+            looping: self.shared.looping.load(Ordering::Acquire),
+            loop_region_s: {
+                let start = self.shared.loop_start.load(Ordering::Acquire) as f64
+                    / self.format.sample_rate as f64;
+                let end = self.shared.loop_end.load(Ordering::Acquire) as f64
+                    / self.format.sample_rate as f64;
+                (end > start).then_some((start, end))
+            },
         }
     }
 
@@ -457,6 +535,9 @@ impl Engine {
             active_frames: AtomicU64::new(0),
             paused: AtomicBool::new(false),
             finished: AtomicBool::new(false),
+            looping: AtomicBool::new(false),
+            loop_start: AtomicU64::new(0),
+            loop_end: AtomicU64::new(0),
             running: AtomicBool::new(true),
             measurements: ArrayQueue::new(4096),
             underruns: AtomicU64::new(0),
@@ -567,6 +648,11 @@ impl Engine {
         // A new publish always starts audible: leaving `paused` set would play a
         // silent clip, which is the one state that looks like a broken engine.
         self.shared.paused.store(false, Ordering::Release);
+        // A loop region belongs to the clip it was drawn on, so a different clip
+        // loops whole. The flag survives — a user who turned looping on to audition
+        // a one-shot expects the next row to loop too.
+        self.shared.loop_start.store(0, Ordering::Release);
+        self.shared.loop_end.store(0, Ordering::Release);
 
         // Timestamp and sequence become visible before the flip, so the render
         // thread can trust both the moment it sees the new active index.
@@ -632,6 +718,55 @@ impl Engine {
         self.shared
             .gain_bits
             .store(clamped.to_bits(), Ordering::Release);
+    }
+
+    /// Turn looping on or off, optionally narrowing it to `[start_s, end_s)`.
+    ///
+    /// The range is converted to frames here, once, so the render callback never
+    /// multiplies by a sample rate. `None` (or an empty range) means the whole
+    /// clip, which is what a loop with nothing selected should do.
+    ///
+    /// Takes effect on the next callback without re-publishing: a loop that had
+    /// to reload the clip would click every time the selection changed.
+    pub fn set_loop(&self, enabled: bool, region: Option<(f64, f64)>) {
+        let rate = self.format.sample_rate as f64;
+        let (start, end) = match region {
+            Some((from, to)) if to > from => (
+                (from.max(0.0) * rate) as u64,
+                (to.max(0.0) * rate).round() as u64,
+            ),
+            _ => (0, 0),
+        };
+        // Range first, flag last: the callback reads the flag before the range,
+        // so writing it last is what makes a half-written range unobservable.
+        self.shared.loop_start.store(start, Ordering::Release);
+        self.shared.loop_end.store(end, Ordering::Release);
+        self.shared.looping.store(enabled, Ordering::Release);
+
+        // Turning the loop on after a clip ran to its end has to restart it: the
+        // slot is still populated but `finished` parks the callback, so without
+        // this the switch would appear to do nothing on the sound the user just
+        // listened to. `fill` then moves a playhead outside the region to the
+        // region's start, which is why nothing is seeked here.
+        if enabled && self.shared.active_frames.load(Ordering::Acquire) > 0 {
+            self.shared.finished.store(false, Ordering::Release);
+        }
+    }
+
+    /// Whether the render thread is looping, and the region in seconds.
+    ///
+    /// Read back by the UI so the switch mirrors the engine rather than its own
+    /// state. `None` means the whole clip.
+    pub fn loop_state(&self) -> (bool, Option<(f64, f64)>) {
+        let looping = self.shared.looping.load(Ordering::Acquire);
+        let rate = self.format.sample_rate as f64;
+        let start = self.shared.loop_start.load(Ordering::Acquire) as f64 / rate;
+        let end = self.shared.loop_end.load(Ordering::Acquire) as f64 / rate;
+        if end > start {
+            (looping, Some((start, end)))
+        } else {
+            (looping, None)
+        }
     }
 
     /// The current output gain, as last set.

@@ -1,6 +1,7 @@
 import { Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import {
   api,
+  startDrag,
   type AppStatus,
   type EditKind,
   type Facet,
@@ -11,7 +12,7 @@ import {
   type SoundRow
 } from './ipc'
 import { SoundTable, DEFAULT_DIR, SORT_WIRE, type RowMenuRequest, type SortKey } from './SoundTable'
-import { WaveformDock } from './WaveformDock'
+import { WaveformDock, type Region } from './WaveformDock'
 import { Sidebar } from './Sidebar'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
@@ -76,6 +77,32 @@ const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 520
 /** Output gain, remembered per machine. */
 const GAIN_KEY = 'mio:gain'
+/**
+ * The level to return to when un-muting.
+ *
+ * Muting is not "set the volume to zero" — it is a temporary silence that must be
+ * reversible to the level the user chose. Remembering it under its own key (rather
+ * than inside `GAIN_KEY`) is what keeps a mute from destroying the stored level:
+ * the slider's value and the mute state are two facts, and a single key can only
+ * hold one.
+ */
+const UNMUTE_KEY = 'mio:unmute-gain'
+
+/**
+ * A stored gain, or `fallback` when nothing usable is stored.
+ *
+ * `Number(x) || fallback` is wrong here and was a real bug: a stored `0` — the
+ * muted level — is falsy, so a reload while muted came back at 100% and the next
+ * un-mute wrote that over the remembered level. Only a missing or non-numeric
+ * value may fall back.
+ */
+function readStoredGain(key: string, fallback: number): number {
+  const raw = localStorage.getItem(key)
+  if (raw === null) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
 
 export function App() {
   const [settings, setSettings] = createSignal<Settings>(loadSettings())
@@ -183,9 +210,22 @@ export function App() {
    * tracks the pointer without waiting for a round trip; `setGain` is fired on
    * every move and the engine clamps to what it actually applied.
    */
-  const [gain, setGain] = createSignal(
-    Math.min(1, Math.max(0, Number(localStorage.getItem(GAIN_KEY)) || 1))
-  )
+  const [gain, setGain] = createSignal(readStoredGain(GAIN_KEY, 1))
+  /**
+   * The level un-muting returns to.
+   *
+   * Starts at unity, and is only ever written while muted — so it always holds a
+   * level the user actually chose, never the zero that a mute wrote. Stored, so a
+   * reload while muted still un-mutes to the right level.
+   */
+  const [unmuteGain, setUnmuteGain] = createSignal(readStoredGain(UNMUTE_KEY, 1))
+
+  /** The waveform selection, in seconds. Cleared whenever a different sound loads. */
+  const [region, setRegion] = createSignal<Region | null>(null)
+  /** Whether the engine loops. Mirrors `get_loop`, not a local guess. */
+  const [looping, setLooping] = createSignal(false)
+  /** True while a waveform selection is being rendered to a file for a drag. */
+  const [exportingRegion, setExportingRegion] = createSignal(false)
 
   const playhead = usePlayhead()
 
@@ -324,6 +364,10 @@ export function App() {
   const play = async (row: SoundRow, startAt?: number) => {
     setActive(row)
     setWaveMs(null)
+    // A selection belongs to the sound it was drawn on. Keeping it across a
+    // different sound would either export the wrong region or loop a part of a
+    // file the user never looked at.
+    setRegion(null)
     try {
       await api.play(row.path, startAt)
     } catch (e) {
@@ -357,15 +401,101 @@ export function App() {
    * with no latency; the engine call is fire-and-forget because a dropped one
    * costs a level change the user will make again, not a broken state. The value
    * is persisted so the next launch starts where this one ended.
+   *
+   * Moving the slider off zero also records the level un-mute returns to. Doing it
+   * here rather than in `toggleMute` means the remembered level is always one the
+   * user dialled in, even if they muted, moved the slider and un-muted in some
+   * other order.
    */
   const changeGain = (next: number) => {
     const clamped = Math.min(1, Math.max(0, next))
     setGain(clamped)
     localStorage.setItem(GAIN_KEY, String(clamped))
+    if (clamped > 0) {
+      setUnmuteGain(clamped)
+      localStorage.setItem(UNMUTE_KEY, String(clamped))
+    }
     api.setGain(clamped).catch(() => {
       // The engine clamps to its own range; a rejection here means no device,
       // and the level is remembered for whenever one opens.
     })
+  }
+
+  /**
+   * Mute, or restore the level the user was listening at.
+   *
+   * A mute is a temporary silence, not a volume change: un-muting has to return to
+   * the chosen level, and the engine only holds one number. So the level to come
+   * back to lives in its own signal, written whenever the slider is moved off zero.
+   */
+  const toggleMute = () => {
+    if (gain() > 0) {
+      // Only remember a real level. Muting an already-muted output would store the
+      // zero and un-mute to silence.
+      setUnmuteGain(gain())
+      localStorage.setItem(UNMUTE_KEY, String(gain()))
+      changeGain(0)
+      return
+    }
+    const restored = unmuteGain() > 0 ? unmuteGain() : 1
+    changeGain(restored)
+  }
+
+  /**
+   * Loop the loaded clip.
+   *
+   * The engine owns the state and this mirrors what it returns, so a rejected set
+   * (no device) shows as the switch staying where it was rather than lying about
+   * it. The region is the waveform's selection; with nothing selected the whole
+   * clip loops.
+   */
+  const toggleLoop = async () => {
+    const next = !looping()
+    try {
+      const state = await api.setLoop(next, next ? region() : null)
+      setLooping(state.enabled)
+    } catch (e) {
+      setNotice(String(e))
+    }
+  }
+
+  /**
+   * Commit a selection, and re-arm the loop if it is on.
+   *
+   * A running loop has to follow the region it is looping: changing the selection
+   * without telling the engine would keep it playing the old part, which reads as
+   * the selection being ignored.
+   */
+  const changeRegion = (next: Region | null) => {
+    setRegion(next)
+    if (looping()) void api.setLoop(true, next).catch(() => setLooping(false))
+  }
+
+  /**
+   * Alt+drag on the waveform: hand the selection (or the whole clip) to the OS.
+   *
+   * A DAW takes a file, not a frame range, so a selection is rendered to a WAV in
+   * the app's cache first and that path is what the drag carries. The whole clip
+   * needs no render — the source file itself is already a file a DAW can read.
+   */
+  const dragRegionOut = async () => {
+    const row = active()
+    if (!row) return
+    const selected = region()
+    if (!selected) {
+      await startDrag([row.path])
+      return
+    }
+    setExportingRegion(true)
+    try {
+      const exported = await api.exportRegion(row.path, selected[0], selected[1])
+      await startDrag([exported])
+      setNotice(t('notice.regionExported', { name: exported.split(/[\\/]/).pop() ?? '' }))
+    } catch (e) {
+      setNotice(String(e))
+    } finally {
+      setExportingRegion(false)
+    }
   }
 
   /**
@@ -448,11 +578,6 @@ export function App() {
     const next = { ...settings(), ...patch }
     setSettings(next)
     saveSettings(next)
-    if (patch.autoPlay !== undefined) {
-      // The dock's AUTO PLAY switch and this setting are the same policy, so they
-      // are persisted under the same key rather than two that can disagree.
-      localStorage.setItem('mio:autoplay', String(next.autoPlay))
-    }
     if (patch.pageSize !== undefined || patch.infiniteScroll !== undefined) {
       void runSearch()
     }
@@ -890,7 +1015,21 @@ export function App() {
       return
     }
 
+    // L toggles the loop. No modifier: it is a transport key, the same class as
+    // Space, and a sample auditioning session presses it constantly.
+    if (event.key.toLowerCase() === 'l' && !inField && !mod && !event.altKey) {
+      event.preventDefault()
+      void toggleLoop()
+      return
+    }
+
     if (event.key === 'Escape') {
+      // A selection is the innermost state on screen, so Escape drops it before it
+      // starts closing menus and dialogs. Nothing else in the dock is transient.
+      if (region()) {
+        changeRegion(null)
+        return
+      }
       if (folderMenu()) setFolderMenu(null)
       else if (libMenu()) setLibMenu(null)
       else if (menu()) setMenu(null)
@@ -928,6 +1067,12 @@ export function App() {
     // Push the remembered level into the engine: the slider is renderer state,
     // and the engine starts at unity.
     void api.setGain(gain()).catch(() => {})
+    // Mirror the engine's loop state at startup: the switch is engine state, so
+    // the renderer has to read it rather than assume it starts off.
+    void api
+      .loop()
+      .then((state) => setLooping(state.enabled))
+      .catch(() => {})
     void refresh()
     window.addEventListener('keydown', onKeyDown)
     onCleanup(() => window.removeEventListener('keydown', onKeyDown))
@@ -1149,14 +1294,21 @@ export function App() {
             selectionCount={selection().length}
             autoPlay={settings().autoPlay}
             gain={gain()}
+            region={region()}
+            looping={looping()}
+            exporting={exportingRegion()}
             onStop={() => void stop()}
             onToggle={() => void togglePlayback()}
             onToggleAutoPlay={toggleAutoPlay}
+            onToggleMute={toggleMute}
+            onToggleLoop={() => void toggleLoop()}
             onGain={changeGain}
             onSeek={(seconds) => {
               const row = active()
               if (row) void play(row, seconds)
             }}
+            onRegion={changeRegion}
+            onDragOut={() => void dragRegionOut()}
             onDecoded={setWaveMs}
           />
         </main>

@@ -59,6 +59,26 @@ struct DecodeJob {
     reply: Sender<AppResult<Arc<DecodedAudio>>>,
 }
 
+/// The loop switch, as both the engine and the remembered copy hold it.
+///
+/// `region` is in seconds and `None` means the whole clip. Kept next to the gain
+/// for the same reason: a device switch rebuilds the engine, and a setting that
+/// only lived inside the engine would be silently reset by it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct LoopSetting {
+    enabled: bool,
+    region: Option<(f64, f64)>,
+}
+
+/// The loop state the renderer reads and writes.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopState {
+    pub enabled: bool,
+    /// `[start, end)` in seconds, or `None` for the whole clip.
+    pub region: Option<(f64, f64)>,
+}
+
 /// The live audio output, plus what to do when there is none.
 ///
 /// Everything behind one mutex because switching devices has to be atomic: a
@@ -221,6 +241,10 @@ pub struct AppState {
     /// UI never has to wait on the audio mutex.
     gain_bits: AtomicU32,
 
+    /// The loop switch and region, mirrored outside the audio lock for the same
+    /// reason as the gain: a device switch must not lose them.
+    loop_state: Mutex<LoopSetting>,
+
     /// Undo/redo for library edits. `None` in tests that do not want history.
     history: Mutex<History>,
 
@@ -294,6 +318,7 @@ impl AppState {
             dropped_publishes: AtomicU64::new(0),
             play_epoch: AtomicU64::new(0),
             gain_bits: AtomicU32::new(1.0f32.to_bits()),
+            loop_state: Mutex::new(LoopSetting::default()),
             history: Mutex::new(crate::history::History::new()),
             session: None,
             audio_config: None,
@@ -397,6 +422,14 @@ impl AppState {
         let gain = f32::from_bits(self.gain_bits.load(Ordering::Acquire));
         if let Some(engine) = next.engine.as_ref() {
             engine.set_gain(gain);
+        }
+        // The loop switch is remembered for the same reason, and it is restored
+        // before the engine can be handed a clip: `set_loop` also clears
+        // `finished`, which on a fresh engine is already false.
+        if let Ok(setting) = self.loop_state.lock() {
+            if let Some(engine) = next.engine.as_ref() {
+                engine.set_loop(setting.enabled, setting.region);
+            }
         }
         let error = next.error.clone();
         if let Ok(mut slot) = self.audio.lock() {
@@ -607,6 +640,114 @@ impl AppState {
     /// device is closed, so the slider never jumps to unity on a device error.
     pub fn gain(&self) -> f32 {
         f32::from_bits(self.gain_bits.load(Ordering::Acquire))
+    }
+
+    /// Loop the loaded clip, optionally within `[start_s, end_s)`.
+    ///
+    /// `region` is `None` for the whole clip. The engine holds the state, so this
+    /// is one atomic write on the live engine plus a remembered copy for when the
+    /// device is reopened — the same shape as the gain, and for the same reason:
+    /// a switch flipped while no device is open must not be forgotten.
+    pub fn set_loop(&self, enabled: bool, region: Option<(f64, f64)>) -> AppResult<LoopState> {
+        let mut remembered = self
+            .loop_state
+            .lock()
+            .map_err(|_| AppError::internal("loop lock poisoned"))?;
+        *remembered = LoopSetting {
+            enabled,
+            region: region.filter(|(from, to)| to > from),
+        };
+        if let Ok(audio) = self.audio.lock() {
+            if let Some(engine) = audio.engine.as_ref() {
+                engine.set_loop(enabled, region);
+            }
+        }
+        Ok(LoopState {
+            enabled,
+            region: remembered.region,
+        })
+    }
+
+    /// The loop switch and its region, as the engine has them.
+    pub fn loop_state(&self) -> LoopState {
+        if let Ok(audio) = self.audio.lock() {
+            if let Some(engine) = audio.engine.as_ref() {
+                let (enabled, region) = engine.loop_state();
+                return LoopState { enabled, region };
+            }
+        }
+        match self.loop_state.lock() {
+            Ok(setting) => LoopState {
+                enabled: setting.enabled,
+                region: setting.region,
+            },
+            Err(_) => LoopState {
+                enabled: false,
+                region: None,
+            },
+        }
+    }
+
+    /// Render `[start_s, end_s)` of `path` to a WAV in `dir` and return its path.
+    ///
+    /// This is what makes "drag just the selection into a DAW" possible: a DAW
+    /// accepts a file, not a frame range, so the region is written out first and
+    /// that path is what the drag carries. The file is named after the source plus
+    /// the region, so a DAW's clip name says which part of which sample it is.
+    ///
+    /// Written at the source's own rate and channel count — an export is a copy of
+    /// the material, not a monitoring path, and resampling it to the interface's
+    /// current format would quietly change what the user drags into their project.
+    pub async fn export_region(
+        &self,
+        path: &str,
+        start_s: f64,
+        end_s: f64,
+        dir: &std::path::Path,
+    ) -> AppResult<String> {
+        if !mio_index::is_audio_path(std::path::Path::new(path)) {
+            return Err(AppError::NotAudio(path.to_string()));
+        }
+        if end_s <= start_s {
+            return Err(AppError::internal("the selected region is empty"));
+        }
+
+        let decoder = self.decoder();
+        let source_path = path.to_string();
+        let out_dir = dir.to_path_buf();
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "region".into());
+        // Seconds with two decimals, sanitised: a Windows path cannot carry `:`,
+        // and the numbers are there so two selections of one file do not collide.
+        let name = format!(
+            "{} {:.2}-{:.2}s.wav",
+            sanitize_file_name(&stem),
+            start_s.max(0.0),
+            end_s
+        );
+        let out_path = out_dir.join(name);
+
+        let written = tauri::async_runtime::spawn_blocking(move || {
+            std::fs::create_dir_all(&out_dir).map_err(|e| {
+                AppError::internal(format!("could not create the export folder: {e}"))
+            })?;
+            let source = decoder.decode_source(&source_path)?;
+            mio_engine::export::write_wav_region(&out_path, &source, start_s, end_s)
+                .map(|frames| (out_path, frames))
+                .map_err(AppError::from)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("export task failed: {e}")))??;
+
+        let (path, frames) = written;
+        if frames == 0 {
+            return Err(AppError::internal(
+                "the selected region is outside the file",
+            ));
+        }
+        Ok(path.display().to_string())
     }
 
     /// Invalidate any decode in flight. Called when playback is stopped or when a
@@ -1157,4 +1298,24 @@ fn spawn_decoder(jobs: Arc<LatestSlot>) -> JoinHandle<()> {
             }
         })
         .expect("spawn decode worker")
+}
+
+/// Strip the characters Windows refuses in a file name.
+///
+/// An exported region is named after the source file, and sample libraries carry
+/// names like `kick: tight/01` that are legal on disk but not in a component of a
+/// path. Replacing rather than dropping keeps the name readable.
+fn sanitize_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+    // Windows also refuses a trailing dot or space. Trimmed at both ends: a sample
+    // library does contain names that begin with a space, and an exported file
+    // called " kick.wav" is a nuisance in a DAW's clip list.
+    cleaned.trim_matches(['.', ' ']).to_string()
 }

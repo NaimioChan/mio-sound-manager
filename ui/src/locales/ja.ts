@@ -76,6 +76,7 @@ export const ja: Record<MessageKey, string> = {
   'notice.undid': '{label}を元に戻しました',
   'notice.redid': '{label}をやり直しました',
   'notice.selected': '{count} 件選択',
+  'notice.regionExported': '{name} を書き出しました — 必要な場所へドロップしてください',
 
   'edit.favorite': 'お気に入りに追加',
   'edit.unfavorite': 'お気に入りから削除',
@@ -132,6 +133,20 @@ export const ja: Record<MessageKey, string> = {
   'dock.stop': '停止して再生ヘッドを戻す',
   'dock.stopLabel': '停止',
   'dock.decoding': 'デコード中…',
+  'dock.loopOn': 'ループ: オン',
+  'dock.loopOff': 'ループ: オフ',
+  'dock.loopHint': '選択範囲を再生します。選択がないときはファイル全体を再生します (L)',
+  'dock.exporting': '選択範囲を書き出し中…',
+  'dock.clearRegion': '選択範囲を解除',
+
+  // ------------------------------------------------------- waveform legend
+  'hint.drag': 'ドラッグ',
+  'hint.select': '範囲を選択',
+  'hint.click': 'クリック',
+  'hint.seek': 'シーク',
+  'hint.dragOut': '選択範囲を外部へドラッグ',
+  'hint.clearRegion': '選択範囲を解除',
+  'hint.loop': 'ループ切替',
 
   'settings.heading': '設定',
   'settings.outputDevice': '出力デバイス',

@@ -78,7 +78,10 @@ for (const value of [35, 0, 100, 72]) {
   )
 }
 
-// --- the mute button flips between 0 and full
+// --- the mute button silences, and un-muting returns to the chosen level
+//
+// Not to 100%: a mute is a temporary silence, so the level it comes back to is the
+// one the slider was at. The last slider position above was 72.
 await page.click('#volume-mute')
 await page.waitForTimeout(200)
 const muted = await readout()
@@ -90,8 +93,14 @@ await page.click('#volume-mute')
 await page.waitForTimeout(200)
 const unmuted = await readout()
 const unmutedEngine = await engineGain()
-check(unmuted === '100%', 'unmute restores full level', unmuted)
-check(Math.abs(unmutedEngine - 1) < 0.001, 'unmute reaches the engine', `engine ${unmutedEngine}`)
+check(unmuted === '72%', 'unmute returns to the level that was set', unmuted)
+check(Math.abs(unmutedEngine - 0.72) < 0.02, 'unmute reaches the engine', `engine ${unmutedEngine}`)
+
+// --- and a mute survives a reload without losing the level behind it
+await page.reload()
+await page.waitForSelector('.app', { timeout: 20_000 })
+await page.waitForTimeout(900)
+check((await readout()) === '72%', 'the level survives a reload', await readout())
 
 // --- the level survives a reload
 await moveSlider(40)

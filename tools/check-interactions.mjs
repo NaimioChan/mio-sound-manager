@@ -173,7 +173,13 @@ check(
   `${pressedBefore} → ${pressedAfter}`
 )
 check(
-  (await page.evaluate(() => localStorage.getItem('mio:autoplay'))) === String(pressedAfter),
+  (await page.evaluate(() => localStorage.getItem('mio:settings'))) ===
+    JSON.stringify({
+      autoPlay: pressedAfter,
+      infiniteScroll: true,
+      showCategory: true,
+      pageSize: 500
+    }),
   'the toggle is persisted'
 )
 // Put it back on, so the rest of the checks audition rows.

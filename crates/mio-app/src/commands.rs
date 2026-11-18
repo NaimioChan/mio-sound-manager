@@ -15,7 +15,7 @@ use tauri::State;
 use crate::error::{AppError, AppResult};
 use crate::history::EditKind;
 use crate::library::{self, Library};
-use crate::state::AppState;
+use crate::state::{AppState, LoopState};
 
 /// Everything the window needs at startup, in one round trip.
 ///
@@ -352,6 +352,57 @@ pub fn set_gain(state: State<'_, AppState>, gain: f32) -> AppResult<f32> {
 #[tauri::command]
 pub fn get_gain(state: State<'_, AppState>) -> f32 {
     state.gain()
+}
+
+/// Loop the loaded clip, optionally within `[startS, endS)`.
+///
+/// Separate from `play` for the same reason `set_gain` is: turning a loop on while
+/// the clip is already loaded must not re-publish it, or every flip of the switch
+/// would click. `region` is `None` for the whole clip, which is what the switch
+/// means when nothing is selected on the waveform.
+#[tauri::command]
+pub fn set_loop(
+    state: State<'_, AppState>,
+    enabled: bool,
+    start_s: Option<f64>,
+    end_s: Option<f64>,
+) -> AppResult<LoopState> {
+    let region = match (start_s, end_s) {
+        (Some(from), Some(to)) if to > from => Some((from.max(0.0), to)),
+        _ => None,
+    };
+    state.set_loop(enabled, region)
+}
+
+/// The loop switch and its region, as the engine holds them. The dock's toggle
+/// mirrors this rather than its own state, so a failed set is visible.
+#[tauri::command]
+pub fn get_loop(state: State<'_, AppState>) -> LoopState {
+    state.loop_state()
+}
+
+/// Render a region of a file to a WAV and return its path.
+///
+/// The waveform dock calls this before starting a drag of a selection: a DAW takes
+/// a file, not a frame range. The WAV lands in the app's cache directory, which is
+/// where a scratch render belongs — never in the library, because a file the user
+/// did not ask to keep must not appear in their own index.
+#[tauri::command]
+pub async fn export_region(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    start_s: f64,
+    end_s: f64,
+) -> AppResult<String> {
+    use tauri::Manager;
+
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| AppError::internal(format!("no cache directory: {e}")))?
+        .join("exports");
+    state.export_region(&path, start_s, end_s, &dir).await
 }
 
 /// The playhead. Called from `requestAnimationFrame`, so it stays allocation free

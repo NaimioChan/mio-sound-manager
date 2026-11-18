@@ -2,6 +2,23 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-18 13:30 · hermes · 修拖拽失效、静音记忆，加波形框选/循环/选区拖出
+
+- 改: `ui/src/SoundTable.tsx`（`draggable` → `draggable={true}`）、`ui/src/WaveformDock.tsx`（框选手势、选区画在播放头层、循环开关、`.dock-hints` 图例、区域读数与清除按钮）、`ui/src/App.tsx`（`readStoredGain`、`toggleMute` + `mio:unmute-gain`、`toggleLoop`、`changeRegion`、`dragRegionOut`、Esc 清选区、L 开关循环、onMount 回读 `get_loop`）、`ui/src/ipc.ts`（`setLoop` / `loop` / `exportRegion`、`LoopState`、`PlaybackPosition` 加两字段）、`ui/src/icons.ts` + `ui/src/assets/icons/loop.svg`、`ui/src/locales/{en,zh,ja}.ts`（14 个新键）、`ui/src/styles.css`（`.wave-wrap.selecting`、`.wave-region`、`.dock-hints`）、`crates/mio-engine/src/output.rs`（`Shared` 三个循环原子、`Mixer::fill` 分段回绕、`set_loop` / `loop_state`、`PlaybackSnapshot` 两字段、`publish` 清范围）、`crates/mio-engine/src/export.rs`（新增，WAV 写入 + 3 个单测）、`crates/mio-app/src/state.rs`（`LoopSetting` / `LoopState`、`set_loop` / `loop_state`、`export_region`、`sanitize_file_name`、`open_audio` 恢复循环）、`crates/mio-app/src/{commands,lib}.rs`（三条新命令）、`tools/check-region.mjs`（新增 17 项）、`tools/check-volume.mjs`（静音断言改为回到设定值）、`tools/check-interactions.mjs`（AUTO PLAY 持久化改读 `mio:settings`）、`docs/{app,engine}.md`、`tools/README.md`
+- 验证: `cargo test --release --workspace` 全部通过（engine 16 + app 25 + index 61 + 18）；`tsc --noEmit` 干净；`check-i18n` 三语 151 键齐平；`check-region` 17/17；`check-volume` 17/17（含静音→取消静音回到 37%、静音后重载仍回到 64%）；`check-interactions` / `check-layout` / `check-themes` / `check-tags` 全通过
+- 遗留: ① **自动播放那条没能复现**——全新 localStorage、空库加库、按长度降序点最长一行，播放头 0→0.65s 且 `playing: true`，首次点击就出声；朋友的机器上还需要拿到当时的具体条件（哪个库、点的是哪一行、装的是安装版还是便携版）才能继续查；② 框选拖出只验证到 `export_region` 写出 WAV 并返回路径，**没有真的拖进 DAW**（与 P0 同一个限制：原生 OLE 拖拽无法从 CDP 合成）；③ 循环的听感没验，只验了状态与回绕逻辑（`get_loop` 回读、Esc 后范围变 `null`）；④ 选区导出每次都在缓存目录留一个 WAV，没有清理策略
+- 下一步: 找用户拿自动播放那台的复现条件；在真实 DAW 里拖一次选区导出的 WAV；给 `exports/` 加个上限或启动时清理
+
+### 拖拽失效的根因
+
+`SoundTable.tsx` 的行写成 `<div draggable>`。Solid 把它渲染成 `draggable=""`，而这个属性是枚举型（`true`/`false`/`auto`），空串不是合法值——浏览器回落到 `auto`，`row.draggable` 读出来是 `false`，DOM 拖拽根本不会发起，`onDragStart` 一次都没执行过。代码读起来完全正常，`check-*.mjs` 里也没有任何一项碰它（旧 `check-browsing.mjs` 的拖拽项在 iX 重写时被删了，那次重写只保留了「命令能到插件」的探测，而那条探测是直接 `invoke` 的，绕过了行本身）。
+
+判据：修复前 `{prop: false, attr: ''}`，修复后 `{prop: true, attr: 'true'}`。`check-region.mjs` 现在把这两条都断言下来，并在最后真派发一次 `dragstart`。
+
+### 静音记忆里还有一个真 bug
+
+第一版只加了 `mio:unmute-gain`，测试仍然失败：静音后重载显示 100%。原因是 `Number(localStorage.getItem(k)) || 1`——存着的 `0` 是 falsy，被当成「没存」，于是回落到 1；下一次取消静音又把这个 100% 写进记忆值，记忆彻底丢了。`readStoredGain` 只对缺失或非数值回落，这才是正确的语义。
+
 ## 2026-11-18 00:20 · hermes · 用 AGPL 版重打包并替换 release 附件
 
 - 改: `crates/mio-app/tauri.conf.json`（`bundle.copyright` / `license` / `licenseFile` 三条，让 NSIS 安装器显示许可页）

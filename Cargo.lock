@@ -2397,6 +2397,7 @@ dependencies = [
  "log",
  "rubato",
  "symphonia",
+ "tempfile",
  "thiserror 2.0.21",
  "wasapi",
  "windows 0.62.2",

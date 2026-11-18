@@ -77,6 +77,7 @@ export const en = {
   'notice.undid': 'Undid {label}',
   'notice.redid': 'Redid {label}',
   'notice.selected': '{count} selected',
+  'notice.regionExported': 'wrote {name} — drop it where you need it',
 
   // What an undoable edit was. Title case: these appear as tooltips and after
   // "Undid"/"Redid", where the sentence form is lowercased by `editKindName`.
@@ -139,6 +140,20 @@ export const en = {
   'dock.stop': 'Stop and clear the playhead',
   'dock.stopLabel': 'Stop',
   'dock.decoding': 'decoding…',
+  'dock.loopOn': 'Loop on',
+  'dock.loopOff': 'Loop off',
+  'dock.loopHint': 'plays the selection, or the whole sound when nothing is selected (L)',
+  'dock.exporting': 'writing the selection…',
+  'dock.clearRegion': 'Clear the selection',
+
+  // ------------------------------------------------------- waveform legend
+  'hint.drag': 'Drag',
+  'hint.select': 'select a region',
+  'hint.click': 'Click',
+  'hint.seek': 'seek',
+  'hint.dragOut': 'drag the selection out',
+  'hint.clearRegion': 'clear the selection',
+  'hint.loop': 'toggle loop',
 
   // ---------------------------------------------------------------- settings
   'settings.heading': 'Settings',

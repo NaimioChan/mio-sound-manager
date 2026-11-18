@@ -739,8 +739,49 @@ button {
   cursor: crosshair;
 }
 
+/* While the pointer is down the crosshair is wrong: the gesture in progress is a
+   selection, and the cursor is the only feedback that the drag is being taken. */
+.wave-wrap.selecting .wave {
+  cursor: ew-resize;
+}
+
 .wave-head {
   pointer-events: none;
+}
+
+/* The selection's readout, in the opposite corner from the playhead's time so the
+   two never overlap. Sits on the backdrop pill so it stays legible over bars. */
+.wave-region {
+  position: absolute;
+  left: 8px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 6px;
+  border-radius: var(--mio-radius-sm);
+  background: var(--theme-color-backdrop);
+  color: var(--theme-color-primary);
+  font-family: var(--mio-font-code);
+  font-size: var(--mio-ms--2);
+  font-variant-numeric: tabular-nums;
+}
+
+.wave-region-clear {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: var(--mio-radius-sm);
+  color: var(--theme-color-soft-text);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.wave-region-clear:hover {
+  color: var(--theme-color-std-text);
+  background: var(--theme-color-ghost--hover);
 }
 
 .wave-overlay {
@@ -777,8 +818,31 @@ button {
   pointer-events: none;
 }
 
-/* -------------------------------------------------------------- status bar */
+/* The mouse legend under the waveform. One line, small, and deliberately quiet:
+   it explains gestures the panel cannot show, and it must not compete with the
+   transport row above it. */
+.dock-hints {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin: -2px 12px 8px;
+  color: var(--theme-color-soft-text);
+  font-size: var(--mio-ms--2);
+  line-height: 1.4;
+}
 
+.dock-hints kbd {
+  padding: 0 4px;
+  border: 1px solid var(--theme-color-3);
+  border-radius: var(--mio-radius-sm);
+  background: var(--theme-color-1);
+  color: var(--theme-color-std-text);
+  font-family: var(--mio-font-code);
+  font-size: inherit;
+}
+
+/* -------------------------------------------------------------- status bar */
 .statusbar {
   display: flex;
   align-items: center;

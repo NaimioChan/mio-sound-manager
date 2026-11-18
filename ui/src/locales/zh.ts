@@ -73,6 +73,7 @@ export const zh: Record<MessageKey, string> = {
   'notice.undid': '已撤销{label}',
   'notice.redid': '已重做{label}',
   'notice.selected': '已选 {count} 项',
+  'notice.regionExported': '已写出 {name}，拖到需要的地方即可',
 
   'edit.favorite': '加入收藏',
   'edit.unfavorite': '取消收藏',
@@ -128,6 +129,20 @@ export const zh: Record<MessageKey, string> = {
   'dock.stop': '停止并清除播放头',
   'dock.stopLabel': '停止',
   'dock.decoding': '正在解码…',
+  'dock.loopOn': '循环：开',
+  'dock.loopOff': '循环：关',
+  'dock.loopHint': '播放框选区域；没有框选时播放整个文件（L）',
+  'dock.exporting': '正在写出框选…',
+  'dock.clearRegion': '清除框选',
+
+  // ------------------------------------------------------- waveform legend
+  'hint.drag': '拖拽',
+  'hint.select': '框选区域',
+  'hint.click': '单击',
+  'hint.seek': '定位',
+  'hint.dragOut': '把框选拖到外部',
+  'hint.clearRegion': '清除框选',
+  'hint.loop': '开关循环',
 
   'settings.heading': '设置',
   'settings.outputDevice': '输出设备',

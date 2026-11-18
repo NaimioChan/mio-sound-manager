@@ -12,6 +12,7 @@ src/
   output.rs   // 双槽调度 + WASAPI 常驻流
   asio.rs     // ASIO 后端（仅 --features asio）
   waveform.rs // 文件 → ~1000 个峰值（UI 画波形用，PCM 不出进程）
+  export.rs   // 选区 → WAV（框选拖出到 DAW 用，按源格式写）
 ```
 
 decode 与 output 的契约是 `Arc<DecodedAudio>`：不可变、已转成设备格式、可随意共享。解码侧怎么慢都行，渲染侧只认这一份字节。waveform 复用 decode 的解码结果，但从原始采样率的交错 f32 取峰值，不经过设备格式转换。
@@ -121,6 +122,30 @@ src/asio.rs
 - **`resume` 在没有 clip 时是 no-op。** 空 dock 上误按空格不该伪造出状态。
 
 `PlaybackSnapshot` 因此多了 `paused` 字段，`playing` 与它是互斥的：`playing = frames > 0 && !finished && !paused`。UI 靠这两个字段决定空格键是「暂停」还是「继续」，而不是自己记状态。
+
+### set_loop：循环点是回绕，不是重新发布
+
+循环是「播到某帧就跳回某帧」，不是「播完再 publish 一次」。后者每次回绕都要重新解码或至少重新装槽，在素材循环试听里就是每圈一声咔。
+
+状态是 `Shared` 上的三个原子：
+
+| 原子 | 含义 |
+| --- | --- |
+| `loop_start` | 循环区第一帧 |
+| `loop_end` | 循环区之后一帧（`0` 表示到 clip 末尾） |
+| `looping` | 是否循环 |
+
+写序是 start → end → `looping`，读序是 `looping` → start → end。这样回调只有在范围已完整写入后才可能看到 `looping` 为真，半写的范围不可观测。
+
+`Mixer::fill` 里变成分段拷贝：一次回调可能跨过循环点，所以按 `segment_end` 切开，写完一段就回绕到 `loop_start` 继续填，直到填满 `want_frames` 或 clip 用完。循环有界是因为范围已证明非空（`loop_end > loop_start`，否则回落到整个 clip），每次迭代至少写一帧。增益仍在整段拷贝之后一次施加，和未循环的路径完全一致。
+
+三个配套决定：
+
+- **`looping` 为真时 `finished` 永不置位。** 播到末尾就是循环点，不是播放结束；置位会让 `playing` 变假、UI 把按钮切回 Play。
+- **播放头在范围外时从 `loop_start` 进入。** 选区在 clip 播放途中变了（用户重新框选），继续播用户刚取消掉的那一段是错的。
+- **`publish` 清掉范围但保留 `looping`。** 范围属于它被画在的那份 clip；开关是用户的意图，换一行试听时应该继续循环。设备切换会重建引擎，所以 `AppState` 另存一份镜像并在 `open_audio` 里重新灌进去——和 gain 同一个理由。
+
+`set_loop` 打开循环时还会清掉 `finished`：已经播完的 clip 槽位仍在，但 `finished` 会让回调只写静音，不清就表现为「开关点了没反应」。
 
 ## 延迟测量口径
 

@@ -159,6 +159,8 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **拖拽导出用 `preventDefault` 拦住 DOM drag。** Tauri 的拖拽插件自己发起原生 OLE 拖拽，让 WebView2 同时再起一个 DOM 拖拽会让系统看到两个竞争的拖拽源。插件命令的 `onEvent` 是 `Channel` 且**必填**——不传整条命令直接报 `missing required key onEvent`，拖拽根本不会开始。P0 已实测这个通道从不触发，传它是为了满足签名。
 
+**`draggable` 必须绑布尔值，写成裸属性会让整条拖拽链路静默失效。** Solid 把 `draggable`（无值）渲染成 `draggable=""`，而这个属性是枚举型（`true`/`false`/`auto`），空串不是合法值，浏览器回落到 `auto`，于是 `row.draggable === false`、DOM 拖拽永远不发起、`onDragStart` 从不执行。整条「拖进 DAW」的产品功能因此完全没反应，而代码看起来是对的。正确写法是 `draggable={true}`，检查脚本断言 `row.draggable === true` 与 `getAttribute('draggable') === 'true'`。
+
 **侧栏宽度可拖。** 把手是 `.rail` 里的绝对定位元素（`right: -3px`），不是 `.body` 的第三个 grid 子元素——那会多出一列并把表格挤走。宽度写进 `localStorage`，范围 180–520px。
 
 **搜索框在列表列顶部，不在窗口顶部。** 它过滤的是列表，所以它属于列表。窗口顶部留给「我在哪个库」、undo/redo 和设置（图标）。播放的三个控件在波形 dock 的右端聚成一组：`AUTO PLAY` 是文字按钮，暂停/继续与停止是图标——前者的状态是「点一行会不会响」这条策略，12px 的图标说不出来。
@@ -186,6 +188,16 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 **右键菜单里不再有「拖进 DAW」。** 拖拽是鼠标动作，菜单条目只能写一句说明、点不动；把一条禁用的说明放在动作中间，读起来像功能坏了。拖拽本身仍在（行 `draggable` → `startDrag`）。
 
 **BPM 是排序列，不是 tag。** 值只从文件名取（`crates/mio-index/src/bpm.rs`），文件名里没有 `bpm` 标记就是空值——`Snare_120.wav` 里的 120 是条号也可能是速度，猜错一个还会自信地参与排序。范围的上下限是 20–300，`126-5 BPM` 这种半速写法按一位小数读。空值在正反两个方向都排在最后（`ORDER BY s.bpm IS NULL`），和 duration 同一个约定。BPM 不参与侧栏筛选：它连续、取值多，做成 tag 只会多出一排没人点的行。
+
+**波形上按下是「单击定位、拖拽框选」两种手势。** 判定靠位移而不是事件类型：`pointerdown` 记下锚点，位移小于 3px 就在 `pointerup` 时当作单击 seek，超过就成为框选。用 `pointerdown` 而不是 `click` 是让框选跟着指针走——选区在按住时就长出来，而单击仍然精确落在原来的那一帧上。选区有 10ms 下限：3 分钟文件上 2px 的拖拽只选出几毫秒，既不构成可用循环也不值得写出成 WAV，所以夹住而不是拒绝。
+
+**循环是引擎状态，不是渲染层状态。** `set_loop(enabled, region)` 只写三个原子（`loop_start`、`loop_end`、`looping`，最后写 `looping`，这样半写的范围不会被回调看见），渲染回调在 `Mixer::fill` 里分段拷贝并在循环点回绕，不需要重新 publish——重新加载 clip 会让每次改选区都咔一声。范围按 clip 帧数夹住，空或倒置的范围回落到整个文件；播放头在范围外时从范围起点进入。`looping` 为真时 `finished` 永不置位，这正是「循环」的意思。设备切换后状态会重建，所以 `AppState` 在引擎外另存一份镜像（和 gain 同一个理由），重开引擎时重新灌进去。
+
+**框选区域拖到外部要先落成文件。** DAW 接受的是文件投放，不是帧范围，所以 Alt+拖拽走 `export_region`：把选区按**源文件自己的采样率与声道数**写成 32-bit float WAV，落在 app 缓存目录（`%LOCALAPPDATA%\com.naimio.miosound\exports`），再把那个路径交给 `startDrag`。写进库目录是错的——用户没要求保留的文件不该出现在他自己的索引里。没有框选时 Alt+拖拽直接拖源文件，不需要渲染。
+
+**鼠标手势写在波形下方一行。** 框选和 Alt+拖拽在面板上完全看不出来，所以 `.dock-hints` 用 `<kbd>` 列出拖拽/单击/Alt+拖拽/Esc/L 五条。这一行是控件图例，不是说明文档，所以只有一行、10px、`--theme-color-soft-text`，且三条文案全部走 `t()`。
+
+**静音是临时静音，不是把音量改成 0。** 取消静音必须回到用户调的那个值，所以「回到哪个值」存在独立的 `mio:unmute-gain`，只在滑杆离开 0 或按下静音时写入。这里有个真 bug：`Number(localStorage.getItem(k)) || 1` 会把存着的 `0` 当成「没存」——静音后重载显示 100%，下一次取消静音又把这个 100% 覆盖掉记忆值。`readStoredGain` 只对缺失或非数值回落。
 
 **类名不要用 `.empty`。** 它是整窗空状态（`padding: 40px`、`height: 100%`），任何 `.foo.empty` 都会连带命中。叶子节点那个占位 twisty 因此叫 `.twisty.spacer`。
 

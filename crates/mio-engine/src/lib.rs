@@ -18,6 +18,7 @@
 //! never a queue drain.
 
 pub mod decode;
+pub mod export;
 pub mod output;
 pub mod waveform;
 

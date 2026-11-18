@@ -58,6 +58,22 @@ export interface PlaybackPosition {
   /** Loaded but frozen: the playhead holds still and Space resumes it. */
   paused: boolean
   finished: boolean
+  /** Whether the render thread is looping the loaded clip. */
+  looping: boolean
+  /** The looped region in seconds, or `null` when it is the whole clip. */
+  loopRegionS: [number, number] | null
+}
+
+/**
+ * The loop switch and its region.
+ *
+ * Mirrors `LoopState` in `crates/mio-app/src/state.rs`. The region is half-open —
+ * `[start, end)` — and `null` means the whole clip, which is what the switch means
+ * when nothing is selected on the waveform.
+ */
+export interface LoopState {
+  enabled: boolean
+  region: [number, number] | null
 }
 
 export interface Waveform {
@@ -263,6 +279,32 @@ export const api = {
   undo: () => invoke<EditKind | null>('undo'),
   redo: () => invoke<EditKind | null>('redo'),
   history: () => invoke<HistoryState>('get_history'),
+
+  /**
+   * Loop the loaded clip, optionally within `[startS, endS)`.
+   *
+   * A separate command from `play` on purpose: flipping the switch on a clip that
+   * is already loaded must not re-publish it, or every flip would click. `null`
+   * region means the whole clip.
+   */
+  setLoop: (enabled: boolean, region: [number, number] | null) =>
+    invoke<LoopState>('set_loop', {
+      enabled,
+      startS: region ? region[0] : null,
+      endS: region ? region[1] : null
+    }),
+
+  /** The loop switch and its region, as the engine holds them. */
+  loop: () => invoke<LoopState>('get_loop'),
+
+  /**
+   * Render `[startS, endS)` of `path` to a WAV and return its path.
+   *
+   * The drag path needs a real file: a DAW accepts a drop of one, not a frame
+   * range. Written into the app's cache, never into the library.
+   */
+  exportRegion: (path: string, startS: number, endS: number) =>
+    invoke<string>('export_region', { path, startS, endS }),
 
   /** Native folder picker. Resolves `null` when the user cancels. */
   pickLibraryFolder: () => invoke<string | null>('pick_library_folder'),
