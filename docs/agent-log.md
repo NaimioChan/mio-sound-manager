@@ -2,6 +2,17 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-19 19:05 · hermes · 发 0.1.2：只发安装版，release 建好
+
+- 改: `tools/check-shipped.mjs`（版本断言改成 `plugin:app|version`——原来读 `<meta name="version">`，前端没这个标签，`if (version)` 从写下起就一直跳过，版本号从来没被验过；补三条本版事实：默认 `windows-dark`、`--theme-color-1` = `#202020`、`--theme-color-primary` = `#4cc2ff`）、`tools/README.md` 与 `docs/app.md`（发版流程去掉便携版那步）、`AGENTS.md`（`package-portable.sh` 的注释改成「0.1.2 起不再发」，发版条目去掉「便携版 zip」）
+- 验证: `tauri build --features asio --bundles nsis` → 5304445 字节；NSIS `/S` 装到 `%LOCALAPPDATA%\Mio Sound Manager`，版本资源 0.1.2，单起装好的 exe（CDP 9227）跑 `check-shipped` 11/11（标题 / ASIO / 设备 / 三个控件 / `get_loop` / 版本 0.1.2 / windows-dark / #202020 / #4cc2ff）；设置里的主题卡实测 7 张、顺序 windows-dark…tokyo-night、当前选中 windows-dark；`cargo test --release --workspace` 133 passed；release 三个附件全 `uploaded`，逐个 `curl -L` 返回 200 且字节数匹配（5304445 / 2229 / 35184），下载回来的安装包 SHA-256 与本地一致（c7a1c7f4…）；tag `v0.1.2` 已推并 `git ls-remote` 回读
+- 遗留: ① `check-shipped` 里「主题卡 7 张」这条断言删掉了——主题卡只在设置弹窗打开时进 DOM，脚本不开弹窗，`querySelectorAll` 恒为 0。这条事实由 `check-tags.mjs` 覆盖（它真的开弹窗）；② 便携版脚本 `tools/package-portable.sh` 还在仓库里，只为能重建 0.1.1 及更早的包
+- 下一步: 若要按 Windows 系统强调色动态生成配色，需要 `mio-app` 侧读 `UISettings.GetColorValue` 再经 IPC 传来；现在是写死的 Fluent 默认强调色
+
+### 版本号断言原来是死的
+
+`check-shipped.mjs` 读 `document.querySelector('meta[name="version"]')`，而 `ui/index.html` 里没有这个标签，于是 `version` 一直是 `null`，`if (version)` 把整条断言跳过——0.1.0 和 0.1.1 发出去时，版本号这一项从来没被验过。改成 `invoke('plugin:app|version')`：那个字符串是编译期从 `tauri.conf.json` 写进二进制的，构建早于版本号改动就会在这里失败，而这正是安装包文件名会错的那种情形。
+
 ## 2026-11-19 18:40 · hermes · 删 Classic 两套配色、默认改 Windows 深浅、加 Tokyo Night
 
 - 改: `ui/src/theme.ts`（`Theme.palette` 去掉 `null` 分支、新增可选 `ramp` 覆盖中性 ramp、`THEMES` 换成 windows-dark/windows-light/studio-dark/studio-light/amber-console/frost-dark/tokyo-night、`DEFAULT_THEME` 变 `windows-dark`、`applyTheme` 去掉「删覆盖块」那条路径）、`ui/src/SettingsDialog.tsx`（主题卡色块不再有 iX 原样的硬编码分支）、`ui/src/locales/{en,zh,ja}.ts`（删 `theme.classicDark`/`classicLight`，加 `theme.windowsDark`/`windowsLight`/`tokyoNight`）、`ui/index.html`（首帧脚本的兜底 id）、`tools/check-themes.mjs`（七套主题、按 `data-ix-color-schema` 判深浅而不是按 id 猜、每套主题各自测 WCAG、覆盖块长度下限、**存着已删除的 `classic-dark` 时必须回退到默认**、hex 与 rgb() 两种 token 形式的亮度解析）、`tools/shot-themes.mjs`、`docs/app.md`、`tools/README.md`、`AGENTS.md`（命令注释里的「六套」）
