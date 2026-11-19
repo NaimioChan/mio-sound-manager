@@ -93,6 +93,69 @@ src/
 `mio-cli classify-diff` 仍然保留，但它是「旧库与当前词表有多少行不同」的对比工具，
 不是一致性验收：词表不同，结果本就不该一致。
 
+## classify：UCS 兜底
+
+第二套词表来自 [Universal Category System](https://www.universalcategorysystem.com/)
+8.2.1（82 个大类、753 个 Category/SubCategory、约一万条同义词）。UCS 是音效馆员的索引，
+本项目的 22 个分类是制作人的分类法，两者不是一回事，所以 UCS 不做替换，只做**兜底**。
+
+**两遍分类，结构上保证不覆盖。** 第一遍只用本项目的词表；只有第一遍完全没分出来时，
+第二遍才看 UCS 的 CatID、短语和词。把两遍分开而不是把 UCS 当低权重词混进同一张分数表，
+让「UCS 永不覆盖手工词表」成为代码结构而不是权重巧合。
+
+```
+curated 阶段：短语 4 / 文件名词 3 / 目录每目标 1 票
+UCS 阶段（仅在 curated 得分为 0 时）：CatID 8 / 短语 3 / 文件名词 2 / 目录每目标 1 票
+```
+
+**CatID 是不猜的。** 文件名以 UCS CatID 开头（`GORESqsh_Slime Squeeze_01.wav`）等于声明了
+分类，所以它拿 8 分，压过任何词。匹配**区分大小写**：UCS 里 `RAIN`、`WIND`、`STORM`、
+`TEST` 既是 CatID 又是最常见的英文词，折叠大小写会让每个 `rain_on_roof.wav` 都声明成
+RAIN。
+
+**同义词要过三道筛，第三道是重点。**
+
+1. **投影。** `tools/ucs_mapping.py` 是手写的 753→我们的映射。`ARCHIVED`（stems、ADR、
+   测试音）、`AIR`（压缩空气）、`CHEMICALS` 这三支直接丢弃而不是硬塞：丢在哪一行是看得见
+   的，硬塞看不见。
+2. **形状。** 一个同义词只有在我们的分类里**恰好命中一个目标**时才保留。`beat`、`hit`、
+   `clap` 在 UCS 里横跨好几个分类，在我们的分类里也横跨，这种词放进来只会制造随机结果；
+   `misc`、`source`、`designed`、`morph` 是 UCS 自己的桶名或制作术语，不描述声音；
+   `one shot` 是文件结构词（43,723 个文件、100 个包），放进短语表会把整个库变成 Music。
+3. **实测。** `tools/ucs-evidence.py` 对每个候选词统计两件事：出现在多少文件、多少包里，
+   以及在**文件名**含有该词、且本项目分类器已有答案的文件中，答案与 UCS 映射是否一致。
+   规则是：一致率 ≥ 0.6 且样本 ≥ 10 才收；样本不足时只有影响面 ≤ 250 个文件才收。被否掉的
+   是那些「看起来对、在库里错」的词——`trance`（UCS 里是 MAGIC-SPELL 的同义词，在库里是
+   Trance 曲风：46 个文件说 Drums，9 个说 Magic）、`hybrid`（UCS 里是 VEHICLES-CAR 的
+   同义词，在库里是包名的一部分：12,454 个文件横跨 19 个包）。每个被排除的词与它的计数都在
+   `tools/ucs-evidence.json` 里。
+
+最终收进 6,085 个词、136 条短语、703 个 CatID。实测（同一 271,350 条路径）：
+
+| | 未分类 | 分类总数 |
+| --- | --- | --- |
+| 只有本项目词表 | 12,740（4.70%） | 133 组合 |
+| 加 UCS 兜底 | 11,611（4.28%） | 133 组合 |
+
+**1,129 个文件拿到分类，已分类文件的分类变化 0 个。** 这个 0 不是调出来的，是两遍结构
+给的：兜底只在第一遍得分为 0 时运行。
+
+**维护流程。** UCS 的发布包不进 git（`/docs/UCS Release/` 已忽略，也不随产物分发）。
+换新版本时：解压到该目录，依次跑 `tools/ucs-evidence.py`、`tools/ucs-catid-evidence.py`、
+`tools/import-ucs.py`、`tools/gen-category-dict.py`。改 `tools/ucs_mapping.py` 的映射也走
+同一条链，否则新映射没有证据支撑。
+
+**`tools/classify-mirror.py` 是测量的脚手架，必须与产品对等。** 每个候选规则都在这个
+Python 镜像上跑，因为改一次 Rust 重编太慢。但它会漂移——本轮开发中它就漂过一次（
+`UCS_FILE_WEIGHT` 写 1 而 Rust 是 2，`lookup` 让 UCS 词进了 curated 阶段），两次都是
+`mio-cli classify-check` 抓出来的。所以规矩是：**先跑 `mio-cli classify-check` 确认 0 差异，
+再相信任何镜像给出的数字。**
+
+```bash
+python tools/classify-mirror.py --sample 271350 --ucs > expect.json
+cargo run --release -p mio-cli -- classify-check expect.json
+```
+
 ## db
 
 **库文件叫 `mio-sm.db`，不再是 `slip-sound.db`。** 列名保持与参考实现一致是有目的的（旧库能直接打开、原地迁移、逐行比对），但文件名是我们自己的东西。`IndexDb::open` 会先做一次改名：`slip-sound.db` 存在而 `mio-sm.db` 不存在时，把主文件连同 `-wal` / `-shm` 一起改过来。**journal 必须跟着改**——SQLite 按名字找 WAL，主文件改名而日志留在旧名下，等于让引擎认为上次是干净关闭的，最后一个已提交事务就丢了。两个名字都在时（迁移中途被打断）保留新文件、不动旧文件，因为猜哪个是当前版本比留一个陈旧文件更糟。

@@ -33,6 +33,9 @@ Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + s
 - **Nothing user-facing is written as a literal string.** Every label goes through `t()`; the backend sends *kinds* (`EditKind`), never English prose for the renderer to display — a string born in Rust can never be translated. Category names, file names and sample rates are data and stay untranslated; `Uncategorized` is the one exception, because it is a schema sentinel rather than a classifier guess.
 - **No subtitles.** Nothing under a heading, a brand, a modal title or a settings group. 标题本身就是完整信息；副标题是不承载信息的一行小字，只会把版式撑高。文案层面同理：不要为标题补一句解释性的第二行。要解释就写进正文或 `helperText`，那不是 subtitle。
 - **Gapless decoding is mandatory, not an optimisation.** With `FormatOptions::enable_gapless` off, MP3 keeps 25.1ms of LAME encoder delay at the head; MP4/AAC keeps 1024 priming frames (23.2ms) because symphonia's isomp4 parses `elst` but never surfaces it. Both are the same order of magnitude as the entire device path, so a missing trim is felt as a late trigger.
+- **UCS 是兜底，不是第二套分类。** `classify` 跑两遍：curated 词表得分不为 0 时，UCS 的 CatID / 短语 / 词根本不会被查询。把两遍并成一张分数表会让几万个已分类文件被改错（实测 22,442 个），所以这条结构不能为了「简化」而动。
+- **UCS 的同义词必须过证据筛，不能按看起来对不对收。** `tools/ucs-evidence.py` 量的是「文件名含该词、且本项目已有答案的文件里，答案与 UCS 映射一致率」。`trance`（曲风 vs MAGIC-SPELL）、`hybrid`（12,454 个文件/19 个包的包名）、`calendar`、`acid` 都是看起来合理、在库里全错的词。
+- **Python 镜像给出的数字要先过 `mio-cli classify-check` 才能引用。** 镜像会漂移，本轮漂了两次都是这条检查抓出来的；0 mismatches 之前，`tools/classify-mirror.py` 的输出只是关于一个不存在的分类器的测量。
 
 ## Commands
 
@@ -51,6 +54,7 @@ cargo run --release -p mio-cli -- index <folder> --full                 # re-pro
 cargo run --release -p mio-cli -- index-stats <folder>
 cargo run --release -p mio-cli -- search <folder> <query> --limit 25
 cargo run --release -p mio-cli -- classify-diff <folder> <reference.db> # parity vs Slip Sound
+cargo run --release -p mio-cli -- classify-check <expect.json>          # Rust 与 Python 镜像对等
 cargo run --release -p mio-cli -- probe-bench <folder> --limit 20000    # per-format probe cost
 
 # The desktop shell. Two steps: bundle the webview, then the exe embeds it.
@@ -110,5 +114,7 @@ The six `check-*.mjs` that drive a window assert on English copy and pin `mio:lo
 | 发版（安装包、便携版 zip、产物验收） | `tools/README.md`「发版」一节 |
 | BPM 解析（只从文件名取，不从音频推断） | `crates/mio-index/src/bpm.rs` |
 | 分类词表（改这里，再跑生成器） | `tools/taxonomy.py` |
-| 分类词典生成器（勿手改 `dictionary.rs`） | `tools/gen-category-dict.py` |
+| 分类词典生成器（勿手改 `dictionary.rs` / `ucs.rs`） | `tools/gen-category-dict.py` |
+| UCS 兜底词表：映射、导入、证据、报告 | `tools/ucs_mapping.py`、`tools/import-ucs.py`、`tools/ucs-evidence.py`、`tools/ucs-report.py` |
+| 分类器的 Python 镜像（测速用，先过 `mio-cli classify-check`） | `tools/classify-mirror.py` |
 | Handoff log | `docs/agent-log.md` |

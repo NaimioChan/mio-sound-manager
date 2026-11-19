@@ -1,0 +1,9365 @@
+{
+"AERODoor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"AEROHeli": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"AEROInt": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"AEROJet": {
+"confusion": {
+"Explosions & Fire": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 2,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"AEROMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"AEROMil": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"AEROMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"AEROProp": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"AERORadio": {
+"confusion": {
+"Foley": 4
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"AERORckt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Aircraft"
+]
+},
+"ALRMBell": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"ALRMBuzr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"ALRMClok": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"ALRMElec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"ALRMMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"ALRMSirn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"AMBAir": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Interior & Room Tone"
+]
+},
+"AMBAlpn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBAmus": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBBird": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBCele": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBCnst": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+"Industrial"
+]
+},
+"AMBDsgn": {
+"confusion": {
+"Magic": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBDsrt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBEmrg": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBFant": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBFarm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBForst": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBGras": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBHist": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBHome": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBHosp": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBInd": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+"Industrial"
+]
+},
+"AMBInsc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBLake": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBMrkt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBNaut": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBOffc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBPark": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBPrisn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBPrtst": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBPubl": {
+"confusion": {
+"Vehicles": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBRest": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBRlgn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBRoom": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+"Interior & Room Tone"
+]
+},
+"AMBRurl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBSchl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBSci": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Sci-Fi & Space"
+]
+},
+"AMBSea": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBSprt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBSubn": {
+"confusion": {
+"Nature": 2,
+"Sci-Fi & Tech": 2
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBSwmp": {
+"confusion": {
+"Nature": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBTech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Sci-Fi & Space"
+]
+},
+"AMBTndra": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBTown": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBTraf": {
+"confusion": {
+"Vehicles": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBTran": {
+"confusion": {
+"Vehicles": 2
+},
+"files": 8,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 4,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBTrop": {
+"confusion": {
+"Nature": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Nature Beds"
+]
+},
+"AMBUndr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Industrial"
+]
+},
+"AMBUndwtr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Underwater"
+]
+},
+"AMBUrbn": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"AMBWar": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+null
+]
+},
+"ANMLAmph": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLAqua": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLBat": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLCat": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLDog": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLFarm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLHors": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLInsc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLPrim": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLRdnt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLRept": {
+"confusion": {
+"Foley": 2
+},
+"files": 12,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 10,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLWcat": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLWdog": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"ANMLWild": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BEEP": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"BEEPAppl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"BEEPLofi": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"BEEPMed": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": null,
+"same": 0,
+"silent": 2,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"BEEPTimer": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"BEEPVeh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"BELLAnml": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"BELLDoor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"BELLGong": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"BELLHand": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"BELLLrg": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"BELLMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"BIRDCrow": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BIRDFowl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BIRDMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BIRDPrey": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BIRDSea": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BIRDSong": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BIRDTrop": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BIRDWade": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"BLLTBy": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Ammo & Handling"
+]
+},
+"BLLTImpt": {
+"confusion": {
+"Creatures": 1
+},
+"files": 1,
+"other": 1,
+"packs": 1,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Ammo & Handling"
+]
+},
+"BLLTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Ammo & Handling"
+]
+},
+"BLLTRico": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"BLLTShel": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Casing Drops"
+]
+},
+"BOATAir": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATDoor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATElec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATFish": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATHorn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATInt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATMil": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATMotr": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATRace": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATRow": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATSail": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATShip": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATStm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATSub": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATUndwtr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"BOATWash": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Watercraft"
+]
+},
+"CERMBrk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"CERMCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"CERMFric": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"CERMHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"CERMImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"CERMMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"CERMMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"CERMTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"CHAINBrk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"CHAINHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"CHAINImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"CHAINMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"CHAINMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"CLOCKChim": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Clocks & Ticking"
+]
+},
+"CLOCKMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Clocks & Ticking"
+]
+},
+"CLOCKMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Clocks & Ticking"
+]
+},
+"CLOCKTick": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Machinery",
+"Clocks & Ticking"
+]
+},
+"CLOTHFlp": {
+"confusion": {
+"UI & Game": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"CLOTHHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"CLOTHImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"CLOTHMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"CLOTHMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"CLOTHRip": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"CMPTDriv": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Computers & Data"
+]
+},
+"CMPTKey": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Computers & Data"
+]
+},
+"CMPTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Computers & Data"
+]
+},
+"COMAv": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMCam": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMCell": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMMic": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMPhono": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMRadio": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMStatic": {
+"confusion": {
+"Ambience": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Circuit & Electric"
+]
+},
+"COMTelm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Computers & Data"
+]
+},
+"COMTelph": {
+"confusion": {
+"Transitions": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 4,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMTran": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMTv": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"COMType": {
+"confusion": {
+"Ambience": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 2,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"CREAAqua": {
+"confusion": {
+"Ambience": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Monsters & Beasts"
+]
+},
+"CREAAvian": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Monsters & Beasts"
+]
+},
+"CREABeast": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Creatures",
+"Monsters & Beasts"
+]
+},
+"CREABlob": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Monsters & Beasts"
+]
+},
+"CREADino": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Dragons & Reptiles"
+]
+},
+"CREADrgn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Dragons & Reptiles"
+]
+},
+"CREAElem": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Magic",
+"Elemental Magic"
+]
+},
+"CREAEthr": {
+"confusion": {
+"Synths": 2,
+"Vocals": 2
+},
+"files": 8,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 4,
+"target": [
+"Creatures",
+"Humanoids & Spirits"
+]
+},
+"CREAHmn": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Creatures",
+"Humanoids & Spirits"
+]
+},
+"CREAInsc": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Creatures",
+null
+]
+},
+"CREAMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+null
+]
+},
+"CREAMnstr": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Creatures",
+"Monsters & Beasts"
+]
+},
+"CREARept": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Dragons & Reptiles"
+]
+},
+"CREASmall": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Monsters & Beasts"
+]
+},
+"CRWDAngr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDApls": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDBatl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDCele": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDCheer": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDChld": {
+"confusion": {
+"Foley": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDConv": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDLaff": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDLoop": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDPanic": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDQuiet": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDReac": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDSing": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Choirs & Chants"
+]
+},
+"CRWDSprt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"CRWDWalla": {
+"confusion": {},
+"files": 10,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 10,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"DESTRClpse": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"DESTRCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"DESTRMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"DIRTCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"DIRTDust": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"DIRTHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"DIRTImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"DIRTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"DIRTMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"DIRTTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"DOORAntq": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORAppl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORCab": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORComp": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORCreak": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORDungn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORElec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORGate": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORGlas": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORHdwr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"DOORHydr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Hydraulics & Pneumatics"
+]
+},
+"DOORKnck": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORMetl": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": null,
+"same": 0,
+"silent": 2,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORPlas": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORPrisn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORRevl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORSlid": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORSton": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORSwng": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DOORTech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"DOORWood": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"DRWRMetl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"DRWRMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"DRWRPlas": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"DRWRWood": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"DSGNBass": {
+"confusion": {
+"Bass": 18
+},
+"files": 18,
+"other": 18,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+null
+]
+},
+"DSGNBoom": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Cinematic Hits"
+]
+},
+"DSGNBram": {
+"confusion": {
+"Vehicles": 4
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Cinematic Hits"
+]
+},
+"DSGNDron": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Horror",
+"Tension & Drones"
+]
+},
+"DSGNErie": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Horror",
+"Tension & Drones"
+]
+},
+"DSGNImpt": {
+"confusion": {
+"Impacts": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Cinematic Hits"
+]
+},
+"DSGNMisc": {
+"confusion": {
+"Creatures": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+null
+]
+},
+"DSGNRise": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Risers & Build-ups"
+]
+},
+"DSGNRmbl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Horror",
+"Tension & Drones"
+]
+},
+"DSGNStngr": {
+"confusion": {
+"Drums": 2,
+"Weapons": 2
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Cinematic Hits"
+]
+},
+"DSGNVocl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+null
+]
+},
+"DSGNWhsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Whooshes & Sweeps"
+]
+},
+"ELECArc": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Circuit & Electric"
+]
+},
+"ELECBuzz": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Circuit & Electric"
+]
+},
+"ELECEmf": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": null,
+"same": 0,
+"silent": 2,
+"target": [
+"Sci-Fi & Tech",
+"Circuit & Electric"
+]
+},
+"ELECMisc": {
+"confusion": {
+"Impacts": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Circuit & Electric"
+]
+},
+"ELECSprk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Circuit & Electric"
+]
+},
+"ELECZap": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Circuit & Electric"
+]
+},
+"EQUIPBridle": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"EQUIPMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"EQUIPRec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"EQUIPSprt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"EQUIPTact": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"EQUIPTech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"EXPLDsgn": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Blasts"
+]
+},
+"EXPLMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Blasts"
+]
+},
+"EXPLReal": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Blasts"
+]
+},
+"FARTDsgn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"FARTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"FARTReal": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"FEETAnml": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"FEETCrea": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"FEETHmn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"FEETHors": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"FEETMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"FGHTBf": {
+"confusion": {
+"Creatures": 2
+},
+"files": 2,
+"other": 2,
+"packs": 1,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Punches & Body Blows"
+]
+},
+"FGHTClth": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Punches & Body Blows"
+]
+},
+"FGHTGrab": {
+"confusion": {
+"Transitions": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Punches & Body Blows"
+]
+},
+"FGHTImpt": {
+"confusion": {
+"Creatures": 7
+},
+"files": 11,
+"other": 7,
+"packs": 2,
+"precision": 0.364,
+"same": 4,
+"silent": 0,
+"target": [
+"Impacts",
+"Punches & Body Blows"
+]
+},
+"FGHTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Punches & Body Blows"
+]
+},
+"FIREBrst": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIREBurn": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIRECrkl": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIREGas": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Blasts"
+]
+},
+"FIREIgn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIREMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIRESizz": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIRETrch": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIRETurb": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Fire & Burning"
+]
+},
+"FIREWhsh": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Transitions",
+"Whooshes & Sweeps"
+]
+},
+"FOLYClth": {
+"confusion": {},
+"files": 6,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 6,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"FOLYFeet": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"FOLYHand": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"FOLYMisc": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Foley",
+null
+]
+},
+"FOLYProp": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": null,
+"same": 0,
+"silent": 2,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"FOODCook": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODDrnk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODEat": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODGware": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODIngr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODKware": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODMisc": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODPour": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FOODTware": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Kitchen & Food"
+]
+},
+"FRWKComr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Blasts"
+]
+},
+"FRWKMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Blasts"
+]
+},
+"FRWKRec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Explosions & Fire",
+"Blasts"
+]
+},
+"GAMEArcd": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+null
+]
+},
+"GAMEBoard": {
+"confusion": {
+"Impacts": 2,
+"Transitions": 2
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Card & Board Games"
+]
+},
+"GAMECas": {
+"confusion": {},
+"files": 6,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 6,
+"silent": 0,
+"target": [
+"UI & Game",
+"Card & Board Games"
+]
+},
+"GAMEMisc": {
+"confusion": {
+"Magic": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 0,
+"target": [
+"UI & Game",
+"Card & Board Games"
+]
+},
+"GAMEVideo": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+null
+]
+},
+"GEOFuma": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"GEOGeyser": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"GEOLava": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"GEOMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"GEOMudpot": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"GLASBrk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"GLASCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"GLASFric": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"GLASHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"GLASImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"GLASMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"GLASMvmt": {
+"confusion": {
+"Transitions": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"GLASTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"GOREBlood": {
+"confusion": {},
+"files": 15,
+"other": 0,
+"packs": 1,
+"precision": 1.0,
+"same": 15,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GOREBone": {
+"confusion": {},
+"files": 8,
+"other": 0,
+"packs": 1,
+"precision": 1.0,
+"same": 8,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GOREBurn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GOREFlsh": {
+"confusion": {},
+"files": 14,
+"other": 0,
+"packs": 1,
+"precision": 1.0,
+"same": 14,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GOREMisc": {
+"confusion": {
+"Horror": 4,
+"Impacts": 2
+},
+"files": 6,
+"other": 6,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GOREOoze": {
+"confusion": {},
+"files": 14,
+"other": 0,
+"packs": 1,
+"precision": 1.0,
+"same": 14,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GORESplt": {
+"confusion": {},
+"files": 29,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 29,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GORESqsh": {
+"confusion": {},
+"files": 30,
+"other": 0,
+"packs": 1,
+"precision": 1.0,
+"same": 30,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GOREStab": {
+"confusion": {},
+"files": 5,
+"other": 0,
+"packs": 1,
+"precision": 1.0,
+"same": 5,
+"silent": 0,
+"target": [
+"Creatures",
+"Gore & Violence"
+]
+},
+"GUNAntq": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNArtl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNAuto": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNCano": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Ammo & Handling"
+]
+},
+"GUNMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Ammo & Handling"
+]
+},
+"GUNMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNPis": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNRif": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNShotg": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNSupr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"GUNTech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Firearms"
+]
+},
+"HAIL": {
+"confusion": {
+"Nature": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"HMNBlow": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNBrth": {
+"confusion": {
+"Ambience": 2,
+"Vocals": 4
+},
+"files": 10,
+"other": 6,
+"packs": 2,
+"precision": 0.4,
+"same": 4,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNBurp": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNCough": {
+"confusion": {
+"Vocals": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNHart": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNKiss": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNPee": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNSkin": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNSneez": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNSniff": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNSnor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNSpit": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HMNVomit": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Body & Hands"
+]
+},
+"HORNAir": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"HORNCele": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"HORNMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"HORNTrad": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"ICEBrk": {
+"confusion": {
+"Transitions": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"ICECrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"ICEFric": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"ICEHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"ICEImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"ICEMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"ICEMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"ICETonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Glass"
+]
+},
+"LASRBeam": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Beams & Rays"
+]
+},
+"LASRGun": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Beams & Rays"
+]
+},
+"LASRImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Beams & Rays"
+]
+},
+"LASRMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Beams & Rays"
+]
+},
+"LETHRCreak": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"LETHRHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"LETHRImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"LETHRMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"LETHRMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"LIQBubl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"LIQImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"LIQMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"LIQMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"LIQSuct": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"MACHAmus": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHAntq": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHAppl": {
+"confusion": {
+"Foley": 4
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHCnst": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHElev": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MACHEscl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MACHFan": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MACHGrdn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHGym": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHHvac": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MACHInd": {
+"confusion": {
+"Drums": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHMech": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MACHMed": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": null,
+"same": 0,
+"silent": 2,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHOffc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MACHPump": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Hydraulics & Pneumatics"
+]
+},
+"MACHTech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+null
+]
+},
+"MAGAngl": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Magic",
+"Enchantments & Buffs"
+]
+},
+"MAGElem": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Magic",
+"Elemental Magic"
+]
+},
+"MAGEvil": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Magic",
+"Dark & Cursed"
+]
+},
+"MAGMisc": {
+"confusion": {
+"Foley": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 2,
+"target": [
+"Magic",
+null
+]
+},
+"MAGPoof": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Magic",
+"Spells & Casts"
+]
+},
+"MAGShim": {
+"confusion": {
+"Keys & Mallets": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Magic",
+"Enchantments & Buffs"
+]
+},
+"MAGSpel": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Magic",
+"Spells & Casts"
+]
+},
+"MECHClik": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": null,
+"same": 0,
+"silent": 2,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHGear": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Gears & Ratchets"
+]
+},
+"MECHHydr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Hydraulics & Pneumatics"
+]
+},
+"MECHLock": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHLtch": {
+"confusion": {
+"Foley": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHLvr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHMisc": {
+"confusion": {
+"Transitions": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHPuly": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHRelay": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHRolr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"MECHRtch": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Gears & Ratchets"
+]
+},
+"MECHSwtch": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"METLBrk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"METLCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"METLFric": {
+"confusion": {
+"Nature": 2,
+"Weapons": 2
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"METLHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"METLImpt": {
+"confusion": {
+"Weapons": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.667,
+"same": 4,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"METLMisc": {
+"confusion": {
+"Magic": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"METLMvmt": {
+"confusion": {},
+"files": 6,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 6,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"METLTonl": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Impacts",
+"Metal"
+]
+},
+"MOTRAntq": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MOTRComb": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MOTRElec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MOTRMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MOTRSrvo": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MOTRTurb": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"MOVEActv": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"MOVEAnml": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"MOVECrea": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Footsteps"
+]
+},
+"MOVECrwd": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Urban & City"
+]
+},
+"MOVEHmn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"MOVEInsc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"MOVEMisc": {
+"confusion": {
+"Vehicles": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"MOVEPres": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"MUSCBell": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"MUSCBrass": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Strings & Winds",
+"Brass"
+]
+},
+"MUSCChim": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"MUSCChor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Choirs & Chants"
+]
+},
+"MUSCExpr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+null
+]
+},
+"MUSCInst": {
+"confusion": {
+"Strings & Winds": 6
+},
+"files": 6,
+"other": 6,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+null
+]
+},
+"MUSCKeyd": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Piano"
+]
+},
+"MUSCLoop": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+"Musical Loops"
+]
+},
+"MUSCMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+null
+]
+},
+"MUSCPerc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Drums",
+"Percussion"
+]
+},
+"MUSCPluck": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Synths",
+"Plucks & Arps"
+]
+},
+"MUSCPrfm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+null
+]
+},
+"MUSCShake": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Drums",
+"Percussion"
+]
+},
+"MUSCSmpl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+null
+]
+},
+"MUSCSong": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+"Full Tracks"
+]
+},
+"MUSCStngr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Cinematic Hits"
+]
+},
+"MUSCStr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Strings & Winds",
+"Strings"
+]
+},
+"MUSCSynth": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Synths",
+"Synth One Shots"
+]
+},
+"MUSCTnprc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Drums",
+"Percussion"
+]
+},
+"MUSCToy": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Keys & Mallets",
+"Mallets & Bells"
+]
+},
+"MUSCWind": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Strings & Winds",
+"Woodwinds"
+]
+},
+"NATDAval": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"NATDMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+null
+]
+},
+"NATDQuak": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"NATDThyp": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+null
+]
+},
+"NATDTorn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+null
+]
+},
+"NATDTsun": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+null
+]
+},
+"NATDVolc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"OBJBag": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJBook": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"OBJCoin": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJCont": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJFash": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"OBJFurn": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJGrdn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJGym": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJHsehld": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"OBJJewl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJKey": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJLug": {
+"confusion": {},
+"files": 12,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 8,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJMed": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"OBJMisc": {
+"confusion": {
+"Impacts": 4,
+"UI & Game": 6
+},
+"files": 22,
+"other": 10,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 12,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJOffc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"OBJPack": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"OBJTape": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJUmbr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJWhled": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"OBJWrite": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"OBJZipr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"PAPRFltr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"PAPRFric": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"PAPRHndl": {
+"confusion": {
+"UI & Game": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"PAPRImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"PAPRMisc": {
+"confusion": {
+"Transitions": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 4,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"PAPRRip": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"PAPRTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Paper & Packaging"
+]
+},
+"PLASBrk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"PLASCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"PLASFric": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"PLASHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"PLASImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"PLASMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"PLASMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"PLASTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"RAIN": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINClth": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINConc": {
+"confusion": {
+"Ambience": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINGlas": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINInt": {
+"confusion": {
+"Ambience": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINMetl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINPlas": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINVege": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINWatr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"RAINWood": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"ROBTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Aliens & Robots"
+]
+},
+"ROBTMvmt": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Creatures",
+"Aliens & Robots"
+]
+},
+"ROBTVox": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Aliens & Robots"
+]
+},
+"ROCKBrk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"ROCKCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"ROCKFric": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"ROCKHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"ROCKImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"ROCKMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"ROCKMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"ROCKTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Stone & Concrete"
+]
+},
+"ROPECreak": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"ROPEHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"ROPEImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"ROPEMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"ROPEMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"RUBRCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"RUBRFric": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"RUBRHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"RUBRImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"RUBRMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"RUBRMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"RUBRTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Plastic & Ceramic"
+]
+},
+"SCIAlrm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"SCICmpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Computers & Data"
+]
+},
+"SCIDoor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"SCIEnrg": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Energy & Plasma"
+]
+},
+"SCIImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+null
+]
+},
+"SCIMach": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Motors & Servos"
+]
+},
+"SCIMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"SCIMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+null
+]
+},
+"SCIRetro": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+null
+]
+},
+"SCIShip": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Sci-Fi Craft"
+]
+},
+"SCIVeh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Sci-Fi Craft"
+]
+},
+"SCIWeap": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Weapons",
+"Sci-Fi Weapons"
+]
+},
+"SNOWCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"SNOWFric": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"SNOWHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"SNOWImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"SNOWMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"SNOWMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Crash & Collapse"
+]
+},
+"SPRTCourt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTField": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTGym": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTIndor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTSkate": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTTrck": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTWatr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"SPRTWntr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"STORM": {
+"confusion": {},
+"files": 6,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 6,
+"silent": 0,
+"target": [
+"Nature",
+"Thunder & Storms"
+]
+},
+"SWSH": {
+"confusion": {
+"Weapons": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Whooshes & Sweeps"
+]
+},
+"THUN": {
+"confusion": {
+"Ambience": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Thunder & Storms"
+]
+},
+"TOOLGrdn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"TOOLHand": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"TOOLMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"TOOLPneu": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"TOOLPowr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Tools & Power"
+]
+},
+"TOONAnml": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONBoing": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONClang": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONCreak": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONHorn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"TOONImpt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONMach": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONMisc": {
+"confusion": {
+"Nature": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONMx": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Music",
+"Musical Loops"
+]
+},
+"TOONPluk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONPop": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONShake": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONSplt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONSqk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONStrch": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONSwsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONTwang": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONVeh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"TOONVox": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"TOONWarb": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONWhis": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOONZip": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"TOYElec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"TOYMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"TOYMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Sports & Toys"
+]
+},
+"TRNBrake": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Hydraulics & Pneumatics"
+]
+},
+"TRNClak": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNDiesl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNDoor": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNElec": {
+"confusion": {
+"Sci-Fi & Tech": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNHorn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNHspd": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNInt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"TRNMisc": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNSbwy": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNSteam": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"TRNTram": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Vehicles",
+"Rail"
+]
+},
+"UIAlert": {
+"confusion": {
+"Bass": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"UIBeep": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Notifications & Alerts"
+]
+},
+"UIClick": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"UI & Game",
+"Clicks & Buttons"
+]
+},
+"UIData": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Sci-Fi & Tech",
+"Computers & Data"
+]
+},
+"UIGlitch": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Transitions",
+"Glitches & Stutters"
+]
+},
+"UIMisc": {
+"confusion": {
+"Keys & Mallets": 4
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+null
+]
+},
+"UIMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"UI & Game",
+"Menus & Navigation"
+]
+},
+"VEGEGras": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"VEGELeaf": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"VEGEMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"VEGETree": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Vegetation & Earth"
+]
+},
+"VEHAlrm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHAntq": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHAtv": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Motorcycles & Bikes"
+]
+},
+"VEHBike": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Motorcycles & Bikes"
+]
+},
+"VEHBrake": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Hydraulics & Pneumatics"
+]
+},
+"VEHBus": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHBy": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHCar": {
+"confusion": {},
+"files": 6,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 6,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHCnst": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHDoor": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"VEHElec": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHEmrg": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHFarm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHFrght": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHHorn": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHInt": {
+"confusion": {},
+"files": 6,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 6,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHJalop": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHMech": {
+"confusion": {
+"Keys & Mallets": 2,
+"Vehicles": 2
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Switches & Mechanisms"
+]
+},
+"VEHMil": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHMoto": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Vehicles",
+"Motorcycles & Bikes"
+]
+},
+"VEHRace": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHSirn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHSkid": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHSusp": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Hydraulics & Pneumatics"
+]
+},
+"VEHTire": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHTruck": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHUtil": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHWagn": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VEHWndw": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vehicles",
+"Cars & Trucks"
+]
+},
+"VOXAlien": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Aliens & Robots"
+]
+},
+"VOXBaby": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXCheer": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXChld": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXCry": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXEfrt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXFem": {
+"confusion": {
+"Foley": 2
+},
+"files": 8,
+"other": 2,
+"packs": 2,
+"precision": 0.667,
+"same": 4,
+"silent": 2,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXFutz": {
+"confusion": {
+"Ambience": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.667,
+"same": 4,
+"silent": 0,
+"target": [
+"Vocals",
+"Spoken & Dialogue"
+]
+},
+"VOXHist": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Spoken & Dialogue"
+]
+},
+"VOXLaff": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXMale": {
+"confusion": {
+"UI & Game": 2,
+"Vehicles": 4
+},
+"files": 20,
+"other": 6,
+"packs": 2,
+"precision": 0.625,
+"same": 10,
+"silent": 4,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXReac": {
+"confusion": {
+"Ambience": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 2,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXScrm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"VOXSing": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Choirs & Chants"
+]
+},
+"VOXWhsp": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"WATRBubl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRDran": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"WATRDrip": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRFall": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"WATRFizz": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRFlow": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRFoun": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRImpt": {
+"confusion": {
+"Impacts": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRLap": {
+"confusion": {
+"Nature": 4
+},
+"files": 4,
+"other": 4,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRMisc": {
+"confusion": {
+"Magic": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRPlmb": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": null,
+"same": 0,
+"silent": 2,
+"target": [
+"Foley",
+"Household & Office"
+]
+},
+"WATRPour": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRSplsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRSpray": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRStm": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Hydraulics & Pneumatics"
+]
+},
+"WATRSurf": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"WATRTurb": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Water Foley"
+]
+},
+"WATRUndwtr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Ambience",
+"Underwater"
+]
+},
+"WATRWave": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Nature",
+"Water & Rain"
+]
+},
+"WHSH": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Transitions",
+"Whooshes & Sweeps"
+]
+},
+"WHSTHmn": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Vocals",
+"Game Characters"
+]
+},
+"WHSTMech": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Machinery",
+"Clocks & Ticking"
+]
+},
+"WHSTMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Objects & Props"
+]
+},
+"WIND": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Wind"
+]
+},
+"WINDDsgn": {
+"confusion": {
+"Magic": 2
+},
+"files": 4,
+"other": 2,
+"packs": 2,
+"precision": 0.5,
+"same": 2,
+"silent": 0,
+"target": [
+"Nature",
+"Wind"
+]
+},
+"WINDGust": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Wind"
+]
+},
+"WINDInt": {
+"confusion": {
+"Ambience": 2
+},
+"files": 6,
+"other": 2,
+"packs": 2,
+"precision": 0.667,
+"same": 4,
+"silent": 0,
+"target": [
+"Nature",
+"Wind"
+]
+},
+"WINDTonl": {
+"confusion": {
+"Ambience": 2
+},
+"files": 2,
+"other": 2,
+"packs": 2,
+"precision": 0.0,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Wind"
+]
+},
+"WINDTurb": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Wind"
+]
+},
+"WINDVege": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Wind"
+]
+},
+"WINGBird": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"WINGCrea": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Creatures",
+"Monsters & Beasts"
+]
+},
+"WINGInsc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"WINGMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Animals & Birds"
+]
+},
+"WNDWCover": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Cloth & Movement"
+]
+},
+"WNDWHdwr": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"WNDWKnck": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"WNDWMetl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"WNDWMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"WNDWPlas": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"WNDWWood": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Foley",
+"Doors & Locks"
+]
+},
+"WOODBrk": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WOODCrsh": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WOODFric": {
+"confusion": {},
+"files": 2,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 2,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WOODHndl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WOODImpt": {
+"confusion": {},
+"files": 4,
+"other": 0,
+"packs": 2,
+"precision": 1.0,
+"same": 4,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WOODMisc": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WOODMvmt": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WOODTonl": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Impacts",
+"Wood"
+]
+},
+"WTHR": {
+"confusion": {},
+"files": 0,
+"other": 0,
+"packs": 0,
+"precision": null,
+"same": 0,
+"silent": 0,
+"target": [
+"Nature",
+"Thunder & Storms"
+]
+}
+}

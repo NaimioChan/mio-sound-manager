@@ -2,6 +2,44 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-19 11:50 · hermes · UCS 8.2.1 兜底词表
+
+- 改: 新增 `tools/ucs_mapping.py`（手写 753 条 UCS → 22 个分类的投影 + 排除清单）、`tools/import-ucs.py`（读发布包 → 三道筛 → `tools/ucs_keywords.py`）、`tools/ucs-evidence.py` + `tools/ucs-catid-evidence.py`（实测证据 → 两份 json）、`tools/classify-mirror.py`（分类器的 Python 镜像 + `--sample` 导出期望值）；`tools/gen-category-dict.py` 改为同时生成 `dictionary.rs` 与 `ucs.rs`、并保持 `dictionary.rs` 逐字节不变；`crates/mio-index/src/classify/mod.rs`（`classify` 拆成两遍 + `classify_fallback` + `finish` + `add` + `cat_id_prefix` + `build_cat_ids`/`build_ucs_keywords`/`build_ucs_phrases`，9 个新测试）；新增生成文件 `crates/mio-index/src/classify/ucs.rs`；`crates/mio-cli/src/main.rs`（`classify-check` 子命令）；`.gitignore`（`/docs/UCS Release/`）；`docs/index.md`、`THIRD-PARTY-NOTICES.md`
+- 验证: `cargo test --release --workspace` 90 全通过（index 71 + engine 19）；`mio-cli classify-check` 对 271,350 条真实路径 **0 差异**；实测同一语料未分类 12,740（4.70%）→ 11,611（4.28%），1,129 个文件拿到分类，**已分类文件的分类变化 0**；`tools/gen-category-dict.py` 重跑后 `dictionary.rs` 在 git 里无差异
+- 遗留: ① AGENTS.md 的「Where things live」表还没加 UCS 那几行（受保护文件，等用户批准）；② UCS 的发布包不进 git，所以 CI/新机器上无法重跑证据链，只能提交已经生成好的 `ucs_keywords.py` 与两份 evidence json；③ 6,085 个 UCS 词里有 4,405 个在本机语料上零命中（`disney`、`minecraft`、`hippopotamus` 之类），留着是因为它们是 UCS 的正规条目、对别的库有用，但在这台机器的库上不会触发；④ CatID 只覆盖到语料里出现过的 139 个，其余 564 个从未在真实路径上验证过映射
+- 下一步: 换新 UCS 版本时按 `docs/index.md`「维护流程」重跑四步；若要收紧词表，把 `tools/import-ucs.py` 的 `FILES_CUT` 从 250 往下调，每收紧一档都要重跑 `classify-check`
+
+### UCS 不能当第二套分类，只能当兜底
+
+最初的方案是把 UCS 的 753 个条目直接映射进 22 个分类、让两套词在同一个分数表里竞争。实测否掉了它：把 7,289 个 UCS 同义词按低权重（文件名 1 分）混进去，28,851 个文件的分类发生变化，其中有 22,442 个是已经分好的文件被改到别的分类（`Vocals → Music` 2,465 个、`Magic → Music` 2,291 个、`Drums → Music` 2,027 个，其余散布在 `Impacts`、`UI & Game` 等）。
+
+改成两遍之后同一个词表的收益是净的：1,129 个原本未分类的文件拿到分类，**已分类文件 0 个变化**。这个 0 不是权重调出来的——兜底阶段只有在第一遍得分为 0 时才进入，所以「UCS 不覆盖手工词表」是代码结构给的保证，改权重也破坏不了。
+
+### 词表要按证据筛，不是按看起来对不对筛
+
+UCS 的同义词表是给馆员做检索用的，同一个词在不同条目下意味着不同的东西。直接拿来用会被两类词毒化：
+
+- **包主题词。** `hybrid` 是 UCS 里 VEHICLES-CAR 的同义词，在这台机器的库里是 Sonniss 包名的一部分：12,454 个文件横跨 19 个包。这类词一放进来就会把整个厂商目录染成同一个分类，和 `docs/index.md` 里 `epic` 的教训是同一个。
+- **跨域歧义词。** `trance` 是 MAGIC-SPELL 的同义词，在库里是曲风；`acid` 是 GORE 的同义词，在库里是合成器的 acid 音色；`calendar` 是 FOLEY-OFFICE 的同义词，在库里是 Sonniss 包的文件夹名（7,350 个文件、2 个包）。
+
+所以 `tools/ucs-evidence.py` 统计的是「在文件名含有该词、且本项目分类器已经给出答案的文件里，答案与 UCS 映射一致的比例」。一致率 ≥ 0.6 且样本 ≥ 10 才收，样本不足时只有影响面 ≤ 250 个文件才收。7,078 个候选里留下 6,085 个，被否掉的 976 个是「实测与映射矛盾」、17 个是「没有证据却横扫整个包」。
+
+### 镜像会漂移，必须先对等再报数
+
+`tools/classify-mirror.py` 是为了在 Python 里快速试词表而写的。这一轮它漂了两次，两次都是 `mio-cli classify-check` 抓出来的：
+
+1. `lookup()` 在 curated 没命中时回退到 UCS 表，等于让 curated 阶段偷偷用上了 UCS 词（Rust 是严格分两遍的）；
+2. `UCS_FILE_WEIGHT = 1`，而 Rust 的兜底文件名词权重是 2。两条路径给的答案在 5 个文件上分叉，而那 5 个正好是「目录词 vs 文件名词」的平局点。
+
+两次都是先看到「271,350 条里有 5 条不一致」才发现，而不是靠读代码。所以规矩是写进 `docs/index.md` 的：**任何由镜像算出来的数字，先过 `classify-check` 才能引用。**
+
+### CatID 要区分大小写，CatID 的映射也要过证据
+
+`GORESqsh_...` 这样的前缀是 UCS 在文件名里声明分类，比任何词都硬（所以权重 8）。但 `RAIN`、`WIND`、`STORM`、`TEST`、`IR`、`MIX` 这些 CatID 本身就是常见英文词，折叠大小写会让每个 `rain_on_roof.wav` 都声明一次；因此 `cat_id_prefix` 用原始大小写比较，且要求前缀后紧跟 UCS 自己的分隔符之一。
+
+映射本身也过了同一套证据筛：`DSGNBass`（UCS 的 DESIGNED/BASS DIVE）在这台机器的库里 18 个文件全是 Bass，`OBJMisc` 22 个文件里 curated 已经分出 10 个，两个都不一致，被排除；`FGHTImpt`、`HNRBrth`、`GOREMisc`、`MUSCInst` 同理。最终 703 个 CatID 里，语料里真正出现过的只有 139 个。
+
+
 ## 2026-11-18 21:40 · hermes · 0.1.2：波形手势重做、声道分道、库文件改名、循环开关可见
 
 - 改: `crates/mio-engine/src/waveform.rs`（`lanes` 逐声道包络 + `bucket_peaks_lane`、`peaks_for` 共用内层循环、4 个新测试）、`crates/mio-engine/src/lib.rs`（导出 `bucket_peaks_lane`）、`crates/mio-index/src/db.rs`（`DB_FILENAME` → `mio-sm.db`、`LEGACY_DB_FILENAME`、`adopt_legacy_file` 连 `-wal`/`-shm` 一起改名、1 个新测试）、`crates/mio-index/src/indexer.rs`（文档串）、`crates/mio-app/src/commands.rs` + `state.rs`（`WaveformDto.lanes`）、`crates/mio-app/tests/ipc.rs`（断言双声道两条道）、`ui/src/WaveformDock.tsx`（顶部三分之一拖出带、边界拖动、竖杠光标、分层绘制、`ix-icon-toggle-button` 循环开关、`loopState()` 说清循环的是什么）、`ui/src/App.tsx`（`dragRegionOut(atSeconds)` 按起点决定拖选区还是拖源文件）、`ui/src/ipc.ts`（`Waveform.lanes`）、`ui/src/ix-elements.d.ts`（`ix-icon-toggle-button` 类型）、`ui/src/styles.css`（`.wave-grab` 带、三种光标、`#transport-loop.on` 实心覆盖）、`ui/src/locales/{en,zh,ja}.ts`（4 个新键 + `dock.loopWhole`）、`tools/check-region.mjs`（新增光标/拖出带/边界拖动/循环外观/声道道数/拖出落成 WAV 共 16 项）、`tools/README.md`、`docs/{app,engine,index}.md`

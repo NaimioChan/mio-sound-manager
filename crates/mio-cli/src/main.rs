@@ -129,9 +129,10 @@ fn run() -> Result<()> {
         "play" => play(&args),
         "switch" => switch(&args),
         "render" => render(&args),
+        "classify-check" => classify_check(),
         other => bail!(
             "unknown command {other}; expected play | switch | devices | probe | render \
-                        | index | index-stats | search | classify-diff"
+                        | classify-check | index | index-stats | search | classify-diff"
         ),
     }
 }
@@ -148,6 +149,43 @@ fn run_index_command(command: &str, rest: &[String]) -> Result<()> {
         "classify-diff" => index_cmd::run_classify_diff(&args),
         "probe-bench" => index_cmd::run_probe_bench(&args),
         other => bail!("unhandled index command {other}"),
+    }
+}
+
+/// A Python mirror of this classifier exists (`tools/classify-mirror.py`) because
+/// tuning the vocabulary needs a fast loop. It is only trustworthy while it
+/// agrees with the Rust implementation, so this command is the check: it reads
+/// the mirror's expected output for a sample of paths and reports disagreements.
+///
+///     python tools/classify-mirror.py --sample 3000 --db <library.db> > expect.json
+///     mio-cli classify-check expect.json
+fn classify_check() -> Result<()> {
+    let path = std::env::args().nth(2).context("usage: mio-cli classify-check <expect.json>")?;
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
+    let expected: Vec<(String, String, Option<String>)> =
+        serde_json::from_str(&text).with_context(|| format!("parsing {path}"))?;
+
+    let classifier = mio_index::Classifier::new();
+    let total = expected.len();
+    let mut mismatches = 0usize;
+    for (path, category, subcategory) in &expected {
+        let got = classifier.classify(path);
+        if got.category != *category || got.subcategory != *subcategory {
+            mismatches += 1;
+            if mismatches <= 20 {
+                println!(
+                    "  {}\n    mirror {category} / {subcategory:?}\n    rust   {} / {:?}",
+                    path, got.category, got.subcategory
+                );
+            }
+        }
+    }
+    println!("checked {total} paths, {mismatches} mismatches");
+    if mismatches == 0 {
+        println!("PARITY OK: the mirror reproduces the Rust classifier");
+        Ok(())
+    } else {
+        bail!("PARITY FAILED: {mismatches} of {total} rows disagree; the mirror has drifted")
     }
 }
 

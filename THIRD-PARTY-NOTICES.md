@@ -43,3 +43,11 @@ ASIO SDK（本仓库不包含 SDK 源码，原因见下）。
 `tools/taxonomy.py` 与本项目生成的 `crates/mio-index/src/classify/dictionary.rs` 是
 本项目自行编写的分类体系，未取自任何 copyleft 项目的词表（背景见 `docs/agent-log.md`
 关于 Slip Sound 汇编版权的记录）。
+
+## 5. Universal Category System 8.2.1
+
+`crates/mio-index/src/classify/ucs.rs` 里有一份从 UCS 派生、经本项目实测筛选的兜底词表。
+UCS 是 Tim Nielsen、Justin Drury、Kai Paquin 等人发起的公有领域计划
+（<https://www.universalcategorysystem.com/>），发布包本身**不随本项目分发**，也不在仓库里
+（`/docs/UCS Release/` 已 gitignore）。随产物分发的只有派生的词表，由
+`tools/import-ucs.py` 生成，筛选依据记录在 `tools/ucs-evidence.json`。

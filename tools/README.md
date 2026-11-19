@@ -28,6 +28,52 @@ cargo build --release -p mio-cli
 进停用词而不是关键词。打分模型与取用位置写在
 `crates/mio-index/src/classify/mod.rs` 的模块文档里，实测数字写在 `docs/index.md`。
 
+## UCS 兜底词表
+
+第二套词表来自 [Universal Category System](https://www.universalcategorysystem.com/)
+8.2.1，链路是五步，顺序不能乱：
+
+```bash
+# 1. 把 UCS 发布包解压到 docs/UCS Release/（git 忽略，不进仓库、不随产物分发）
+# 2. 统计每个候选词在真实库上的表现（慢，几分钟）
+python tools/ucs-evidence.py            # → tools/ucs-evidence.json
+python tools/ucs-catid-evidence.py      # → tools/ucs-catid-evidence.json
+# 3. 按证据筛出词表
+python tools/import-ucs.py              # → tools/ucs_keywords.py
+# 4. 生成 Rust
+python tools/gen-category-dict.py       # → dictionary.rs 与 ucs.rs
+# 5. 验收
+cargo test -p mio-index
+python tools/ucs-report.py              # 未分类变化 + 回归数，退出码 0 表示零回归
+```
+
+**第 3 步不是可选的。** 直接把 UCS 的同义词表搬进来会把库弄坏：`one shot` 一个短语
+就把 15,816 个文件拖进 Music，`hybrid`（在库里是 Sonniss 的包名，12,454 个文件横跨
+19 个包）会把整个厂商目录染成 VEHICLES-CAR。所以每个词要过“在文件名含该词、且本项目
+已经分出答案的文件里，答案与 UCS 映射一致率 ≥ 0.6 且样本 ≥ 10”这一关；样本不足时
+只有影响面 ≤ 250 个文件才收。三个阈值就是 `tools/import-ucs.py` 顶部的
+`PRECISION_CUT` / `HITS_CUT` / `FILES_CUT`，收紧任何一档都要重跑第 5 步。
+
+映射本身写在 `tools/ucs_mapping.py`：`TOP` 给每个 UCS 大类一个默认归属（`None` 表示
+整支丢弃），`SUB` 覆盖个别条目，`DROP_SYNONYMS` / `DROP_PHRASES` 记排除项与理由。
+改映射等于改词表，一样要重跑证据链——否则新映射没有证据支撑。
+
+**`tools/classify-mirror.py` 给的是测量数字，不是产品行为。** 它是 `classify/mod.rs`
+的 Python 镜像，用来在秒级试不同阈值（改一次 Rust 重编要几十秒）。它会漂移，所以任何
+由它算出来的数字都要先过对等检查：
+
+```bash
+python tools/classify-mirror.py --sample 271350 --ucs > expect.json
+./target/release/mio-cli.exe classify-check expect.json   # 必须 0 mismatches
+```
+
+本轮开发里它漂了两次（`UCS_FILE_WEIGHT` 写 1 而 Rust 是 2；`lookup()` 让 UCS 词混进
+curated 阶段），两次都是这条检查抓出来的，不是读代码发现的。
+
+**UCS 是兜底，不是第二套分类。** 两遍结构写在 `classify/mod.rs`：curated 得分不为 0
+时 UCS 表根本不会被查询，所以「UCS 不覆盖手工词表」是代码结构而不是权重巧合。改这条
+结构的话，回归数会从 0 变成几万。
+
 ## 外壳的 CDP 检查
 
 `./tools/run-app.sh` 起窗口（webview 调试端口 9223），然后：
