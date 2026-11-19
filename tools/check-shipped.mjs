@@ -63,12 +63,24 @@ check(
   JSON.stringify(loop)
 )
 
-// Version, read from the binary's own config rather than the tag.
-const version = await page.evaluate(() => {
-  const meta = document.querySelector('meta[name="version"]')
-  return meta?.content ?? null
-})
-if (version) check(version.startsWith('0.1.1'), 'the version is 0.1.1', version)
+// Version, asked of the binary itself rather than read off the tag: `plugin:app|version`
+// returns the string compiled in from `tauri.conf.json`, so a build made before the
+// version bump fails here instead of shipping under the wrong number.
+const version = await invoke('plugin:app|version')
+check(version === '0.1.2', 'the shipped binary reports 0.1.2', String(version))
+
+// The colour scheme, which is what this release changed. Asserting the applied
+// default rather than the picker's contents: a build with the old `classic-*`
+// defaults painted iX's teal, and that is visible in the token values.
+const theme = await page.evaluate(() => ({
+  id: document.documentElement.dataset.mioTheme,
+  stored: localStorage.getItem('mio:theme'),
+  bg: getComputedStyle(document.documentElement).getPropertyValue('--theme-color-1').trim(),
+  accent: getComputedStyle(document.documentElement).getPropertyValue('--theme-color-primary').trim()
+}))
+check(theme.id === 'windows-dark', 'the default theme is Windows Dark', String(theme.id))
+check(theme.bg === '#202020', 'the window background is Fluent dark', theme.bg)
+check(theme.accent === '#4cc2ff', 'the accent is Fluent dark accent', theme.accent)
 
 await browser.close()
 if (problems.length === 0) {

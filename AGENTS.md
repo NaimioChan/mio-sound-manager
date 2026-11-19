@@ -63,7 +63,7 @@ cargo build -p mio-app --release
 ./tools/build-app.sh                     # 产品构建：WASAPI + ASIO（检查 SDK 与 libclang 后带 feature 构建）
 ./tools/build-app.sh --no-asio           # 纯 WASAPI 的开发构建，不需要 ASIO SDK
 ./ui/node_modules/.bin/tauri build --features asio --bundles nsis   # 安装包（仓库根执行，先 kill-app）
-./tools/package-portable.sh              # 便携版 zip → dist/（exe + LICENSE + 第三方声明）
+./tools/package-portable.sh              # 便携版 zip（0.1.2 起不再发，脚本留着重建旧包）
 ./tools/run-app.sh                      # launches with the webview debugger on :9223
 ./tools/kill-app.sh                     # Windows won't replace a mapped exe
 ```
@@ -111,7 +111,7 @@ The six `check-*.mjs` that drive a window assert on English copy and pin `mio:lo
 | 外壳与 IPC 细节 | `docs/app.md` |
 | 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
 | 外壳的 CDP 驱动与检查脚本 | `tools/` |
-| 发版（安装包、便携版 zip、产物验收） | `tools/README.md`「发版」一节 |
+| 发版（安装包、产物验收） | `tools/README.md`「发版」一节 |
 | BPM 解析（只从文件名取，不从音频推断） | `crates/mio-index/src/bpm.rs` |
 | 分类词表（改这里，再跑生成器） | `tools/taxonomy.py` |
 | 分类词典生成器（勿手改 `dictionary.rs` / `ucs.rs`） | `tools/gen-category-dict.py` |

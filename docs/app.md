@@ -306,20 +306,19 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 ## 打包与发版
 
-产物有两种形态，都从同一个 release 构建出来：
+产物只有安装版一种：
 
 | 产物 | 怎么来 | 里面是什么 |
 | --- | --- | --- |
-| 安装版 `Mio-Sound-Manager_<ver>_x64-setup.exe` | `tauri build --features asio --bundles nsis` | NSIS 安装器，当前用户安装、不弹 UAC、三语安装界面 |
-| 便携版 `Mio-Sound-Manager_<ver>_x64-portable.zip` | `tools/package-portable.sh` | `Mio Sound Manager.exe` + `LICENSE` + `THIRD-PARTY-NOTICES.md` |
+| `Mio-Sound-Manager_<ver>_x64-setup.exe` | `tauri build --features asio --bundles nsis` | NSIS 安装器，当前用户安装、不弹 UAC、三语安装界面 |
 
-**便携版是 zip 不是单 exe。** 单 exe 只是 `cargo` 产物的改名，而 AGPL 要求二进制分发时许可与第三方声明跟着走——把那三样拆开，用户下载的那个文件就不再是能用的东西，旁边该有什么只能靠猜。zip 把内容说清楚。
+**便携版从 0.1.2 起不再产出。** `tools/package-portable.sh` 留在仓库里是为了能重建 0.1.1 和更早的包；它当年存在的理由是「单 exe 只是 `cargo` 产物的改名，AGPL 要求许可与第三方声明跟着走」，于是打成 zip 把内容说清楚。现在只发安装器，这条理由落到了安装器身上：NSIS 安装包自带许可页，`THIRD-PARTY-NOTICES.md` 作为 release 附件单独挂着。
 
-没有 DLL：`tauri` 静态链 WebView2Loader，webview 资源经 `custom-protocol` 编进 exe，所以解压出来的目录确实自包含。`package-portable.sh` 在 `target/release` 下发现任何 `.dll` 时**直接失败**，而不是打一个缺依赖的包出去——那个错误会发生在用户机器上，而这里能提前知道。
+没有 DLL：`tauri` 静态链 WebView2Loader，webview 资源经 `custom-protocol` 编进 exe。
 
-**版本号有两处，必须同步。** `Cargo.toml` 的 `[workspace.package] version` 决定 crate 版本与 zip 文件名（脚本从这里读），`crates/mio-app/tauri.conf.json` 的 `version` 决定安装包文件名。只改前者会得到「exe 是 0.1.1、安装包叫 0.1.0」。
+**版本号有两处，必须同步。** `Cargo.toml` 的 `[workspace.package] version` 决定 crate 版本与窗口标题里的版本，`crates/mio-app/tauri.conf.json` 的 `version` 决定安装包文件名。只改前者会得到「exe 是 0.1.2、安装包叫 0.1.1」。
 
-**构建前必须关掉正在运行的应用。** Windows 不允许替换已映射的 exe，报的是 `failed to remove file … (os error 5)`——看起来像权限问题，实际是文件锁。`tools/kill-app.sh` 现在同时结束 `mio-sound-manager`（cargo 产物与安装版）与 `Mio Sound Manager`（便携版 exe）两个进程名。
+**构建前必须关掉正在运行的应用。** Windows 不允许替换已映射的 exe，报的是 `failed to remove file … (os error 5)`——看起来像权限问题，实际是文件锁。`tools/kill-app.sh` 同时结束 `mio-sound-manager`（cargo 产物与安装版）与 `Mio Sound Manager`（0.1.1 及更早的便携版 exe）两个进程名。
 
 **`tauri build` 要在仓库根执行。** `ui/` 下没有 `tauri.conf.json`，在 `ui/` 里跑会报 `Couldn't recognize the current folder as a Tauri project`。
 

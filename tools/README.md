@@ -123,12 +123,11 @@ webview 不再响应任何 IPC，所以不要在它后面加需要后端的断�
 
 ## 发版
 
-两步，顺序固定：先构建，再打包。
+两步，顺序固定：先构建，再打包。只发安装版，便携版从 0.1.2 起不再产出。
 
 ```bash
 ./tools/build-app.sh                       # UI bundle + 带 ASIO 的 exe
 ./ui/node_modules/.bin/tauri build --features asio --bundles nsis   # 安装包
-./tools/package-portable.sh                # 便携版 zip → dist/
 ```
 
 `./tools/build-app.sh` 只产出 `target/release/mio-sound-manager.exe`，安装包要靠 `tauri
@@ -140,21 +139,16 @@ build`。**跑它之前必须关掉正在运行的应用**：Windows 不允许�
 会报 `Couldn't recognize the current folder as a Tauri project`——配置在
 `crates/mio-app/`，Tauri 会自己往上找。
 
-**便携版是 zip，不是单 exe。** 单 exe 是对「跑起来的到底是什么」的谎报：它只是 cargo 产物的
-改名，一旦有什么必须放在旁边（许可文本、第三方声明、以后的插件目录），那个改名就成了陷阱
-——用户下载的文件不再是能用的东西。zip 把里面有什么说清楚。内容固定三件：
-`Mio Sound Manager.exe`、`LICENSE`、`THIRD-PARTY-NOTICES.md`，没有 DLL
-（`tauri` 静态链 WebView2Loader，webview 资源经 `custom-protocol` 编进 exe）。脚本会在
-`target/release` 下发现任何 `.dll` 时直接失败，而不是打一个缺依赖的包出去。
-
 版本号只有一个来源：`Cargo.toml` 的 `[workspace.package] version`。`crates/mio-app/tauri.conf.json`
-的 `version` 是第二处，必须手动同步——Tauri 用它命名安装包，忘了改就会出现「exe 是 0.1.1、
-安装包叫 0.1.0」这种情况。zip 的名字由脚本从 `Cargo.toml` 读，不会漂。
+的 `version` 是第二处，必须手动同步——Tauri 用它命名安装包，忘了改就会出现「exe 是 0.1.2、
+安装包叫 0.1.1」这种情况。
+
+`tools/package-portable.sh` 还在仓库里，是给 0.1.1 及更早版本的构建用的，正常发版不跑它。
 
 发版后对着打包产物验一遍，不是对着 `target/release`：
 
 ```bash
-# 解压 zip，用调试端口起那个 exe，再跑
+# 装一遍安装包，用调试端口起装好的 exe，再跑
 node tools/check-shipped.mjs 9227
 ```
 
