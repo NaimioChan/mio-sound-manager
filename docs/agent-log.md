@@ -2,6 +2,21 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-19 18:40 · hermes · 删 Classic 两套配色、默认改 Windows 深浅、加 Tokyo Night
+
+- 改: `ui/src/theme.ts`（`Theme.palette` 去掉 `null` 分支、新增可选 `ramp` 覆盖中性 ramp、`THEMES` 换成 windows-dark/windows-light/studio-dark/studio-light/amber-console/frost-dark/tokyo-night、`DEFAULT_THEME` 变 `windows-dark`、`applyTheme` 去掉「删覆盖块」那条路径）、`ui/src/SettingsDialog.tsx`（主题卡色块不再有 iX 原样的硬编码分支）、`ui/src/locales/{en,zh,ja}.ts`（删 `theme.classicDark`/`classicLight`，加 `theme.windowsDark`/`windowsLight`/`tokyoNight`）、`ui/index.html`（首帧脚本的兜底 id）、`tools/check-themes.mjs`（七套主题、按 `data-ix-color-schema` 判深浅而不是按 id 猜、每套主题各自测 WCAG、覆盖块长度下限、**存着已删除的 `classic-dark` 时必须回退到默认**、hex 与 rgb() 两种 token 形式的亮度解析）、`tools/shot-themes.mjs`、`docs/app.md`、`tools/README.md`、`AGENTS.md`（命令注释里的「六套」）
+- 验证: `tsc --noEmit` 干净；`npm run build` 通过；`cargo build -p mio-app --release` 通过；`check-themes` 七套全过（每套 worst 都 ≥ 4.64:1，最低是 amber-console 的 facet；windows-dark 8.12、windows-light 7.5、tokyo-night 5.11）；`check-i18n` 三语 156 键齐平；`check-interactions`、`check-layout`、`check-volume`、`check-tags` 全过；截图 `themes-v2/` 七张，像素实测侧栏/表格底色（windows-dark 45/32、windows-light 231/243、tokyo-night 53/26）与 palette 的 ramp 一致
+- 遗留: ① `crates/mio-engine` 的 `dead_code` 警告是原有的，与本次无关；② 已发布的 v0.1.2 里仍是 Classic 那两套，本改动尚未发版；③ `docs/architecture.md` 的 P7 行和 `docs/agent-log.md` 的历史条目里仍写着「六套主题」——前者是当时的事实记录，未改
+- 下一步: 若要按 Windows 系统强调色动态生成（而不是固定 `#4cc2ff`/`#0067c0`），需要在 `mio-app` 侧读 `UISettings.GetColorValue` 再经 IPC 传进来；现在两套 Windows 主题是写死的 Fluent 默认强调色
+
+### 为什么删掉 palette: null 而不是留着当第三套
+
+`palette: null` 的唯一用途是「iX 原样」。它占了两套主题（深/浅），而用户明确说这两套丑，那两套删掉之后没有任何主题用它，留着就是一个永远走不到的 `if`。删掉之后 `Theme.palette` 不再可空，类型层面保证每套主题都真的注入了覆盖块——`check-themes.mjs` 里那条「覆盖块必须存在且 >1000 字符」因此变成可断言的事实，而不是碰巧成立。
+
+### ramp 必须能按主题覆盖
+
+固定 RAMP 是从背景线性混到前景，参考间距取自 iX 的深青色块。Fluent 的窗口 `#202020` 与卡片 `#2b2b2b` 只差 5%，用参考间距（16%）会把侧栏推成 `#3f3f3f` 的中灰，和 Windows 11 里那种「几乎贴着底色」的层次完全不是一个东西。windows-* 各带一份更平的 ramp，tokyo-night 沿用原 RAMP（它自己的 `bg_dark`/`bg_highlight` 恰好落在那组比例上）。
+
 ## 2026-11-19 14:30 · hermes · 索引卡片去小字、框选对比度、列顺序可拖
 
 - 改: `ui/src/IndexOverlay.tsx` + `ui/src/styles.css`（删掉索引卡片标题下那句说明与 `.index-note` 规则）、`ui/src/WaveformDock.tsx`（两层画布都改成设备像素坐标 + 逐柱 `Math.round` 消除条纹；框选改为「外面压暗 + 里面轻染 + 2px 描边」）、`ui/src/theme.ts`（`--mio-region-scrim` / `--mio-region-fill` / `--mio-region-edge` 三个 token 替换没人用的 `--mio-wave-dim`）、`ui/src/SoundTable.tsx`（列头 `draggable` + 左右半区分插入位置、`mio:column-order` 持久化、收藏星钉首位、单元格改成按列键渲染的 `Cell` 组件）、`ui/src/styles.css`（`.head-cell[draggable]` 的 grab/grabbing 光标、`[data-drop]` 的 2px 落点位）、三语字典（删 `index.note`、加 `col.reorder`）、`tools/check-tags.mjs`（列顺序六项断言 + 索引卡片无小字断言）、`docs/app.md`

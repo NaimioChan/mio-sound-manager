@@ -16,7 +16,15 @@ await page.reload()
 await page.waitForSelector('.row', { timeout: 60_000 })
 await page.waitForTimeout(1500)
 
-const ids = ['classic-dark', 'classic-light', 'studio-dark', 'studio-light', 'amber-console', 'frost-dark']
+const ids = [
+  'windows-dark',
+  'windows-light',
+  'studio-dark',
+  'studio-light',
+  'amber-console',
+  'frost-dark',
+  'tokyo-night'
+]
 for (const id of ids) {
   await page.evaluate((id) => window.__mioApplyTheme(id), id)
   await page.waitForTimeout(500)
@@ -25,5 +33,5 @@ for (const id of ids) {
   console.log(path)
 }
 // Leave the window in the default theme.
-await page.evaluate(() => window.__mioApplyTheme('classic-dark'))
+await page.evaluate(() => window.__mioApplyTheme('windows-dark'))
 await browser.close()

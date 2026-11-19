@@ -76,7 +76,7 @@ The shell is not a default workspace member: `cargo build`/`cargo test` at the r
 
 ```bash
 node tools/check-interactions.mjs   # 列表/选择/排序/搜索/菜单/modal/AUTO PLAY/播放头/seek/设置
-node tools/check-themes.mjs         # 六套主题应用、重载保留、WCAG 对比度
+node tools/check-themes.mjs         # 七套主题应用、重载保留、WCAG 对比度（每套都测）
 node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音记忆，重载
 node tools/check-region.mjs         # 行可拖、框选、循环跟随框选、区域导出 WAV、Esc 清除（跑完要重启）
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出

@@ -182,12 +182,13 @@ export const ja: Record<MessageKey, string> = {
   'category.subcategoriesOf': '{name} のサブカテゴリ',
   'category.clear': 'カテゴリをクリア',
 
-  'theme.classicDark': 'クラシック ダーク',
-  'theme.classicLight': 'クラシック ライト',
+  'theme.windowsDark': 'Windows ダーク',
+  'theme.windowsLight': 'Windows ライト',
   'theme.studioDark': 'スタジオ ダーク',
   'theme.studioLight': 'スタジオ ライト',
   'theme.amber': 'アンバー コンソール',
   'theme.frost': 'フロスト',
+  'theme.tokyoNight': '東京ナイト',
 
   'channel.mono': 'モノラル',
   'channel.stereo': 'ステレオ',

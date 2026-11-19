@@ -24,14 +24,18 @@ await page.waitForSelector('.app', { timeout: 20_000 })
 const problems = []
 const results = []
 
+// The default first: the head script has to apply it before the bundle loads, and
+// the check ends by leaving the window in it.
 const THEMES = [
-  'classic-dark',
-  'classic-light',
+  'windows-dark',
+  'windows-light',
   'studio-dark',
   'studio-light',
   'amber-console',
-  'frost-dark'
+  'frost-dark',
+  'tokyo-night'
 ]
+const DEFAULT_THEME = 'windows-dark'
 
 /** Read the tokens a theme is supposed to change, plus what actually painted. */
 const probe = () =>
@@ -55,9 +59,11 @@ const probe = () =>
       bodyColor: body.color,
       dockBg: dock ? getComputedStyle(dock).backgroundColor : 'none',
       rowColor: row ? getComputedStyle(row).color : 'none',
-      // The override block is injected, not shipped, so its presence is the
-      // difference between "iX's own palette" and "a themed one".
+      // Every theme carries a palette now, so the block must always be there; its
+      // presence is the difference between "the tokens were overridden" and "iX's
+      // own palette happened to be on screen".
       overrideBlock: !!document.getElementById('mio-theme'),
+      overrideLength: (document.getElementById('mio-theme')?.textContent ?? '').length,
       stored: localStorage.getItem('mio:theme')
     }
   })
@@ -76,69 +82,6 @@ const apply = (id) =>
     return 'ok'
   }, id)
 
-// Walk every theme and check that the DOM actually changed.
-const seen = new Map()
-for (const id of THEMES) {
-  const status = await apply(id)
-  if (status !== 'ok') {
-    problems.push(`no apply hook in the page: ${status}`)
-    break
-  }
-  await page.waitForTimeout(250)
-  const state = await probe()
-  results.push({ id, ...state })
-
-  if (state.applied !== id) problems.push(`${id}: dataset says ${state.applied}`)
-  if (state.stored !== id) problems.push(`${id}: localStorage says ${state.stored}`)
-  if (!state.accent) problems.push(`${id}: --theme-color-primary is empty`)
-  if (state.bodyBg === 'rgba(0, 0, 0, 0)') problems.push(`${id}: body background is transparent`)
-
-  const signature = `${state.bg}|${state.accent}|${state.dynamic}|${state.text}`
-  if (seen.has(signature)) problems.push(`${id} paints the same tokens as ${seen.get(signature)}`)
-  seen.set(signature, id)
-
-  // A light theme must actually be light: the background has to be brighter than
-  // the text, which is the one property that separates the two schemas.
-  const luminance = (color) => {
-    const m = color.match(/\d+(\.\d+)?/g)
-    if (!m) return null
-    const [r, g, b] = m.map(Number)
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-  }
-  const bgL = luminance(state.bg)
-  const textL = luminance(state.text)
-  if (bgL !== null && textL !== null) {
-    if (id.includes('light') && bgL < textL) {
-      problems.push(`${id}: background (${state.bg}) is darker than its text`)
-    }
-    if (id.includes('dark') && bgL > textL) {
-      problems.push(`${id}: background (${state.bg}) is lighter than its text`)
-    }
-  }
-
-  // Classic themes must not leave an override block behind: that is how "iX as
-  // shipped" stays exactly that.
-  if (id.startsWith('classic') && state.overrideBlock) {
-    problems.push(`${id}: an override block is still injected`)
-  }
-  if (!id.startsWith('classic') && !state.overrideBlock) {
-    problems.push(`${id}: no override block was injected`)
-  }
-}
-
-// Back to the default, then confirm it survives a reload: the theme is stored, and
-// a reload is the only way to prove the head script reads it.
-await apply('studio-dark')
-await page.waitForTimeout(200)
-await page.reload()
-await page.waitForSelector('.app', { timeout: 20_000 })
-await page.waitForTimeout(600)
-const afterReload = await probe()
-if (afterReload.applied !== 'studio-dark') {
-  problems.push(`after reload the theme is ${afterReload.applied}, expected studio-dark`)
-}
-if (!afterReload.overrideBlock) problems.push('after reload the override block is missing')
-
 // --- contrast, measured on the painted elements rather than on the tokens.
 //
 // A theme can pass every check above and still be unreadable: text at 42% alpha
@@ -146,7 +89,8 @@ if (!afterReload.overrideBlock) problems.push('after reload the override block i
 // illegible. WCAG's ratio is the only objective measure available here, so each
 // region's real computed colours are compared. 4.5:1 is the normal-text threshold;
 // the dim text the design uses for metadata is allowed 3:1.
-const contrastProblems = await page.evaluate(() => {
+const measureContrast = () =>
+  page.evaluate(() => {
   const parse = (color) => {
     const m = color.match(/[\d.]+/g)
     if (!m) return null
@@ -208,18 +152,126 @@ const contrastProblems = await page.evaluate(() => {
   return out
 })
 
-for (const c of contrastProblems) {
-  if (!c.ok) problems.push(`contrast: ${c.label} is ${c.ratio}:1, needs ${c.floor}:1`)
+// Walk every theme and check that the DOM actually changed.
+
+const seen = new Map()
+const contrastByTheme = new Map()
+for (const id of THEMES) {
+  const status = await apply(id)
+  if (status !== 'ok') {
+    problems.push(`no apply hook in the page: ${status}`)
+    break
+  }
+  await page.waitForTimeout(250)
+  const state = await probe()
+  results.push({ id, ...state })
+
+  if (state.applied !== id) problems.push(`${id}: dataset says ${state.applied}`)
+  if (state.stored !== id) problems.push(`${id}: localStorage says ${state.stored}`)
+  if (!state.accent) problems.push(`${id}: --theme-color-primary is empty`)
+  if (state.bodyBg === 'rgba(0, 0, 0, 0)') problems.push(`${id}: body background is transparent`)
+
+  const signature = `${state.bg}|${state.accent}|${state.dynamic}|${state.text}`
+  if (seen.has(signature)) problems.push(`${id} paints the same tokens as ${seen.get(signature)}`)
+  seen.set(signature, id)
+
+  // A light theme must actually be light: the background has to be brighter than
+  // the text, which is the one property that separates the two schemas. The schema
+  // comes from the dataset, not the id — `tokyo-night` is dark without saying so.
+  //
+  // The token values can be either form: iX's own CSS writes `rgb()`, our override
+  // block writes hex, and a hex string read as a digit sequence turns `#f3f3f3`
+  // into 3/3/3. Parse both.
+  const luminance = (color) => {
+    const hex = color.trim().match(/^#([0-9a-f]{6})$/i)
+    if (hex) {
+      const n = Number.parseInt(hex[1], 16)
+      const channel = (v) => {
+        const s = v / 255
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+      }
+      return (
+        0.2126 * channel((n >> 16) & 255) +
+        0.7152 * channel((n >> 8) & 255) +
+        0.0722 * channel(n & 255)
+      )
+    }
+    const m = color.match(/\d+(\.\d+)?/g)
+    if (!m) return null
+    const channel = (v) => {
+      const s = v / 255
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+    }
+    const [r, g, b] = m.map(Number)
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+  }
+  const bgL = luminance(state.bg)
+  const textL = luminance(state.text)
+  if (bgL !== null && textL !== null) {
+    if (state.schema === 'light' && bgL < textL) {
+      problems.push(`${id}: background (${state.bg}) is darker than its text`)
+    }
+    if (state.schema === 'dark' && bgL > textL) {
+      problems.push(`${id}: background (${state.bg}) is lighter than its text`)
+    }
+  }
+
+  if (!state.overrideBlock) problems.push(`${id}: no override block was injected`)
+  if (state.overrideLength < 1000) {
+    problems.push(`${id}: the override block is only ${state.overrideLength} chars`)
+  }
+
+  // Contrast is measured per theme, on the painted elements. Checking it once,
+  // after the loop, only ever tested whichever theme happened to be last.
+  const contrast = await measureContrast()
+  contrastByTheme.set(id, contrast)
+  for (const c of contrast) {
+    if (!c.ok) problems.push(`${id}: contrast ${c.label} is ${c.ratio}:1, needs ${c.floor}:1`)
+  }
 }
-console.table(contrastProblems)
+
+// The two Classic themes were removed. A profile that still has one stored has to
+// land on the default instead of on a blank window, which is what `loadThemeId`
+// promises: an unknown id falls back rather than being trusted.
+await page.evaluate(() => localStorage.setItem('mio:theme', 'classic-dark'))
+await page.reload()
+await page.waitForSelector('.app', { timeout: 20_000 })
+await page.waitForTimeout(600)
+const afterStale = await probe()
+if (afterStale.applied !== DEFAULT_THEME) {
+  problems.push(`a stored classic-dark applied ${afterStale.applied}, expected ${DEFAULT_THEME}`)
+}
+if (!afterStale.overrideBlock) problems.push('the fallback theme did not inject its tokens')
+
+// Then confirm a non-default theme survives a reload: the theme is stored, and a
+// reload is the only way to prove the head script reads it.
+await apply('tokyo-night')
+await page.waitForTimeout(200)
+await page.reload()
+await page.waitForSelector('.app', { timeout: 20_000 })
+await page.waitForTimeout(600)
+const afterReload = await probe()
+if (afterReload.applied !== 'tokyo-night') {
+  problems.push(`after reload the theme is ${afterReload.applied}, expected tokyo-night`)
+}
+if (!afterReload.overrideBlock) problems.push('after reload the override block is missing')
+
+
+// The contrast table, one row per theme and element, so a failing theme is named
+// in the output rather than only in the problem list.
+for (const [id, rows] of contrastByTheme) {
+  const worst = rows.reduce((a, b) => (a.ratio / a.floor <= b.ratio / b.floor ? a : b), rows[0])
+  console.log(`${id.padEnd(14)} worst ${worst.label} ${worst.ratio}:1 (floor ${worst.floor})`)
+}
 
 // And back to the default for the rest of the checks.
-await apply('classic-dark')
+await apply(DEFAULT_THEME)
 
 console.table(results.map((r) => ({
   theme: r.id,
   schema: r.schema,
   bg: r.bg,
+  surface: r.surface,
   accent: r.accent,
   text: r.text,
   override: r.overrideBlock

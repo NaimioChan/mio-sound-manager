@@ -8,8 +8,8 @@
 // A theme is described by eight colours, not by two hundred tokens. The rest is
 // derived: the neutral ramp from the background and the text colour, the ghost
 // and component fills from the text colour with alpha, the selection fills from
-// the accent. Deriving them is what keeps six themes from drifting apart — a
-// hand-written token list per theme is six chances to write a hover state that
+// the accent. Deriving them is what keeps seven themes from drifting apart — a
+// hand-written token list per theme is seven chances to write a hover state that
 // does not match its base.
 //
 // Specificity note: iX's own token blocks are
@@ -47,8 +47,16 @@ export interface Theme {
    */
   labelKey: MessageKey
   schema: 'dark' | 'light'
-  /** `null` means "iX's own classic palette, untouched". */
-  palette: Palette | null
+  /** Every built-in theme carries a palette; none falls back to iX's own. */
+  palette: Palette
+  /**
+   * Where each step of the neutral ramp lands on the way from `bg` to `fg`,
+   * overriding `RAMP`. A flat scheme needs its surfaces lifted off the window
+   * background — Windows dark draws a card at `#2b2b2b` over a `#202020` window,
+   * which a fixed ramp cannot hit — while an opinionated scheme like Tokyo Night
+   * ships its own surfaces and reads better with the reference spacing.
+   */
+  ramp?: number[]
 }
 
 // ------------------------------------------------------------------ colours
@@ -102,8 +110,12 @@ function alpha(color: string, a: number): string {
 const RAMP = [0, 0.16, 0.26, 0.35, 0.43, 0.5, 0.56, 0.74]
 
 /** Turn a palette into the token overrides a theme applies. */
-function buildTokens(p: Palette, schema: 'dark' | 'light'): Record<string, string> {
-  const ramp = RAMP.map((t) => mix(p.bg, p.fg, t))
+function buildTokens(
+  p: Palette,
+  schema: 'dark' | 'light',
+  rampSteps: number[] = RAMP
+): Record<string, string> {
+  const ramp = rampSteps.map((t) => mix(p.bg, p.fg, t))
   const accentHover = mix(p.accent, '#ffffff', schema === 'dark' ? 0.22 : 0.12)
   const accentActive = mix(p.accent, '#000000', 0.12)
   const dynamicHover = mix(p.dynamic, '#ffffff', schema === 'dark' ? 0.2 : 0.12)
@@ -286,22 +298,55 @@ function buildTokens(p: Palette, schema: 'dark' | 'light'): Record<string, strin
 /**
  * The built-in themes.
  *
- * `classic` is iX untouched: it is the reference, and a user who picks nothing
- * gets the design system as Siemens ships it. The rest are the same layout in a
- * different light, which is what a theme system is for — not six different UIs.
+ * `windows-*` are the pair the app opens in: Windows 11's own Fluent scheme, so
+ * an app running next to Explorer and Settings does not look like it came from
+ * another desktop. `studio-*`, Amber and Frost are alternatives in the same
+ * layout — a theme changes the light, not the UI.
+ *
+ * The two Windows ramps are flatter than `RAMP`: Fluent keeps its window at
+ * `#202020`/`#f3f3f3` and lifts cards only a few percent, where a fixed ramp
+ * would put `--theme-color-2` at a much lighter grey. The steps were read off
+ * WinUI's own base/layer/card fills rather than guessed.
  */
 export const THEMES: Theme[] = [
   {
-    id: 'classic-dark',
-    labelKey: 'theme.classicDark',
+    id: 'windows-dark',
+    labelKey: 'theme.windowsDark',
     schema: 'dark',
-    palette: null
+    ramp: [0, 0.06, 0.11, 0.17, 0.25, 0.35, 0.46, 0.74],
+    palette: {
+      bg: '#202020',
+      fg: '#f2f2f2',
+      // Fluent's `AccentFillColorDefault` in dark mode: the Light2 tint of the
+      // system accent, with near-black text on it.
+      accent: '#4cc2ff',
+      dynamic: '#99ebff',
+      contrast: '#0a1a24',
+      success: '#6ccb5f',
+      warning: '#fce100',
+      alarm: '#ff99a4',
+      info: '#4cc2ff',
+      neutral: '#a0a0a0'
+    }
   },
   {
-    id: 'classic-light',
-    labelKey: 'theme.classicLight',
+    id: 'windows-light',
+    labelKey: 'theme.windowsLight',
     schema: 'light',
-    palette: null
+    ramp: [0, 0.055, 0.1, 0.16, 0.24, 0.33, 0.44, 0.74],
+    palette: {
+      bg: '#f3f3f3',
+      fg: '#1a1a1a',
+      // `AccentFillColorDefault` light: the Dark1 tint, with white text on it.
+      accent: '#0067c0',
+      dynamic: '#0078d4',
+      contrast: '#ffffff',
+      success: '#0f7b0f',
+      warning: '#9d5d00',
+      alarm: '#c42b1c',
+      info: '#0067c0',
+      neutral: '#5d5d5d'
+    }
   },
   {
     id: 'studio-dark',
@@ -370,6 +415,26 @@ export const THEMES: Theme[] = [
       info: '#81a1c1',
       neutral: '#a9bcc9'
     }
+  },
+  {
+    id: 'tokyo-night',
+    labelKey: 'theme.tokyoNight',
+    schema: 'dark',
+    palette: {
+      // The stock Tokyo Night "night" background and foreground. The surfaces
+      // land on its own `bg_dark` `#16161e` and `bg_highlight` `#292e42` with the
+      // reference ramp, so this one keeps `RAMP` untouched.
+      bg: '#1a1b26',
+      fg: '#c0caf5',
+      accent: '#7aa2f7',
+      dynamic: '#bb9af7',
+      contrast: '#15161e',
+      success: '#9ece6a',
+      warning: '#e0af68',
+      alarm: '#f7768e',
+      info: '#7dcfff',
+      neutral: '#a9b1d6'
+    }
   }
 ]
 
@@ -393,10 +458,8 @@ export function loadThemeId(): string {
  * Apply a theme to the document.
  *
  * The overrides go into one `<style>` element that is replaced, not appended to:
- * six themes' worth of stale token blocks would leave the last one winning by
- * accident rather than by choice. A theme with `palette: null` removes the block
- * entirely, which is how "Classic" stays iX's own palette even after another
- * theme was applied.
+ * seven themes' worth of stale token blocks would leave the last one winning by
+ * accident rather than by choice.
  */
 export function applyTheme(id: string): Theme {
   const theme = findTheme(id)
@@ -409,19 +472,15 @@ export function applyTheme(id: string): Theme {
   root.style.colorScheme = theme.schema
 
   let style = document.getElementById(STYLE_ID) as HTMLStyleElement | null
-  if (!theme.palette) {
-    style?.remove()
-  } else {
-    if (!style) {
-      style = document.createElement('style')
-      style.id = STYLE_ID
-      document.head.appendChild(style)
-    }
-    const body = Object.entries(buildTokens(theme.palette, theme.schema))
-      .map(([name, value]) => `${name}:${value};`)
-      .join('')
-    style.textContent = `html[data-ix-theme][data-ix-color-schema]{${body}}`
+  if (!style) {
+    style = document.createElement('style')
+    style.id = STYLE_ID
+    document.head.appendChild(style)
   }
+  const body = Object.entries(buildTokens(theme.palette, theme.schema, theme.ramp))
+    .map(([name, value]) => `${name}:${value};`)
+    .join('')
+  style.textContent = `html[data-ix-theme][data-ix-color-schema]{${body}}`
 
   localStorage.setItem(STORAGE_KEY, theme.id)
   localStorage.setItem(SCHEMA_KEY, theme.schema)

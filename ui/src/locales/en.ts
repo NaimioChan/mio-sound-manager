@@ -192,12 +192,13 @@ export const en = {
   'category.clear': 'Clear category',
 
   // ----------------------------------------------------------------- themes
-  'theme.classicDark': 'Classic Dark',
-  'theme.classicLight': 'Classic Light',
+  'theme.windowsDark': 'Windows Dark',
+  'theme.windowsLight': 'Windows Light',
   'theme.studioDark': 'Studio Dark',
   'theme.studioLight': 'Studio Light',
   'theme.amber': 'Amber Console',
   'theme.frost': 'Frost',
+  'theme.tokyoNight': 'Tokyo Night',
 
   // ------------------------------------------------------- channel labels
   'channel.mono': 'Mono',

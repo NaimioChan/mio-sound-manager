@@ -272,11 +272,17 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 **主题的名字是文案，不是调色板。** `Theme` 上存的是 `labelKey`，由选择器 `t()` 出来；`theme.ts` 只管颜色。
 
-**为什么不逐个主题手写 token 表。** 六套主题各写一份两百行 token 是六次写错 hover 与 base 不匹配的机会。推导保证六套主题的对比节奏一致。
+**为什么不逐个主题手写 token 表。** 七套主题各写一份两百行 token 是七次写错 hover 与 base 不匹配的机会。推导保证七套主题的对比节奏一致。
 
 **覆盖块的优先级是量过的，不是猜的。** iX 自己的 token 块选择器是 `[data-ix-theme=classic][data-ix-color-schema=dark]`（0,2,0），我们的覆盖块是 `html[data-ix-theme][data-ix-color-schema]`（0,2,1），与源码顺序无关地胜出。
 
-**内置六套：** Classic Dark（iX 原样）、Classic Light（iX 反色）、Studio Dark（石墨 + 紫）、Studio Light（纸白 + 靛）、Amber Console（近黑 + 琥珀，暗房用）、Frost（冷蓝灰，低眩光）。`classic-*` 的 `palette` 是 `null`，也就是**不注入覆盖块**，这是「iX 原样」的实现方式。
+**内置七套：** Windows Dark（默认）、Windows Light、Studio Dark（石墨 + 紫）、Studio Light（纸白 + 靛）、Amber Console（近黑 + 琥珀，暗房用）、Frost（冷蓝灰，低眩光）、Tokyo Night（深蓝 + 蓝紫强调色）。
+
+**默认是 Windows 那两套，不是 iX 原样。** 应用和资源管理器、设置并排跑的时候，Fluent 的 `#202020`/`#f3f3f3` 让整个桌面看起来是一套东西；iX 原样的深青色在这台机器上被用户点名「丑」，那两套（Classic Dark / Classic Light）连同 `palette: null` 一起删掉了。删掉之后 `palette` 不再可空，每套主题都必须带一组颜色，`applyTheme` 也只剩「写覆盖块」一条路径。
+
+**中性 ramp 可以按主题覆盖。** `RAMP` 是从背景混到前景的八个落点，参考间距来自 iX 自己的深色块。Fluent 的表面离窗口底只有几个百分点（`#202020` 窗口 → `#2b2b2b` 卡片），用参考间距会把侧栏推成中灰，所以 `windows-*` 各带一份更平的 `ramp`；Tokyo Night 用自己的 `bg_dark` / `bg_highlight`，保持 `RAMP` 不动。
+
+**Tokyo Night 的语义色用它自己的。** 红 `#f7768e`、绿 `#9ece6a`、黄 `#e0af68`、蓝 `#7aa2f7`、紫 `#bb9af7`，不是从主色推导的；强调色是蓝、动态色是紫，和上游 vim/nvim 里「蓝做链接、紫做常数」的分工一致。
 
 **对比度是量出来的，不是看出来的。** `tools/check-themes.mjs` 对每套主题跑 WCAG 比值：正文 4.5:1，元信息 3:1。第一版 soft-text 用 0.66 alpha，在 Studio Dark 的侧栏底色上是 3.99:1，被这个检查抓到；现在 0.78/0.58 是**通过检查的那组数字**，不是看着顺眼的那组。
 
@@ -343,7 +349,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 - `tools/check-interactions.mjs`——列表渲染、点击选中与激活、Ctrl/Shift 多选、状态栏计数、点列头排序并翻转方向、搜索过滤与空结果、右键菜单、分类 modal 打开/尺寸/Escape 关闭、`AUTO PLAY` 文字与切换并持久化、播放头推进/暂停冻结/Stop 归零、波形点击 seek、设置 modal 与主题卡片。
 - `tools/check-region.mjs`——行真的可拖（`row.draggable === true` 且 `draggable="true"`）、波形拖拽选出区域、循环开关读到引擎且带选区、Esc 清选区后循环回落到整个文件、`export_region` 写出 WAV 并返回路径、最后真派发一次 `dragstart`。**这一份跑完 webview 会因原生 OLE 拖拽而不再响应 IPC**，必须单独跑、跑完重启应用。
-- `tools/check-themes.mjs`——六套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、浅色主题的背景确实比文字亮、`classic-*` 不残留覆盖块、重载后主题仍在，最后对十处文本元素跑 WCAG 对比度。
+- `tools/check-themes.mjs`——七套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、背景与文字的高低关系符合该主题的 schema（按 `data-ix-color-schema` 判，不按 id 猜）、覆盖块真的注入了且不是空块、**存着已删除的 `classic-dark` 时回退到默认**、重载后主题仍在，每套主题各自跑一遍十处文本元素的 WCAG 对比度。
 - `tools/check-volume.mjs`——滑杆经 `valueChange` 改值后读**引擎的** `get_gain`（另一条命令，只改前端状态的实现过不了这一项）、静音→取消静音回到设定值（不是 100%）、静音后重载仍回到那个值、重载后电平仍在且被推回引擎。
 - `tools/check-layout.mjs`——五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、dock 控件簇的**顺序**（音量 → AUTO PLAY → 循环 → 暂停 → 停止）与间距、音量滑杆宽度、无元素逃出视口（滚动容器内的不算）。
 - `tools/check-tags.mjs`——分类/文件夹切换按钮的边框、设置弹窗反复重开、BPM 列与排序、列顺序拖动（表头与单元格同源、持久化、重载后保留、拖动后仍能排序、收藏星不可拖）、索引卡片无解释小字、tag 多选、文件夹右键菜单、界面缩放在 `innerWidth` 上真的生效、设置页无解释小字/无副标题。

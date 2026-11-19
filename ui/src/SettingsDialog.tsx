@@ -103,18 +103,12 @@ interface Props {
  *
  * Each card paints its own palette rather than the applied one, which is the whole
  * point of a swatch: a light theme has to be recognisable while a dark one is in
- * effect. The three colours shown are the ones a theme is *made of* — background,
- * accent and the neutral its text is derived from.
+ * effect. The four colours shown are the ones a theme is *made of* — background,
+ * the two accents and the neutral its text is derived from.
  */
 function ThemeCard(props: { theme: Theme; current: boolean; onPick: () => void }) {
   const swatch = () => {
     const p = props.theme.palette
-    if (!p) {
-      // iX's own palettes: the two colours that identify them.
-      return props.theme.schema === 'dark'
-        ? ['#0f1619', '#283236', '#00bde3', '#00eaff']
-        : ['#ffffff', '#eff0f1', '#006e93', '#199fff']
-    }
     return [p.bg, p.accent, p.dynamic, p.fg]
   }
 

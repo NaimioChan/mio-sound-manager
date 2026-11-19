@@ -15,7 +15,7 @@
       // pick iX's own token block; a custom palette needs the bundle, which is a
       // few milliseconds later and lands before the first frame is painted.
       try {
-        var id = localStorage.getItem('mio:theme') || 'classic-dark'
+        var id = localStorage.getItem('mio:theme') || 'windows-dark'
         var schema = localStorage.getItem('mio:theme-schema')
         if (schema !== 'light' && schema !== 'dark') {
           schema = id.indexOf('light') >= 0 ? 'light' : 'dark'

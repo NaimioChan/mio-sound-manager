@@ -179,12 +179,13 @@ export const zh: Record<MessageKey, string> = {
   'category.subcategoriesOf': '{name} 的子分类',
   'category.clear': '清除分类',
 
-  'theme.classicDark': '经典深色',
-  'theme.classicLight': '经典浅色',
+  'theme.windowsDark': 'Windows 深色',
+  'theme.windowsLight': 'Windows 浅色',
   'theme.studioDark': '工作室深色',
   'theme.studioLight': '工作室浅色',
   'theme.amber': '琥珀终端',
   'theme.frost': '霜',
+  'theme.tokyoNight': '东京夜',
 
   'channel.mono': '单声道',
   'channel.stereo': '立体声',
