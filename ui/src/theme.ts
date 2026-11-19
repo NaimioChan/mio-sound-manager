@@ -255,9 +255,17 @@ function buildTokens(p: Palette, schema: 'dark' | 'light'): Record<string, strin
     '--theme-scrollbar-thumb--background--hover': alpha(p.fg, 0.42),
     '--theme-scrollbar-track--background': 'transparent',
 
-    // --- the waveform's own two colours, derived so they track the accent
+    // --- the waveform's own colours, derived so they track the accent.
+    //
+    // The selection is drawn by scrimming what is *outside* it and outlining it,
+    // which is what makes it readable over a wall of bars: tinting the inside
+    // fails exactly when the waveform is loud, because the bars are already the
+    // accent's colour family. The scrim is the surface colour, so it darkens a
+    // dark theme and lightens a light one — the same gesture in both.
     '--mio-wave': p.dynamic,
-    '--mio-wave-dim': alpha(p.dynamic, 0.32),
+    '--mio-region-scrim': alpha(p.bg, 0.55),
+    '--mio-region-fill': alpha(p.accent, 0.1),
+    '--mio-region-edge': mix(p.accent, schema === 'dark' ? '#ffffff' : '#000000', 0.35),
     '--mio-playhead': mix(p.fg, '#ffffff', 0.5)
   }
 

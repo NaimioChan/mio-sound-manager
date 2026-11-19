@@ -265,6 +265,114 @@ const tail = await page.evaluate(() => {
 })
 check(tail.first !== '—', 'the top row has a real tempo', `${tail.first} … ${tail.last}`)
 
+// ------------------------------------------------- 4b. columns can be reordered
+//
+// A header drag must move the column and the values under it together, persist the
+// arrangement, and leave the sort click working. The star is pinned: it carries no
+// label, so a user who drags it away cannot tell what the column is.
+//
+// Runs before the settings checks, which reload nothing but do click around.
+const headerKeys = () =>
+  page.evaluate(() => [...document.querySelectorAll('.head-cell')].map((el) => el.dataset.sortKey))
+const dragHeader = async (fromKey, toKey, half) => {
+  const src = await page.locator(`.head-cell[data-sort-key="${fromKey}"]`).boundingBox()
+  const dst = await page.locator(`.head-cell[data-sort-key="${toKey}"]`).boundingBox()
+  if (!src || !dst) return false
+  await page.mouse.move(src.x + src.width / 2, src.y + src.height / 2)
+  await page.mouse.down()
+  const x = half === 'right' ? dst.x + dst.width - 5 : dst.x + 5
+  await page.mouse.move(x, dst.y + dst.height / 2, { steps: 10 })
+  await page.mouse.move(x, dst.y + dst.height / 2, { steps: 2 })
+  await page.mouse.up()
+  await page.waitForTimeout(350)
+  return true
+}
+
+await page.evaluate(() => localStorage.removeItem('mio:column-order'))
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+
+const starDraggable = await page.evaluate(() =>
+  document.querySelector('.head-cell[data-sort-key="favorite"]').getAttribute('draggable')
+)
+check(starDraggable === 'false', 'the star header is not draggable', String(starDraggable))
+
+// Park the sort on a column the drag does not touch, so a stray click during the
+// gesture would be visible as the arrow moving.
+await page.locator('.head-cell[data-sort-key="channels"]').click()
+await page.waitForTimeout(700)
+const sortBeforeDrag = await page.evaluate(() => {
+  const head = [...document.querySelectorAll('.head-cell')].find((el) => el.querySelector('.sort-arrow'))
+  return `${head?.dataset.sortKey}/${head?.querySelector('.sort-arrow')?.textContent ?? ''}`
+})
+
+const beforeDrag = await headerKeys()
+await dragHeader('durationS', 'filename', 'left')
+const afterDrag = await headerKeys()
+check(
+  afterDrag[1] === 'durationS' && afterDrag[0] === 'favorite',
+  'dragging a header moves that column, and the star stays first',
+  `${beforeDrag.join(',')} → ${afterDrag.join(',')}`
+)
+
+const sortAfterDrag = await page.evaluate(() => {
+  const head = [...document.querySelectorAll('.head-cell')].find((el) => el.querySelector('.sort-arrow'))
+  return `${head?.dataset.sortKey}/${head?.querySelector('.sort-arrow')?.textContent ?? ''}`
+})
+check(
+  sortAfterDrag === sortBeforeDrag,
+  'a drag does not re-sort the list on the way through',
+  `${sortBeforeDrag} → ${sortAfterDrag}`
+)
+
+// The value under a moved header has to move with it, or the drag would relabel
+// every column after it.
+const movedCell = await page.evaluate(() => {
+  const at = [...document.querySelectorAll('.head-cell')].findIndex(
+    (el) => el.dataset.sortKey === 'durationS'
+  )
+  const cells = [...document.querySelectorAll('.row .cell')]
+  return { at, text: cells[at]?.textContent.trim() ?? '', star: cells[0]?.textContent.trim() ?? '' }
+})
+check(
+  /^\d+:\d\d/.test(movedCell.text) && movedCell.star === '☆',
+  'the cells follow the header they belong to',
+  `[${movedCell.at}] = ${movedCell.text}`
+)
+
+const storedOrder = await page.evaluate(() => localStorage.getItem('mio:column-order'))
+check(
+  typeof storedOrder === 'string' && storedOrder.includes('durationS'),
+  'the arrangement is stored',
+  String(storedOrder)
+)
+
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+const afterReload = await headerKeys()
+check(
+  afterReload.join(',') === afterDrag.join(','),
+  'the arrangement survives a reload',
+  afterReload.join(',')
+)
+
+// A reordered header must still sort, which is what a plain click does.
+await page.locator('.head-cell[data-sort-key="bpm"]').click()
+await page.waitForTimeout(700)
+const sortableAfterDrag = await page.evaluate(
+  () =>
+    document.querySelector('.head-cell[data-sort-key="bpm"] .sort-arrow')?.textContent ?? 'none'
+)
+check(sortableAfterDrag === '▼', 'a moved header still sorts on click', sortableAfterDrag)
+
+// Back to the shipped order so the rest of the run and the next script see default.
+await page.evaluate(() => localStorage.removeItem('mio:column-order'))
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+
 // ------------------------------------------------------------------ 5. no subtitle
 const subtitles = await page.evaluate(() => ({
   brand: document.querySelectorAll('.brand-sub').length,
@@ -274,6 +382,34 @@ const subtitles = await page.evaluate(() => ({
   text: document.querySelector('.brand')?.textContent?.trim() ?? ''
 }))
 check(subtitles.brand === 0, 'the top bar has no subtitle under the name', subtitles.text)
+
+// The blocking index screen is checked by the same rule: the title and the live
+// count are the whole card. A sentence under them explaining that the window is
+// locked is a subtitle, and it was removed for that reason.
+const indexNote = await page.evaluate(() => {
+  const probe = document.createElement('div')
+  probe.className = 'index-card'
+  document.body.appendChild(probe)
+  const notes = probe.querySelectorAll('.index-note').length
+  // Also assert the class is gone from the stylesheet: a rule with no element is
+  // how a removed line creeps back in as dead CSS.
+  const declared = [...document.styleSheets]
+    .flatMap((sheet) => {
+      try {
+        return [...sheet.cssRules]
+      } catch {
+        return []
+      }
+    })
+    .some((rule) => rule.selectorText?.includes('.index-note'))
+  probe.remove()
+  return { notes, declared }
+})
+check(
+  indexNote.notes === 0 && !indexNote.declared,
+  'the index screen has no explanatory line under the count',
+  JSON.stringify(indexNote)
+)
 
 // ------------------------------------------- 6. settings reopens after the ×
 const openSettings = async () => {

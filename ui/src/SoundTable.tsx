@@ -85,6 +85,30 @@ export const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   filesize: 'desc'
 }
 
+/**
+ * Where the columns sit, in the user's order.
+ *
+ * Stored as a plain list of keys rather than an index per column: a key that is
+ * no longer in `COLUMNS` simply drops out on load, and a column added later
+ * appears at the end instead of vanishing because it was not in a stale list.
+ */
+const ORDER_KEY = 'mio:column-order'
+
+function loadColumnOrder(): SortKey[] {
+  const all = COLUMNS.map((c) => c.key)
+  let stored: unknown
+  try {
+    const raw = localStorage.getItem(ORDER_KEY)
+    if (!raw) return all
+    stored = JSON.parse(raw)
+  } catch {
+    return all
+  }
+  if (!Array.isArray(stored)) return all
+  const seen = [...new Set(stored.filter((k): k is SortKey => all.includes(k as SortKey)))]
+  return [...seen, ...all.filter((k) => !seen.includes(k))]
+}
+
 function formatBytes(bytes: number | null): string {
   if (bytes === null) return '—'
   if (bytes < 1024) return `${bytes} B`
@@ -112,6 +136,68 @@ export interface RowMenuRequest {
   x: number
   y: number
   targets: SoundRow[]
+}
+
+/**
+ * One cell of a row, chosen by column key.
+ *
+ * The cells used to be a fixed sequence of spans under a fixed header. Making the
+ * header reorderable means both sides have to be generated from the same column
+ * list, or a drag would leave the labels sitting over the wrong values — and that
+ * is a class of bug no CSS can catch.
+ */
+function Cell(props: {
+  col: SortKey
+  row: SoundRow
+  onToggleFavorite: (row: SoundRow) => void
+}) {
+  switch (props.col) {
+    case 'favorite':
+      // Always a glyph, never an empty span: an empty cell has zero width, so the
+      // star could not be clicked until the sound was already a favorite.
+      return (
+        <span
+          class={props.row.favorite ? 'cell favorite on' : 'cell favorite'}
+          onClick={(e) => {
+            e.stopPropagation()
+            props.onToggleFavorite(props.row)
+          }}
+          title={props.row.favorite ? t('row.removeFavorite') : t('row.addFavorite')}
+        >
+          {props.row.favorite ? '★' : '☆'}
+        </span>
+      )
+    case 'filename':
+      return (
+        <span class="cell name" title={props.row.path}>
+          {props.row.filename}
+        </span>
+      )
+    case 'category':
+      return (
+        <span class="cell dim" title={props.row.matchedTerms.join(', ')}>
+          {categoryName(props.row.category)}
+          <Show when={props.row.subcategory}>
+            <span class="sub"> / {props.row.subcategory}</span>
+          </Show>
+        </span>
+      )
+    case 'durationS':
+      return <span class="cell numeric">{props.row.durationLabel}</span>
+    case 'bpm':
+      return <span class="cell numeric dim">{formatBpm(props.row.bpm)}</span>
+    case 'channels':
+      return <span class="cell dim">{channelLabel(props.row.channels)}</span>
+    case 'sampleRate':
+      return <span class="cell numeric dim">{formatRate(props.row.sampleRate)}</span>
+    case 'filesize':
+      return <span class="cell numeric dim">{formatBytes(props.row.filesize)}</span>
+    default:
+      // A key with no cell is a column the user added to `COLUMNS` and forgot to
+      // draw; the header already shows the label, so the row shows a dash rather
+      // than misaligning every value after it.
+      return <span class="cell dim">—</span>
+  }
 }
 
 interface Props {
@@ -158,12 +244,71 @@ export function SoundTable(props: Props) {
   const [scrollbarW, setScrollbarW] = createSignal(0)
   /** Anchor for Shift+click. A path, so a re-query cannot move it to another row. */
   const [anchor, setAnchor] = createSignal<string | null>(null)
+  /** The user's column order, as keys. Persisted; see `ORDER_KEY`. */
+  const [order, setOrder] = createSignal<SortKey[]>(loadColumnOrder())
+  /** The column being dragged, and the one it would land on. */
+  const [dragging, setDragging] = createSignal<SortKey | null>(null)
+  const [dropTarget, setDropTarget] = createSignal<{ key: SortKey; after: boolean } | null>(null)
 
-  /** Columns actually drawn, which the header and every row must agree on. */
-  const columns = createMemo(() =>
-    COLUMNS.filter((c) => c.key !== 'category' || props.showCategory)
-  )
+  /**
+   * Columns actually drawn, which the header and every row must agree on.
+   *
+   * The favourite star is pinned first: it is one glyph wide and carries no label,
+   * so a user dragging it to the far right gets a column they cannot identify. The
+   * rest follow `order`.
+   */
+  const columns = createMemo(() => {
+    const shown = COLUMNS.filter((c) => c.key !== 'category' || props.showCategory)
+    const rank = order()
+    const at = (key: SortKey) => {
+      const i = rank.indexOf(key)
+      return i < 0 ? rank.length : i
+    }
+    return shown.slice().sort((a, b) => {
+      if (a.key === 'favorite') return -1
+      if (b.key === 'favorite') return 1
+      return at(a.key) - at(b.key)
+    })
+  })
   const template = createMemo(() => columns().map((c) => c.width).join(' '))
+
+  /**
+   * Move `from` next to `to`.
+   *
+   * `after` comes from which half of the target header the pointer is over, so a
+   * column can be dropped at the far right by aiming at the right half of the last
+   * one. Inserting always-before would make that position unreachable.
+   */
+  const moveColumn = (from: SortKey, to: SortKey, after: boolean) => {
+    if (from === to || from === 'favorite' || to === 'favorite') return
+    const current = columns()
+      .map((c) => c.key)
+      .filter((k) => k !== from && k !== 'favorite')
+    const at = current.indexOf(to)
+    if (at < 0) return
+    current.splice(after ? at + 1 : at, 0, from)
+    setOrder([...current, ...COLUMNS.map((c) => c.key).filter((k) => !current.includes(k))])
+    try {
+      localStorage.setItem(ORDER_KEY, JSON.stringify(current))
+    } catch {
+      // A locked profile costs the arrangement, not the session.
+    }
+  }
+
+  /** Whether the pointer is in the right half of the header, for `after`. */
+  const dropAfter = (event: DragEvent): boolean => {
+    const el = event.currentTarget as HTMLElement
+    const rect = el.getBoundingClientRect()
+    return event.clientX > rect.left + rect.width / 2
+  }
+  const isDropBefore = (key: SortKey) => {
+    const t = dropTarget()
+    return t?.key === key && !t.after
+  }
+  const isDropAfter = (key: SortKey) => {
+    const t = dropTarget()
+    return t?.key === key && t.after
+  }
 
   let body: HTMLDivElement | undefined
 
@@ -339,8 +484,43 @@ export function SoundTable(props: Props) {
             <button
               class={col.numeric ? 'head-cell numeric' : 'head-cell'}
               data-sort-key={col.key}
+              data-drop={isDropBefore(col.key) ? 'before' : isDropAfter(col.key) ? 'after' : undefined}
+              draggable={col.key !== 'favorite'}
               onClick={() => props.onSort(col.key)}
-              title={t('col.sortBy', { column: col.label() })}
+              onDragStart={(e) => {
+                setDragging(col.key)
+                // The drag stays inside the header, but a payload is what makes
+                // WebView2 start it at all; with an empty DataTransfer no `dragover`
+                // fires on the other headers and nothing can be dropped.
+                e.dataTransfer?.setData('text/plain', col.key)
+                if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+              }}
+              onDragOver={(e) => {
+                const from = dragging()
+                if (!from || from === col.key || col.key === 'favorite') return
+                e.preventDefault()
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+                setDropTarget({ key: col.key, after: dropAfter(e) })
+              }}
+              onDragLeave={() => {
+                if (dropTarget()?.key === col.key) setDropTarget(null)
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                const from = dragging()
+                setDropTarget(null)
+                setDragging(null)
+                if (from) moveColumn(from, col.key, dropAfter(e))
+              }}
+              onDragEnd={() => {
+                setDragging(null)
+                setDropTarget(null)
+              }}
+              title={
+                col.key === 'favorite'
+                  ? t('col.sortBy', { column: col.label() })
+                  : `${t('col.sortBy', { column: col.label() })} · ${t('col.reorder')}`
+              }
             >
               {col.label()}
               <Show when={props.sortKey === col.key}>
@@ -411,38 +591,15 @@ export function SoundTable(props: Props) {
                   draggable={true}
                   onDragStart={(e) => onRowDragStart(row, e)}
                 >
-                  {/*
-                    Always a glyph, never an empty span: an empty cell has zero
-                    width, so the star could not be clicked until the sound was
-                    already a favorite — which made starring impossible from the
-                    row.
-                  */}
-                  <span
-                    class={row.favorite ? 'cell favorite on' : 'cell favorite'}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      props.onToggleFavorite(row)
-                    }}
-                    title={row.favorite ? t('row.removeFavorite') : t('row.addFavorite')}
-                  >
-                    {row.favorite ? '★' : '☆'}
-                  </span>
-                  <span class="cell name" title={row.path}>
-                    {row.filename}
-                  </span>
-                  <Show when={props.showCategory}>
-                    <span class="cell dim" title={row.matchedTerms.join(', ')}>
-                      {categoryName(row.category)}
-                      <Show when={row.subcategory}>
-                        <span class="sub"> / {row.subcategory}</span>
-                      </Show>
-                    </span>
-                  </Show>
-                  <span class="cell numeric">{row.durationLabel}</span>
-                  <span class="cell numeric dim">{formatBpm(row.bpm)}</span>
-                  <span class="cell dim">{channelLabel(row.channels)}</span>
-                  <span class="cell numeric dim">{formatRate(row.sampleRate)}</span>
-                  <span class="cell numeric dim">{formatBytes(row.filesize)}</span>
+                  {/* One cell per column, chosen by key rather than written in a
+                      fixed sequence: the header is reorderable now, so the labels
+                      and the values come from the same list — otherwise a drag
+                      would put "Length" over a sample rate. */}
+                  <For each={columns()}>
+                    {(col) => (
+                      <Cell col={col.key} row={row} onToggleFavorite={props.onToggleFavorite} />
+                    )}
+                  </For>
                 </div>
               )
             }}

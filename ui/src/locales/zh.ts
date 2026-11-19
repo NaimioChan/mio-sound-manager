@@ -87,7 +87,6 @@ export const zh: Record<MessageKey, string> = {
   'index.walkingEllipsis': '正在遍历文件夹…',
   'index.files': '{done} / {total} 个文件',
   'index.finishing': '正在收尾…',
-  'index.note': '此过程完成前窗口保持锁定。28 万个文件的库首次约需一分钟，之后只需几秒。',
 
   'col.name': '名称',
   'col.category': '分类',
@@ -97,6 +96,7 @@ export const zh: Record<MessageKey, string> = {
   'col.rate': '采样率',
   'col.size': '大小',
   'col.sortBy': '按{column}排序',
+  'col.reorder': '拖动调整列顺序',
   'row.addFavorite': '加入收藏',
   'row.removeFavorite': '取消收藏',
   'table.noMatch': '没有匹配的声音。',

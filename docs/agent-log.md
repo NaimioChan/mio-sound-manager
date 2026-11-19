@@ -2,6 +2,25 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-19 14:30 · hermes · 索引卡片去小字、框选对比度、列顺序可拖
+
+- 改: `ui/src/IndexOverlay.tsx` + `ui/src/styles.css`（删掉索引卡片标题下那句说明与 `.index-note` 规则）、`ui/src/WaveformDock.tsx`（两层画布都改成设备像素坐标 + 逐柱 `Math.round` 消除条纹；框选改为「外面压暗 + 里面轻染 + 2px 描边」）、`ui/src/theme.ts`（`--mio-region-scrim` / `--mio-region-fill` / `--mio-region-edge` 三个 token 替换没人用的 `--mio-wave-dim`）、`ui/src/SoundTable.tsx`（列头 `draggable` + 左右半区分插入位置、`mio:column-order` 持久化、收藏星钉首位、单元格改成按列键渲染的 `Cell` 组件）、`ui/src/styles.css`（`.head-cell[draggable]` 的 grab/grabbing 光标、`[data-drop]` 的 2px 落点位）、三语字典（删 `index.note`、加 `col.reorder`）、`tools/check-tags.mjs`（列顺序六项断言 + 索引卡片无小字断言）、`docs/app.md`
+- 验证: `tsc --noEmit` 干净；`npm run build` 通过；`cargo test --release --workspace` 133 全通过（app 18 + ipc 25 + engine 19 + index 71）；`check-i18n` 三语 155 键齐平；`check-tags` 全通过（含列顺序拖动 → 表头/单元格/localStorage/重载/拖动后仍排序/收藏星不可拖，以及「拖过表头不改变当前排序」）；`check-layout`、`check-interactions`、`check-volume`、`check-themes`、`check-region` 全通过；像素实测：改前横截面 `(0,234,255)/(3,186,203)` 交替 → 改后 `(0,234,255)` 单色；长曝光截图确认选区内外亮度差在满幅波形上仍存在，浅色两套主题同样成立
+- 遗留: ① 列宽仍固定（`COLUMNS` 里的 px），拖动只改顺序，改宽度仍是另一个功能；② 列顺序不随库变化，是全局设置（与主题、缩放同一层），若以后要多窗口要考虑；③ `--mio-wave-dim` 删除后没有其它引用，但第三方主题若引用过它会失效（仓库内无此引用）
+- 下一步: 若要列宽可拖，落点逻辑可复用现在的 `dropTarget`，但需要把 `width` 从字符串常量换成信号并把 `template()` 变成可持久化的 px 数组
+
+### 条纹不是配色问题，是坐标问题
+
+第一眼看上去像「波形用了渐变」，实际是抗锯齿：柱宽 `barW - 0.5`、x 落在 `i * 0.993` 这种小数上，每根柱跨两个设备列各覆盖一半，合成出来就是明暗交替。改配色没有任何效果，唯一有效的是别让柱落在半个像素上——整层画布在设备像素里算、左右边界各自 `Math.round`，相邻柱天然拼满。
+
+### 框选不能靠「给里面加色」
+
+波形柱本来就是 accent 同色系，往里叠 accent 等于没叠，满幅波形上选区直接消失（改前截图可见：选区只剩两条细边）。改成压暗外面之后，判据与波形亮度无关：外面永远比里面暗（浅色主题下永远比里面亮），边缘固定 2 个设备像素。
+
+### 列顺序必须让表头和单元格同源
+
+原来的行是六个定序 `<span>`，改列顺序后表头顺序变了、单元格没变，于是「Length」的标签压在采样率上。改成 `Cell` 组件按 `SortKey` 分支渲染，两侧都由 `columns()` 生成。这类错 CSS 抓不到，只能靠断言单元格内容（`check-tags.mjs` 里那项 `cells follow the header`）。
+
 ## 2026-11-19 11:50 · hermes · UCS 8.2.1 兜底词表
 
 - 改: 新增 `tools/ucs_mapping.py`（手写 753 条 UCS → 22 个分类的投影 + 排除清单）、`tools/import-ucs.py`（读发布包 → 三道筛 → `tools/ucs_keywords.py`）、`tools/ucs-evidence.py` + `tools/ucs-catid-evidence.py`（实测证据 → 两份 json）、`tools/classify-mirror.py`（分类器的 Python 镜像 + `--sample` 导出期望值）；`tools/gen-category-dict.py` 改为同时生成 `dictionary.rs` 与 `ucs.rs`、并保持 `dictionary.rs` 逐字节不变；`crates/mio-index/src/classify/mod.rs`（`classify` 拆成两遍 + `classify_fallback` + `finish` + `add` + `cat_id_prefix` + `build_cat_ids`/`build_ucs_keywords`/`build_ucs_phrases`，9 个新测试）；新增生成文件 `crates/mio-index/src/classify/ucs.rs`；`crates/mio-cli/src/main.rs`（`classify-check` 子命令）；`.gitignore`（`/docs/UCS Release/`）；`docs/index.md`、`THIRD-PARTY-NOTICES.md`

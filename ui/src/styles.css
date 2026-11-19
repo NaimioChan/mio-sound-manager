@@ -34,7 +34,9 @@
 
   /* Canvas colours. Set by the theme, with the iX defaults as the fallback. */
   --mio-wave: var(--theme-color-dynamic);
-  --mio-wave-dim: var(--theme-color-component-4);
+  --mio-region-scrim: color-mix(in srgb, var(--theme-color-1) 55%, transparent);
+  --mio-region-fill: color-mix(in srgb, var(--theme-color-primary) 10%, transparent);
+  --mio-region-edge: var(--theme-color-primary);
   --mio-playhead: var(--theme-color-contrast-text);
 }
 
@@ -539,6 +541,42 @@ button {
 
 .head-cell:hover {
   color: var(--theme-color-std-text);
+}
+
+/* A reorderable header says so before the button goes down: `grab` is the same
+   cursor the rail's resize handle uses, so "drag this sideways" already has a
+   vocabulary in this window. The star stays undraggable and keeps a plain cursor. */
+.head-cell[draggable='true'] {
+  cursor: grab;
+}
+
+.head-cell[draggable='true']:active {
+  cursor: grabbing;
+}
+
+/* Where the dragged column would land. A 2px accent bar on the edge the pointer is
+   nearest is enough — the columns themselves are re-laid out only on drop, so the
+   header does not flicker while the pointer crosses it. */
+.head-cell[data-drop] {
+  position: relative;
+  color: var(--theme-color-primary);
+}
+
+.head-cell[data-drop]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--theme-color-primary);
+}
+
+.head-cell[data-drop='before']::before {
+  left: 0;
+}
+
+.head-cell[data-drop='after']::before {
+  right: 0;
 }
 
 .sort-arrow {
@@ -1182,11 +1220,4 @@ button {
   color: var(--theme-color-soft-text);
   font-size: var(--mio-ms--1);
   font-variant-numeric: tabular-nums;
-}
-
-.index-note {
-  margin: 0;
-  color: var(--theme-color-weak-text);
-  font-size: var(--mio-ms--2);
-  line-height: 1.4;
 }

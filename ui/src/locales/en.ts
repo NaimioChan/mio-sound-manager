@@ -94,8 +94,6 @@ export const en = {
   'index.walkingEllipsis': 'walking the folder…',
   'index.files': '{done} / {total} files',
   'index.finishing': 'finishing up…',
-  'index.note':
-    'The window stays locked until this finishes. A 280k-file library takes about a minute the first time and a few seconds after that.',
 
   // ------------------------------------------------------------ table header
   'col.name': 'Name',
@@ -106,6 +104,7 @@ export const en = {
   'col.rate': 'Rate',
   'col.size': 'Size',
   'col.sortBy': 'Sort by {column}',
+  'col.reorder': 'drag to reorder columns',
   'row.addFavorite': 'Add to favorites',
   'row.removeFavorite': 'Remove from favorites',
   'table.noMatch': 'No sounds match.',

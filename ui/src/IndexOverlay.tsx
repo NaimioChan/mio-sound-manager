@@ -61,8 +61,6 @@ export function IndexOverlay(props: {
               )}
             </Show>
           </div>
-
-          <p class="index-note">{t('index.note')}</p>
         </div>
       </div>
     </Show>

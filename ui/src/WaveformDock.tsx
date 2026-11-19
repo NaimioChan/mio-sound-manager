@@ -173,48 +173,58 @@ export function WaveformDock(props: Props) {
     const canvas = waveCanvas
     const data = peaks()
     if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const dpr = window.devicePixelRatio || 1
     const w = canvas.clientWidth
     const h = canvas.clientHeight
     if (w === 0 || h === 0) return
+    const dpr = window.devicePixelRatio || 1
     canvas.width = Math.round(w * dpr)
     canvas.height = Math.round(h * dpr)
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
 
-    ctx.clearRect(0, 0, w, h)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     // No background fill: the container already has the panel colour, and filling
     // it here is what turned the whole dock one colour on the first run.
     if (!data || data.length === 0) return
 
+    // Everything below is in device pixels, with no `setTransform`. That is the
+    // difference between a solid waveform and a striped one: at 125% scaling a
+    // 0.993px CSS bar sits on a fractional device column, so every bar is drawn as
+    // two half-covered columns and the panel reads as alternating light and dark
+    // stripes. Snapping each bucket's edges to whole device pixels makes adjacent
+    // buckets tile exactly, and one colour stays one colour.
+    const pxW = canvas.width
+    const pxH = canvas.height
     const wave = token('--mio-wave', '#00eaff')
     const zero = token('--theme-color-3', '#3c484d')
     // One lane per channel for mono and stereo; a wider file keeps the merged
     // envelope in a single lane, because a third strip would be too thin to read.
     const stacked = lanes()
     const rows = stacked.length > 0 ? stacked : [data]
-    const laneH = h / rows.length
 
     for (let lane = 0; lane < rows.length; lane++) {
       const series = rows[lane]!
-      const top = lane * laneH
-      const mid = Math.round(top + laneH / 2)
+      const laneTop = Math.round((lane * pxH) / rows.length)
+      const laneBottom = Math.round(((lane + 1) * pxH) / rows.length)
+      const laneH = laneBottom - laneTop
+      const mid = Math.round(laneTop + laneH / 2)
 
       // A one-pixel zero line per lane, so an all-silent sample reads as a flat
       // line rather than as an empty panel.
       ctx.fillStyle = zero
-      ctx.fillRect(0, mid, w, 1)
+      ctx.fillRect(0, mid, pxW, 1)
 
-      const barW = w / series.length
+      const barW = pxW / series.length
       ctx.fillStyle = wave
       for (let i = 0; i < series.length; i++) {
         const peak = series[i] ?? 0
+        const x0 = Math.round(i * barW)
+        const x1 = Math.round((i + 1) * barW)
         // 2px of headroom inside the lane so adjacent lanes never touch.
-        const barH = Math.max(1, peak * (laneH - 2))
-        ctx.fillRect(i * barW, mid - barH / 2, Math.max(1, barW - 0.5), barH)
+        const barH = Math.max(1, Math.round(peak * (laneH - 2)))
+        const top = Math.round(mid - barH / 2)
+        ctx.fillRect(x0, top, Math.max(1, x1 - x0), barH)
       }
     }
   }
@@ -226,41 +236,50 @@ export function WaveformDock(props: Props) {
     const canvas = headCanvas
     const data = peaks()
     if (!canvas || !data) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const dpr = window.devicePixelRatio || 1
     const w = canvas.clientWidth
     const h = canvas.clientHeight
     if (w === 0 || h === 0) return
+    const dpr = window.devicePixelRatio || 1
     canvas.width = Math.round(w * dpr)
     canvas.height = Math.round(h * dpr)
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, w, h)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     const duration = props.durationS
     if (duration <= 0) return
 
-    // The selection goes under the playhead so the playhead stays visible inside
-    // it. A translucent fill plus two edges: the fill says "this part", the edges
-    // say exactly where it starts and stops, which a fill alone cannot on a
-    // waveform whose bars are already the same colour family.
+    const pxW = canvas.width
+    const pxH = canvas.height
+
+    // The selection is marked by taking light *away* from everything else, not by
+    // tinting what is inside it. A translucent accent over bright bars is the
+    // weakest possible mark: bars are already the accent's colour family, so on a
+    // loud clip the selection disappeared entirely. Darkening the outside works at
+    // any bar density, and the two edges say exactly where it begins and ends
+    // because a fill alone cannot on a waveform that is nothing but fill.
     const region = shownRegion()
     if (region) {
-      const x0 = (region[0] / duration) * w
-      const x1 = (region[1] / duration) * w
-      ctx.globalAlpha = 0.16
-      ctx.fillStyle = token('--theme-color-primary', '#00bde3')
-      ctx.fillRect(x0, 0, Math.max(1, x1 - x0), h)
-      ctx.globalAlpha = 1
-      ctx.fillRect(x0, 0, 1, h)
-      ctx.fillRect(Math.max(0, x1 - 1), 0, 1, h)
+      const x0 = Math.round((region[0] / duration) * pxW)
+      const x1 = Math.round((region[1] / duration) * pxW)
+      ctx.fillStyle = token('--mio-region-scrim', 'rgba(15,22,25,0.62)')
+      ctx.fillRect(0, 0, x0, pxH)
+      ctx.fillRect(x1, 0, pxW - x1, pxH)
+
+      ctx.fillStyle = token('--mio-region-fill', 'rgba(0,189,227,0.10)')
+      ctx.fillRect(x0, 0, Math.max(1, x1 - x0), pxH)
+
+      ctx.fillStyle = token('--mio-region-edge', '#00bde3')
+      const edge = Math.max(2, Math.round(dpr))
+      ctx.fillRect(x0, 0, edge, pxH)
+      ctx.fillRect(Math.max(0, x1 - edge), 0, edge, pxH)
     }
 
     const fraction = Math.min(1, Math.max(0, props.positionS / duration))
-    const x = fraction * w
+    const x = Math.round(fraction * pxW)
+    const headW = Math.max(1, Math.round(dpr))
     ctx.fillStyle = token('--mio-playhead', '#ffffff')
-    ctx.fillRect(x - 0.5, 0, 1, h)
+    ctx.fillRect(x - Math.floor(headW / 2), 0, headW, pxH)
   }
 
   createEffect(() => {

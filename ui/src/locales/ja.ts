@@ -8,7 +8,7 @@ import type { MessageKey } from './en'
 // - Controls are noun phrases, not polite requests. 「してください」 belongs in a
 //   dialog's body text, never on a button.
 // - No trailing 「。」 on labels, buttons or menu items. Sentences in the empty
-//   state and the index note keep it.
+//   state keep it.
 // - Width is the real constraint: a Japanese label is often shorter than its
 //   English source but the glyphs are twice as wide, so the table headers stay
 //   short (「長さ」「形式」 rather than 「再生時間」「サンプルレート」).
@@ -90,8 +90,6 @@ export const ja: Record<MessageKey, string> = {
   'index.walkingEllipsis': 'フォルダを走査中…',
   'index.files': '{done} / {total} ファイル',
   'index.finishing': '仕上げ中…',
-  'index.note':
-    '完了するまでウィンドウはロックされます。28 万ファイルのライブラリで初回は約 1 分、以降は数秒です。',
 
   'col.name': '名前',
   'col.category': 'カテゴリ',
@@ -101,6 +99,7 @@ export const ja: Record<MessageKey, string> = {
   'col.rate': 'レート',
   'col.size': 'サイズ',
   'col.sortBy': '{column}で並べ替え',
+  'col.reorder': 'ドラッグで列の順序を変更',
   'row.addFavorite': 'お気に入りに追加',
   'row.removeFavorite': 'お気に入りから削除',
   'table.noMatch': '一致するサウンドはありません。',
