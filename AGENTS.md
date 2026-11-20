@@ -1,42 +1,5 @@
 # AGENTS.md
 
-Mio Sound Manager: a sample manager backend built around two hard requirements — indexing a large library fast, and starting playback of any file with latency low enough to feel instant. Rust core, Tauri shell.
-
-Status: **P0（拖拽导出）、P1（音频引擎原型）、P2（索引器 + schema）、P3（Tauri 外壳 + IPC）、P4（前端搬迁）、P5（工作区：多库 / 持久化 / undo / 阻塞索引 / 设置）、P6（ASIO 后端 + 设备选择）、P7（改名 Mio Sound Manager + 西门子 iX 重写前端 + 主题系统 + 输出音量）已通过。P8（中英日三语 + 图标本地化）已通过。P9（BPM 排序、tag 多选、文件夹自绘菜单、去掉副标题）已通过。P10（波形框选、循环播放、选区拖出、静音记忆、拖拽修复）已通过，发版 v0.1.1。P11（波形按落点分区的手势、声道分道显示、库文件改名 mio-sm.db、循环开关可见）已通过，版本 0.1.2。** 产品代码在 `crates/`。决策与依据见 `docs/architecture.md`；引擎、索引、外壳的模块细节见 `docs/engine.md`、`docs/index.md`、`docs/app.md`；进度与遗留见 `docs/agent-log.md`。调研阶段的原始测量笔记与开工提示词已移除，需要复测时用 `probes/` 重跑。发版流程见 `tools/README.md` 的「发版」一节。
-
-## Stack (decided)
-
-- Rust workspace, edition 2024
-- Tauri 2 shell (WebView2 on Windows)
-- `symphonia` for decoding (`all-formats` + `all-codecs`)
-- `wasapi` crate 0.27 直接对接 Windows 音频（**不用 cpal**：需要 `IAudioClient3` 周期查询与 `get_current_padding` 排队量，cpal 拿不到）
-- 输出后端：**WASAPI 共享模式为默认**（实测 17.5ms 点击到出声，不抢设备）；**ASIO 为可选 feature 并已在设置里可选**（实测 64 帧下 5.31ms 点击到出声，构建需 libclang，SDK 按 GPLv3 一支随产物分发）；**WASAPI 独占否决**（实测会让用户开着的 DAW 静音）
-- 前端：**SolidJS + `@siemens/ix` 5.3 web components**（西门子设计系统）。颜色一律走 `--theme-*` token，不写字面色值；主题系统见 `ui/src/theme.ts`
-- 多语言：**中 / 英 / 日**，`ui/src/i18n.ts` 加 `ui/src/locales/{en,zh,ja}.ts`。英文是键集基准，另两语类型化为 `Record<MessageKey, string>`，漏键即编译错误。只翻外壳文案，不翻数据（分类名、文件名）
-- 图标：**SVG 复制进仓库** `ui/src/assets/icons/`，`?raw` 导入拼 data URL 交给 `ix-icon`。不按名字取（`ix-icon` 拿名字会去 fetch `svg/<name>.svg`，产物里没有该目录）；不用 `encodeURIComponent`（iX 只调 `decodeURI`，`%3D` 不还原会让 SVG 解析成空框）。离线可用是硬要求
-- SQLite 索引：`rusqlite` bundled + WAL + FTS5
-- ffmpeg 保留为外部进程，只用于导出与特效渲染；播放路径不经过 ffmpeg
-- 只做 Windows（不做 macOS/Linux）
-
-## Rules
-
-- **Latency is a measured number, not an adjective.** Any claim about click-to-sound must state which measurement it is: `publish → 回调写入` and `publish → 出声` differ by 12ms on shared mode. Numbers must come with the machine's audio stack (driver, sample rate, buffer period). The figures in `docs/architecture.md` sections 2, 3 and 8.1 were measured on the reference machine and must be re-verified with `probes/` before being used as targets.
-- **No placeholder engines.** Do not ship a stub audio path "to be optimized later"; the whole point of this project is the engine.
-- **ASIO 驱动要在 STA 线程上加载。** 驱动对象是 `CoCreateInstance` 造的，TOE 驱动只从单线程套间交出对象：MTA 工作线程会得到 `loadDriver` 返回 false，STA 工作线程成功。WASAPI 要 MTA，所以两个后端各自一个渲染线程，不能共用。
-- **The UI/UX is inherited.** Slip Sound's interaction design is considered good and is the reference; this project replaces the backend, not the interaction model. Read the Slip Sound repo's `AGENTS.md` and `src/renderer/src/components/WAVEFORM-PLAYBACK.md` for the behaviour that must be preserved.
-- Indexing and playback are separate subsystems with separate acceptance numbers. Do not let one block the other.
-- **The renderer never touches PCM.** Waveform peaks come from the backend as ~1000 floats; decoded audio never crosses IPC into the webview.
-- **The audio callback does no allocation, no locking, no IO, no logging.** It copies from a pre-decoded slot and nothing else.
-- **Colours come from iX tokens, never from literals.** `ui/src/styles.css` holds geometry only; every colour is a `--theme-*` variable so the theme system repaints the iX components, our CSS and the waveform canvas from one override block. A literal hex in a component is a colour that will not follow the theme.
-- **The theme has one owner.** `ui/src/theme.ts` writes `mio:theme`; it must not also live in the settings blob — two writers made a reload fall back to the default.
-- **Volume is engine state, not renderer state.** `set_gain` writes one atomic the render callback reads; the slider's signal is a mirror. A volume control that only updated the UI would pass a DOM check and do nothing.
-- **Nothing user-facing is written as a literal string.** Every label goes through `t()`; the backend sends *kinds* (`EditKind`), never English prose for the renderer to display — a string born in Rust can never be translated. Category names, file names and sample rates are data and stay untranslated; `Uncategorized` is the one exception, because it is a schema sentinel rather than a classifier guess.
-- **No subtitles.** Nothing under a heading, a brand, a modal title or a settings group. 标题本身就是完整信息；副标题是不承载信息的一行小字，只会把版式撑高。文案层面同理：不要为标题补一句解释性的第二行。要解释就写进正文或 `helperText`，那不是 subtitle。
-- **Gapless decoding is mandatory, not an optimisation.** With `FormatOptions::enable_gapless` off, MP3 keeps 25.1ms of LAME encoder delay at the head; MP4/AAC keeps 1024 priming frames (23.2ms) because symphonia's isomp4 parses `elst` but never surfaces it. Both are the same order of magnitude as the entire device path, so a missing trim is felt as a late trigger.
-- **UCS 是兜底，不是第二套分类。** `classify` 跑两遍：curated 词表得分不为 0 时，UCS 的 CatID / 短语 / 词根本不会被查询。把两遍并成一张分数表会让几万个已分类文件被改错（实测 22,442 个），所以这条结构不能为了「简化」而动。
-- **UCS 的同义词必须过证据筛，不能按看起来对不对收。** `tools/ucs-evidence.py` 量的是「文件名含该词、且本项目已有答案的文件里，答案与 UCS 映射一致率」。`trance`（曲风 vs MAGIC-SPELL）、`hybrid`（12,454 个文件/19 个包的包名）、`calendar`、`acid` 都是看起来合理、在库里全错的词。
-- **Python 镜像给出的数字要先过 `mio-cli classify-check` 才能引用。** 镜像会漂移，本轮漂了两次都是这条检查抓出来的；0 mismatches 之前，`tools/classify-mirror.py` 的输出只是关于一个不存在的分类器的测量。
-
 ## Commands
 
 ```bash
@@ -93,6 +56,39 @@ The six `check-*.mjs` that drive a window assert on English copy and pin `mio:lo
 
 **`check-region.mjs` 会进入原生 OLE 拖拽循环，跑完 webview 不再响应 IPC**：它必须单独跑，之后要 `kill-app.sh` 再起窗口。详情见 `tools/README.md`。
 
+## Stack (decided)
+
+- Rust workspace, edition 2024
+- Tauri 2 shell (WebView2 on Windows)
+- `symphonia` for decoding (`all-formats` + `all-codecs`)
+- `wasapi` crate 0.27 直接对接 Windows 音频（**不用 cpal**：需要 `IAudioClient3` 周期查询与 `get_current_padding` 排队量，cpal 拿不到）
+- 输出后端：**WASAPI 共享模式为默认**（实测 17.5ms 点击到出声，不抢设备）；**ASIO 为可选 feature 并已在设置里可选**（实测 64 帧下 5.31ms 点击到出声，构建需 libclang，SDK 按 GPLv3 一支随产物分发）；**WASAPI 独占否决**（实测会让用户开着的 DAW 静音）
+- 前端：**SolidJS + `@siemens/ix` 5.3 web components**（西门子设计系统）。颜色一律走 `--theme-*` token，不写字面色值；主题系统见 `ui/src/theme.ts`
+- 多语言：**中 / 英 / 日**，`ui/src/i18n.ts` 加 `ui/src/locales/{en,zh,ja}.ts`。英文是键集基准，另两语类型化为 `Record<MessageKey, string>`，漏键即编译错误。只翻外壳文案，不翻数据（分类名、文件名）
+- 图标：**SVG 复制进仓库** `ui/src/assets/icons/`，`?raw` 导入拼 data URL 交给 `ix-icon`。不按名字取（`ix-icon` 拿名字会去 fetch `svg/<name>.svg`，产物里没有该目录）；不用 `encodeURIComponent`（iX 只调 `decodeURI`，`%3D` 不还原会让 SVG 解析成空框）。离线可用是硬要求
+- SQLite 索引：`rusqlite` bundled + WAL + FTS5
+- ffmpeg 保留为外部进程，只用于导出与特效渲染；播放路径不经过 ffmpeg
+- 只做 Windows（不做 macOS/Linux）
+
+## Rules
+
+- **Latency is a measured number, not an adjective.** Any claim about click-to-sound must state which measurement it is: `publish → 回调写入` and `publish → 出声` differ by 12ms on shared mode. Numbers must come with the machine's audio stack (driver, sample rate, buffer period). The figures in `docs/architecture.md` sections 2, 3 and 8.1 were measured on the reference machine and must be re-verified with `probes/` before being used as targets.
+- **No placeholder engines.** Do not ship a stub audio path "to be optimized later"; the whole point of this project is the engine.
+- **ASIO 驱动要在 STA 线程上加载。** 驱动对象是 `CoCreateInstance` 造的，TOE 驱动只从单线程套间交出对象：MTA 工作线程会得到 `loadDriver` 返回 false，STA 工作线程成功。WASAPI 要 MTA，所以两个后端各自一个渲染线程，不能共用。
+- **The UI/UX is inherited.** Slip Sound's interaction design is considered good and is the reference; this project replaces the backend, not the interaction model. Read the Slip Sound repo's `AGENTS.md` and `src/renderer/src/components/WAVEFORM-PLAYBACK.md` for the behaviour that must be preserved.
+- Indexing and playback are separate subsystems with separate acceptance numbers. Do not let one block the other.
+- **The renderer never touches PCM.** Waveform peaks come from the backend as ~1000 floats; decoded audio never crosses IPC into the webview.
+- **The audio callback does no allocation, no locking, no IO, no logging.** It copies from a pre-decoded slot and nothing else.
+- **Colours come from iX tokens, never from literals.** `ui/src/styles.css` holds geometry only; every colour is a `--theme-*` variable so the theme system repaints the iX components, our CSS and the waveform canvas from one override block. A literal hex in a component is a colour that will not follow the theme.
+- **The theme has one owner.** `ui/src/theme.ts` writes `mio:theme`; it must not also live in the settings blob — two writers made a reload fall back to the default.
+- **Volume is engine state, not renderer state.** `set_gain` writes one atomic the render callback reads; the slider's signal is a mirror. A volume control that only updated the UI would pass a DOM check and do nothing.
+- **Nothing user-facing is written as a literal string.** Every label goes through `t()`; the backend sends *kinds* (`EditKind`), never English prose for the renderer to display — a string born in Rust can never be translated. Category names, file names and sample rates are data and stay untranslated; `Uncategorized` is the one exception, because it is a schema sentinel rather than a classifier guess.
+- **No subtitles.** Nothing under a heading, a brand, a modal title or a settings group. 标题本身就是完整信息；副标题是不承载信息的一行小字，只会把版式撑高。文案层面同理：不要为标题补一句解释性的第二行。要解释就写进正文或 `helperText`，那不是 subtitle。
+- **Gapless decoding is mandatory, not an optimisation.** With `FormatOptions::enable_gapless` off, MP3 keeps 25.1ms of LAME encoder delay at the head; MP4/AAC keeps 1024 priming frames (23.2ms) because symphonia's isomp4 parses `elst` but never surfaces it. Both are the same order of magnitude as the entire device path, so a missing trim is felt as a late trigger.
+- **UCS 是兜底，不是第二套分类。** `classify` 跑两遍：curated 词表得分不为 0 时，UCS 的 CatID / 短语 / 词根本不会被查询。把两遍并成一张分数表会让几万个已分类文件被改错（实测 22,442 个），所以这条结构不能为了「简化」而动。
+- **UCS 的同义词必须过证据筛，不能按看起来对不对收。** `tools/ucs-evidence.py` 量的是「文件名含该词、且本项目已有答案的文件里，答案与 UCS 映射一致率」。`trance`（曲风 vs MAGIC-SPELL）、`hybrid`（12,454 个文件/19 个包的包名）、`calendar`、`acid` 都是看起来合理、在库里全错的词。
+- **Python 镜像给出的数字要先过 `mio-cli classify-check` 才能引用。** 镜像会漂移，本轮漂了两次都是这条检查抓出来的；0 mismatches 之前，`tools/classify-mirror.py` 的输出只是关于一个不存在的分类器的测量。
+
 ## Where things live
 
 | Area | Path |
@@ -117,4 +113,4 @@ The six `check-*.mjs` that drive a window assert on English copy and pin `mio:lo
 | 分类词典生成器（勿手改 `dictionary.rs` / `ucs.rs`） | `tools/gen-category-dict.py` |
 | UCS 兜底词表：映射、导入、证据、报告 | `tools/ucs_mapping.py`、`tools/import-ucs.py`、`tools/ucs-evidence.py`、`tools/ucs-report.py` |
 | 分类器的 Python 镜像（测速用，先过 `mio-cli classify-check`） | `tools/classify-mirror.py` |
-| Handoff log | `docs/agent-log.md` |
+| Handoff log（进度与遗留，AGENTS.md 不记进度） | `docs/agent-log.md` |

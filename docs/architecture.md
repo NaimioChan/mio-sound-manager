@@ -1,6 +1,6 @@
 # Mio Sound Manager 架构设计
 
-状态：**设计定稿，P0–P4 已实现**。本文回答「后端怎么做、栈怎么选」，不描述功能（功能与 UI/UX 沿用 Slip Sound，行为基准见 `C:\Users\Naimio\projects\slip-sound` 的 `AGENTS.md` 与 `src/renderer/src/components/WAVEFORM-PLAYBACK.md`）。延迟数字取自本文第 2、3、8.1 节的实测，索引数字来自第 5 节与 `docs/index.md`，均为本机实测；原始测量笔记已随调研阶段结束移除，需要复测时用 `probes/` 重跑。
+状态：**定稿并已实现发版（当前 0.1.2，见 `docs/agent-log.md`）**。本文回答「后端怎么做、栈怎么选」，不描述功能（功能与 UI/UX 沿用 Slip Sound，行为基准见 `C:\Users\Naimio\projects\slip-sound` 的 `AGENTS.md` 与 `src/renderer/src/components/WAVEFORM-PLAYBACK.md`）。延迟数字取自本文第 2、3、8.1 节的实测，索引数字来自第 5 节与 `docs/index.md`，均为本机实测；原始测量笔记已随调研阶段结束移除，需要复测时用 `probes/` 重跑。
 
 ## 1. 结论先行
 
@@ -12,7 +12,7 @@
 | 解码 | **symphonia，全部格式特性打开** | 6 种目标格式全覆盖；冷启动首个包 < 1ms |
 | 播放模型 | **常驻流 + 双槽交替 + 预解码邻行** | 把「切文件」从重建管线降级为换一个已解码的槽 |
 | 索引存储 | **SQLite（rusqlite bundled）+ WAL + FTS5** | 2 万文件头探测 0.7s，插入 0.13s，索引构建 17ms |
-| 索引并行度 | **8 线程**（`min(核心数, 8)`） | 实测 1→8 线程从 2.5s 降到 0.8s，16 线程无进一步收益 |
+| 索引并行度 | **探测阶段取逻辑核数**（探测是随机读延迟受限，不是 CPU 受限） | 合成库上 8 线程封顶；真实库无 DRAM SSD 上 8→16 线程还有 22% 收益。遍历与写入不并行 |
 | 外壳 | **Tauri 2** | 体积与内存优势；webview 不参与音频，只做 UI |
 | 前端 | **SolidJS + Siemens iX 5.3**（P7 换掉 Tailwind） | UI/UX 已定，交互模型不动；视觉与控件改为西门子设计系统的 web components，颜色统一走 `--theme-*` token，主题系统才能一处改全局变 |
 | ffmpeg | **保留为外部进程，仅用于导出与特效渲染** | 播放路径完全不经过 ffmpeg；导出复用现有滤镜链 |
@@ -158,7 +158,7 @@ P6 已按这个判断落地：`Backend` 枚举 + 两个渲染线程 + 共享的 
 
 ┌──────────────────────────────────────────────────────────────┐
 │ 索引线程（独立，与播放完全隔离）                              │
-│  - 目录遍历 → 元数据探测（8 线程 rayon）→ SQLite 批量插入     │
+│  - 目录遍历 → 元数据探测（并行 rayon，线程数 = 逻辑核数）→ SQLite 批量插入     │
 │  - 不持有任何播放状态，播放也不等它                          │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -220,12 +220,12 @@ cpal 是跨平台抽象，它把「周期、缓冲、排队量」都藏在背后
 | 阶段 | 耗时 |
 | --- | --- |
 | 遍历 | ~1.0s |
-| 元数据探测（8 线程） | ~6.8s |
+| 元数据探测（并行） | ~6.8s |
 | SQLite 写入 | ~1.2s |
 | 索引构建 | ~0.15s |
 | **合计** | **约 9s** |
 
-对比 Slip Sound 现状约 120s。**提升约 13 倍**，主要来自并行探测（8 线程 3.2 倍加速）与移除逐文件 `statSync` + Node 层开销。
+对比 Slip Sound 现状约 120s。**提升约 13 倍**，主要来自并行探测与移除逐文件 `statSync` + Node 层开销。
 
 > **这组数字是合成库条件，不是真实库的目标。** 2 万文件由脚本预生成、放在 NVMe 上、文件头结构统一。P2 在真实库（28 万文件，混合来源，无 DRAM 的入门 SSD）上实测全量 63.9s、增量 5.4s，与 9s 外推差 7 倍。差异来源已定位：探测阶段的 `stat + open + 读 64KB` 占 80%，解析只占 20%，瓶颈是随机读延迟而不是解析代码——同一份代码在热缓存小样本上跑 10,790 文件/s，冷缓存全库 4,247 文件/s。详见 `docs/agent-log.md` 的 P2 条目。
 >
@@ -276,7 +276,9 @@ FTS5 配置不变（`unicode61 remove_diacritics 2`，索引 `filename`/`categor
 | --- | --- | --- |
 | 语言 | Rust | 2024 edition |
 | 外壳 | Tauri 2 | 2.x |
-| 前端 | SolidJS + Tailwind 4 + lucide-solid | 沿用 Slip Sound |
+| 前端 | SolidJS + `@siemens/ix` 5.3 web components | P7 定；P7 前短暂用过 Tailwind 4 + lucide-solid，已换 |
+| 主题 | 自研推导：八色调色板 → 两百多个 `--theme-*` token | 见 `ui/src/theme.ts` 与 `docs/app.md` |
+| 多语言 | 中英日三语，英文键集基准 | `ui/src/i18n.ts` + `locales/{en,zh,ja}.ts` |
 | 解码 | symphonia（`all-formats` + `all-codecs`） | 0.5 |
 | 音频输出 | `wasapi` crate | 0.27 |
 | 重采样 | `rubato` | 最新 |
@@ -284,7 +286,7 @@ FTS5 配置不变（`unicode61 remove_diacritics 2`，索引 `filename`/`categor
 | 并行 | `rayon` | 1.11 |
 | 目录遍历 | `walkdir` | 2.5 |
 | 导出/特效 | ffmpeg 外部进程（现有滤镜链） | 系统 ffmpeg 或 bundled |
-| 测试 | `cargo test` + `vitest`（前端） | — |
+| 测试 | `cargo test`（Rust）+ `tools/check-*.mjs`（CDP 驱动真实窗口） | — |
 
 ### 6.2 选型理由
 
