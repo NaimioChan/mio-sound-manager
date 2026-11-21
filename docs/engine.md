@@ -28,7 +28,7 @@ decode 与 output 的契约是 `Arc<DecodedAudio>`：不可变、已转成设备
 3. 声道映射到设备声道数
 4. 转成设备样本格式（f32 / i16 / i32）的字节流
 
-**为什么整段解码（≤60s）。** 采样管理器的素材是秒级长度，整段常驻是最简单的「不会因为磁盘慢而欠载」的方案。>60s 的长文件不整段解码：走窗口链（`Decoder::with_window` 有界解码 + 引擎排队槽 + render 回调段内交接），任意 seek 也是一次窗口解码，见 `docs/backend-todo.md` 第 2 项。
+**为什么整段解码（≤60s）。** 采样管理器的素材是秒级长度，整段常驻是最简单的「不会因为磁盘慢而欠载」的方案。>60s 的长文件不整段解码：走窗口链（`Decoder::with_window` 有界解码 + 引擎排队槽 + render 回调段内交接），任意 seek 也是一次窗口解码，见 `docs/architecture.md` 3.3。
 
 **为什么在解码侧做重采样而不是交给 WASAPI 的 `AUTOCONVERTPCM`。** 两者都开：`AUTOCONVERTPCM` 是兜底，自己转是为了让 `DecodedAudio` 的字节与 `OutputFormat` 严格一致，否则 `frame_bytes` 对不上时渲染线程只能丢帧。
 
@@ -181,5 +181,5 @@ pub fn write_wav_region(path, source: &SourceAudio, start_s, end_s) -> Result<us
 - 切换不做交叉淡化（架构文档 4.1 的可选项），目前是硬切
 - MP4/M4A 与 OGG 尾部仍有编码器填充（956–1980 帧），只影响末尾静音
 - MMCSS 线程提升是 best-effort，失败不报错也不阻塞播放
-- 长文件不再整段解码：>60s 走窗口链（每窗 15s，`Decoder::with_window` + 引擎排队槽 render 段交接，见 `docs/backend-todo.md` 第 2 项收尾记录）；窗口交接仍是硬切
+- 长文件不再整段解码：>60s 走窗口链（每窗 15s，`Decoder::with_window` + 引擎排队槽 render 段交接，见 `docs/architecture.md` 3.3）；窗口交接仍是硬切
 - 选区导出每次都往缓存目录写一个新 WAV，没有清理策略

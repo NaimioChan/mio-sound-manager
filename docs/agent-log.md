@@ -4,6 +4,8 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 ## 2026-11-21 16:10 · opencode · 超长素材窗口 seek 与连续播放（TODO 2 收尾 + 8 最后一项）
 
+（`docs/backend-todo.md` 已于 2026-11-21 完成后删除；本条目及下文 14:22、00:43 条目中的该文件引用是当时的历史记录，文件内容不可再查。长素材窗口链的设计现记录在 `docs/architecture.md` 3.3。）
+
 - 改: `crates/mio-engine/src/decode.rs` — `DecodeWindow` + `Decoder::with_window`：demuxer `seek(Accurate)` 到目标时间，packet 循环按 trimmed-timeline 丢/裁包头，输出与全量解码逐样本对齐（WAV/MP3/MP4 三个 demuxer 的 seek 与 packet.ts 语义逐一核实过）；`DecodedAudio.window_start_frames`（源帧坐标，audible 流）。`crates/mio-engine/src/output.rs` — `Shared.next` 排队槽 + `queue_next`/`clear_queued`/`take_queued`；render 回调在 buffer 耗尽的同一次回调里接管下一窗口（原子 swap，无锁无轮询）；`active_window_start` 使 `pos_frames` 保持 buffer 坐标、`snapshot` 输出文件坐标；`stop` 清队列。`crates/mio-app/src/state.rs` — `play` 长文件路径改为窗口链：首窗口（`WINDOW_SECONDS=15s`，起点任意含 seek 目标）+ `start_window_chain`（`mio-decode-ahead` 线程逐窗口解码、排队、等回调消费；epoch/generation 双守卫；最后一窗口 complete 进 LRU）；替代原「5s 前缀 + 全量 decode-ahead 接续」（全量解码在超 256MiB 时被拒，即 TODO 中未完成的 seek 缺口）。
 - 验证: `cargo test --release` 全绿（engine 24、index 81、app 20、IPC 28）。新增：engine 窗口解码逐样本对齐/越界窗口安全测试；IPC `long_file_seek_to_an_undecoded_position_plays_from_there`（90s WAV seek 40s，播放头落位、顺播前进、时长完整）。CDP 真实库验证：`check-interactions.mjs` 全过——22 分钟素材点波形 70% 后播放头 800.07s（此前失败：停在 1.43s），1.2s 后 801.27s 顺播；`check-volume/layout/themes/tags/i18n` 全过。播放头 `duration_s` 来自容器 `n_frames`（无损 WAV 与 data chunk 一致；有损格式略有出入属容器声明口径）。
 - 遗留: 未做人耳听感验收（交接为同回调硬切，与原 prefix→全量接续同一口径）；`queue_next` 队列深 1，解码慢于播放时回调写静音直到下一窗口就位（冷盘第一窗口后可能出现 <1s 空隙）；256MiB 现按「两窗口 + LRU」天然满足，未另设记账；下一窗口就位判定靠轮询 monitor 快照（5ms/20ms），与原接续线程同口径。
