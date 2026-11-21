@@ -25,8 +25,8 @@ mod session;
 mod state;
 
 pub use commands::{
-    AppStatus, AudioDeviceDto, FacetDto, FolderNodeDto, HistoryState, IndexProgress,
-    LibraryStatus, PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
+    AppStatus, AudioDeviceDto, FacetDto, FolderNodeDto, HistoryState, IndexProgress, LibraryStatus,
+    PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
 };
 pub use error::AppError;
 pub use history::EditKind;
@@ -56,6 +56,16 @@ pub fn run() {
                 Err(e) => log::warn!("no config directory, session will not persist: {e}"),
             }
 
+            match app.path().app_cache_dir() {
+                Ok(cache) => {
+                    let exports = cache.join("exports");
+                    if let Err(e) = cleanup_exports(&exports) {
+                        log::warn!("could not clean export cache {}: {e}", exports.display());
+                    }
+                }
+                Err(e) => log::warn!("no cache directory, export cleanup skipped: {e}"),
+            }
+
             app.manage(state);
             Ok(())
         })
@@ -75,6 +85,7 @@ pub fn run() {
             commands::export_region,
             commands::get_playback_position,
             commands::get_waveform,
+            commands::prefetch_neighbors,
             commands::add_library,
             commands::list_libraries,
             commands::remove_library,
@@ -97,4 +108,68 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mio Sound Manager");
+}
+
+fn cleanup_exports(dir: &std::path::Path) -> std::io::Result<()> {
+    cleanup_exports_with_limits(
+        dir,
+        512 * 1024 * 1024,
+        std::time::Duration::from_secs(7 * 24 * 60 * 60),
+    )
+}
+
+fn cleanup_exports_with_limits(
+    dir: &std::path::Path,
+    max_bytes: u64,
+    max_age: std::time::Duration,
+) -> std::io::Result<()> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    let now = std::time::SystemTime::now();
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    for entry in entries {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if now.duration_since(modified).unwrap_or_default() > max_age {
+            std::fs::remove_file(entry.path())?;
+            continue;
+        }
+        total = total.saturating_add(metadata.len());
+        files.push((modified, metadata.len(), entry.path()));
+    }
+    if total > max_bytes {
+        files.sort_by_key(|(modified, _, _)| *modified);
+        for (_, size, path) in files {
+            if total <= max_bytes {
+                break;
+            }
+            std::fs::remove_file(path)?;
+            total = total.saturating_sub(size);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn export_cleanup_evicts_oldest_files_until_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.wav"), vec![0; 8]).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(dir.path().join("b.wav"), vec![0; 8]).unwrap();
+
+        cleanup_exports_with_limits(dir.path(), 8, Duration::from_secs(60)).unwrap();
+        assert!(!dir.path().join("a.wav").exists());
+        assert!(dir.path().join("b.wav").exists());
+    }
 }

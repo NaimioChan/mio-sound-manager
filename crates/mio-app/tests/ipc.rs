@@ -21,8 +21,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mio_app::EditKind;
 use mio_app::AppState;
+use mio_app::EditKind;
 use mio_app::SearchRequest;
 
 /// Where test audio goes. `$TMPDIR` on this host points at Hermes' scratch dir.
@@ -130,10 +130,11 @@ fn status_without_a_device_reports_the_engine_error_not_a_generic_one() {
     // And playback fails cleanly instead of panicking.
     let clip_path = scratch("no-device").join("x.wav");
     write_wav(&clip_path, 44_100, 2, 441);
-    let err = state
-        .publish(Arc::new(mio_engine::DecodedAudio {
+    let err = state.publish(
+        Arc::new(mio_engine::DecodedAudio {
             bytes: Vec::new(),
             frames: 0,
+            total_frames: 0,
             format: mio_engine::OutputFormat {
                 sample_rate: 44_100,
                 channels: 2,
@@ -145,7 +146,12 @@ fn status_without_a_device_reports_the_engine_error_not_a_generic_one() {
             resampled: false,
             path: String::new(),
             trimmed_leading_frames: 0,
-        }), mio_engine::PublishSource::Initial);
+            source: None,
+            complete: true,
+            window_start_frames: 0,
+        }),
+        mio_engine::PublishSource::Initial,
+    );
     assert!(err.is_err(), "publish without a device must fail");
 }
 
@@ -156,7 +162,10 @@ fn play_moves_the_playhead_and_stop_halts_it() {
     let audio = root.join("tone.wav");
     write_wav(&audio, 44_100, 2, 44_100); // one second
 
-    assert!(!state.playback_position().playing, "nothing playing at boot");
+    assert!(
+        !state.playback_position().playing,
+        "nothing playing at boot"
+    );
 
     tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), None)).expect("play");
 
@@ -168,7 +177,11 @@ fn play_moves_the_playhead_and_stop_halts_it() {
         let position = state.playback_position();
         if position.position_s > 0.0 {
             moved = true;
-            assert!(position.duration_s > 0.9, "duration {}", position.duration_s);
+            assert!(
+                position.duration_s > 0.9,
+                "duration {}",
+                position.duration_s
+            );
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -310,10 +323,11 @@ fn waveform_is_a_thousand_peaks_of_the_whole_file_and_no_pcm() {
         2,
         "a stereo file carries one envelope per channel for the stacked display"
     );
-    assert!(wave
-        .lanes
-        .iter()
-        .all(|lane| lane.len() == mio_engine::DEFAULT_BUCKETS));
+    assert!(
+        wave.lanes
+            .iter()
+            .all(|lane| lane.len() == mio_engine::DEFAULT_BUCKETS)
+    );
     assert!(
         (wave.duration_s - 2.0).abs() < 0.02,
         "duration {}",
@@ -323,7 +337,10 @@ fn waveform_is_a_thousand_peaks_of_the_whole_file_and_no_pcm() {
     // The loud half must read loud and the silent half must read silent: a
     // waveform that ignores the audio would fail here.
     let midpoint = wave.peaks.len() / 2;
-    let loud = wave.peaks[..midpoint].iter().cloned().fold(0.0f32, f32::max);
+    let loud = wave.peaks[..midpoint]
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max);
     let quiet = wave.peaks[midpoint + 4..]
         .iter()
         .cloned()
@@ -332,12 +349,27 @@ fn waveform_is_a_thousand_peaks_of_the_whole_file_and_no_pcm() {
         loud > 0.5,
         "loud half should be near full scale, peak was {loud}"
     );
-    assert!(quiet < 0.01, "silent half should be silent, peak was {quiet}");
+    assert!(
+        quiet < 0.01,
+        "silent half should be silent, peak was {quiet}"
+    );
 
     // Wire-format guard: peaks are floats in 0..=1, never bytes of PCM. `AGENTS.md`
     // forbids decoded audio crossing into the webview.
     assert!(wave.peaks.iter().all(|p| (0.0..=1.0).contains(p)));
-    assert_eq!(wave.peaks.len(), 1000, "payload must not scale with file size");
+    assert_eq!(
+        wave.peaks.len(),
+        1000,
+        "payload must not scale with file size"
+    );
+
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), None)).expect("play");
+    let cached = tauri::async_runtime::block_on(state.waveform(&audio.to_string_lossy(), None))
+        .expect("cached waveform");
+    assert_eq!(
+        cached.decode_ms, 0.0,
+        "playback source PCM should serve waveform"
+    );
 }
 
 #[test]
@@ -351,9 +383,91 @@ fn waveform_bucket_count_is_clamped_not_trusted() {
         .expect("waveform with zero buckets");
     assert_eq!(tiny.peaks.len(), 16, "0 buckets clamps to the minimum");
 
-    let huge = tauri::async_runtime::block_on(state.waveform(&audio.to_string_lossy(), Some(1_000_000)))
-        .expect("waveform with a huge bucket count");
+    let huge =
+        tauri::async_runtime::block_on(state.waveform(&audio.to_string_lossy(), Some(1_000_000)))
+            .expect("waveform with a huge bucket count");
     assert_eq!(huge.peaks.len(), 16_384, "huge bucket counts clamp");
+}
+
+#[test]
+fn long_file_play_publishes_a_short_prefix_with_full_duration() {
+    let Some(state) = state() else { return };
+    let root = scratch("long-prefix");
+    let audio = root.join("long.wav");
+    write_wav(&audio, 44_100, 2, 65 * 44_100);
+
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), None))
+        .expect("long-file window play");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut position = state.playback_position();
+    while !position.playing && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        position = state.playback_position();
+    }
+    assert!(position.playing);
+    assert!(
+        position.duration_s >= 59.0,
+        "duration {} (the WAV writer's frame count is the container's, the engine reports the audible stream)",
+        position.duration_s
+    );
+    // The window chain keeps going; the playhead advances past the first
+    // window because the engine's queued next window hands off in the
+    // callback. The file is silent, so this is purely a position check.
+    let mut advanced = false;
+    while std::time::Instant::now() < deadline {
+        let current = state.playback_position();
+        if current.position_s > 1.0 {
+            advanced = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(advanced, "playhead should advance through window handoffs");
+    state.stop_playback().expect("stop window playback");
+}
+
+#[test]
+fn long_file_seek_to_an_undecoded_position_plays_from_there() {
+    let Some(state) = state() else { return };
+    let root = scratch("long-seek");
+    let audio = root.join("seek.wav");
+    write_wav(&audio, 44_100, 2, 90 * 44_100);
+
+    // Seek straight into a position no window has decoded yet. The old path
+    // decoded the whole file (over budget for real material) or clamped the
+    // offset into a short buffer; the window path decodes from the target.
+    let target = 40.0;
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), Some(target)))
+        .expect("seek play");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut position = state.playback_position();
+    while !position.playing && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        position = state.playback_position();
+    }
+    assert!(position.playing);
+    assert!(
+        position.position_s >= target - 4.0 && position.position_s < target + 1.5,
+        "playhead should start at (or just before) the seek target, got {}",
+        position.position_s
+    );
+    assert!(
+        position.duration_s >= 81.0,
+        "duration must be the whole file, got {}",
+        position.duration_s
+    );
+    // And the chain continues from there.
+    let mut advanced = false;
+    while std::time::Instant::now() < deadline {
+        let current = state.playback_position();
+        if current.position_s > target + 1.0 {
+            advanced = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(advanced, "playhead should advance past the seek target");
+    state.stop_playback().expect("stop seek playback");
 }
 
 #[test]
@@ -361,7 +475,12 @@ fn opening_a_library_indexes_it_before_returning_and_search_finds_the_rows() {
     let Some(state) = state() else { return };
     let root = scratch("library");
     write_wav(&root.join(r"Foley\door_slam.wav"), 44_100, 2, 4_410);
-    write_wav(&root.join(r"Weapons\Firearms\gunshot_01.wav"), 44_100, 2, 8_820);
+    write_wav(
+        &root.join(r"Weapons\Firearms\gunshot_01.wav"),
+        44_100,
+        2,
+        8_820,
+    );
     std::fs::write(root.join("readme.txt"), b"not audio").unwrap();
 
     // Blocking now: when this returns, the pass is done and the rows are there.
@@ -444,6 +563,25 @@ fn folder_tree_comes_from_the_index_not_from_disk() {
 }
 
 #[test]
+fn folder_tree_cache_is_invalidated_after_an_indexed_file_is_added() {
+    let Some(state) = state() else { return };
+    let root = scratch("folder-cache-version");
+    write_wav(&root.join("first.wav"), 44_100, 2, 1_000);
+    state
+        .add_library(&root.to_string_lossy(), false, |_, _| {})
+        .expect("open library");
+    assert_eq!(state.list_folders().unwrap().count, 1);
+
+    write_wav(&root.join("NewFolder").join("better.wav"), 44_100, 2, 1_000);
+    state
+        .reindex_library(Some(&root.to_string_lossy()), false, |_, _| {})
+        .expect("reindex library");
+    let tree = state.list_folders().unwrap();
+    assert_eq!(tree.count, 2);
+    assert!(tree.children.iter().any(|node| node.name == "NewFolder"));
+}
+
+#[test]
 fn search_without_a_library_is_an_error_the_ui_can_display() {
     let Some(state) = state() else { return };
     let err = state
@@ -504,8 +642,18 @@ fn opening_a_folder_that_does_not_exist_is_rejected() {
 fn settled_library(state: &AppState, name: &str) -> PathBuf {
     let root = scratch(name);
     write_wav(&root.join(r"Foley\door_slam.wav"), 44_100, 2, 4_410);
-    write_wav(&root.join(r"Weapons\Firearms\gunshot_01.wav"), 44_100, 2, 8_820);
-    write_wav(&root.join(r"Weapons\Firearms\gunshot_02.wav"), 44_100, 2, 8_820);
+    write_wav(
+        &root.join(r"Weapons\Firearms\gunshot_01.wav"),
+        44_100,
+        2,
+        8_820,
+    );
+    write_wav(
+        &root.join(r"Weapons\Firearms\gunshot_02.wav"),
+        44_100,
+        2,
+        8_820,
+    );
 
     state
         .add_library(&root.to_string_lossy(), false, |_, _| {})
@@ -534,7 +682,11 @@ fn favoriting_a_selection_updates_the_rows_and_the_sidebar_in_one_go() {
 
     // The sidebar's numbers are what the rail draws; they have to agree with the
     // rows, which is why both come from the same database in one call.
-    let (favorites, total) = state.library().expect("library").summary().expect("summary");
+    let (favorites, total) = state
+        .library()
+        .expect("library")
+        .summary()
+        .expect("summary");
     assert_eq!(favorites, 2);
     assert_eq!(total, 3);
 
@@ -550,7 +702,11 @@ fn favoriting_a_selection_updates_the_rows_and_the_sidebar_in_one_go() {
 
     // Un-favoriting is the same call with the other flag.
     state.set_favorite(&paths, false).expect("unfavorite");
-    let (favorites, _) = state.library().expect("library").summary().expect("summary");
+    let (favorites, _) = state
+        .library()
+        .expect("library")
+        .summary()
+        .expect("summary");
     assert_eq!(favorites, 0);
 
     drop(root);
@@ -573,7 +729,10 @@ fn a_hand_set_category_survives_a_reindex_and_clearing_it_does_not() {
     // The classifier reads the filename, not the folder, so the guess is not
     // asserted by name — only that a guess exists and that a manual choice beats it.
     let guessed = target.category.clone();
-    assert_ne!(guessed, "Uncategorized", "the classifier should guess something");
+    assert_ne!(
+        guessed, "Uncategorized",
+        "the classifier should guess something"
+    );
     assert!(!target.category_manual);
 
     let paths = vec![target.path.clone()];
@@ -649,7 +808,10 @@ fn the_sidebar_lists_every_category_with_a_count() {
     // And the counts have to add up to the library: a facet list that misses a
     // file is a rail that hides sounds with no way to reach them.
     let summed: u64 = facets.iter().map(|f| f.count).sum();
-    assert_eq!(summed, 3, "every indexed sound appears in exactly one facet");
+    assert_eq!(
+        summed, 3,
+        "every indexed sound appears in exactly one facet"
+    );
 
     drop(root);
 }
@@ -674,7 +836,10 @@ fn pause_freezes_the_playhead_and_resume_continues_without_re_decoding() {
     let paused = state.playback_position();
     assert!(paused.paused, "pause flag must be reported");
     assert!(!paused.playing, "a paused clip is not playing");
-    assert!(paused.position_s > 0.0, "the playhead stopped past the start");
+    assert!(
+        paused.position_s > 0.0,
+        "the playhead stopped past the start"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(120));
     let still = state.playback_position();
@@ -757,7 +922,9 @@ fn several_libraries_can_be_open_at_once_and_the_active_one_switches() {
     assert_eq!(rows.len(), 2, "the other library's rows must not leak in");
 
     // Switching back changes what search sees.
-    state.set_active_library(&a.to_string_lossy()).expect("switch");
+    state
+        .set_active_library(&a.to_string_lossy())
+        .expect("switch");
     let rows = state
         .search(SearchRequest {
             query: String::new(),

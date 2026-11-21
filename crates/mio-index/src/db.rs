@@ -17,6 +17,7 @@
 //! * **WAL is mandatory.** The UI queries while the indexer writes.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
@@ -177,9 +178,69 @@ pub fn fts_query(raw: &str) -> Option<String> {
     }
 }
 
+fn trigram_query(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    (text.chars().count() >= 3).then(|| format!("\"{}\"", text.replace('"', "\"\"")))
+}
+
 pub struct IndexDb {
     conn: Connection,
     root: PathBuf,
+    _library_lock: Option<Arc<std::fs::File>>,
+    favorite_index_available: bool,
+}
+
+static LIBRARY_LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<std::fs::File>>>> =
+    OnceLock::new();
+
+fn acquire_library_lock(root: &Path) -> Result<Arc<std::fs::File>> {
+    let canonical = std::fs::canonicalize(root)?;
+    let locks = LIBRARY_LOCKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut locks = locks
+        .lock()
+        .map_err(|_| IndexError::Db("library lock registry poisoned".into()))?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&canonical).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    canonical.hash(&mut hasher);
+    let lock_dir = std::env::temp_dir().join("mio-sound-manager-locks");
+    std::fs::create_dir_all(&lock_dir)?;
+    let path = lock_dir.join(format!("{:016x}.lock", hasher.finish()));
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&path)
+            .map_err(|e| {
+                IndexError::Db(format!(
+                    "library is already open by another Mio instance ({}): {e}",
+                    canonical.display()
+                ))
+            })?
+    };
+    #[cfg(not(windows))]
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)?;
+    let lock = Arc::new(file);
+    locks.insert(canonical, Arc::downgrade(&lock));
+    Ok(lock)
+}
+
+#[derive(Debug)]
+pub struct ScannedPath {
+    pub path: String,
+    pub filesize: u64,
+    pub mtime_ns: i64,
 }
 
 impl IndexDb {
@@ -190,10 +251,13 @@ impl IndexDb {
         if !root.is_dir() {
             return Err(IndexError::BadRoot(root.display().to_string()));
         }
+        let library_lock = acquire_library_lock(&root)?;
         Self::adopt_legacy_file(&root)?;
         let path = root.join(DB_FILENAME);
         let conn = Connection::open(&path)?;
-        Self::prepare(conn, root)
+        let mut db = Self::prepare(conn, root)?;
+        db._library_lock = Some(library_lock);
+        Ok(db)
     }
 
     /// Rename a database an earlier build left behind, so the file name change is
@@ -248,7 +312,12 @@ impl IndexDb {
         conn.pragma_update(None, "cache_size", -32_768i64)?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
 
-        let mut db = Self { conn, root };
+        let mut db = Self {
+            conn,
+            root,
+            _library_lock: None,
+            favorite_index_available: false,
+        };
         db.create_base_schema()?;
         db.migrate()?;
         db.create_fts()?;
@@ -259,7 +328,28 @@ impl IndexDb {
         if db.get_meta("fts_dirty")?.as_deref() == Some("1") {
             db.end_bulk()?;
         }
+        db.favorite_index_available = db.has_index("idx_favorite")?;
+        if db.get_meta("trigram_version")?.as_deref() != Some("1") {
+            let tx = db.conn.unchecked_transaction()?;
+            tx.execute_batch(
+                "DROP TRIGGER IF EXISTS sounds_ai;
+                 DROP TRIGGER IF EXISTS sounds_ad;
+                 DROP TRIGGER IF EXISTS sounds_au;",
+            )?;
+            db.create_fts()?;
+            db.rebuild_trigram_fts()?;
+            db.set_meta("trigram_version", "1")?;
+            tx.commit()?;
+        }
         Ok(db)
+    }
+
+    fn has_index(&self, name: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+            params![name],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn root(&self) -> &Path {
@@ -272,6 +362,145 @@ impl IndexDb {
 
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    pub fn begin_scan(&mut self) -> Result<()> {
+        self.conn.pragma_update(None, "temp_store", "FILE")?;
+        self.conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS _scan_files (
+                 path TEXT PRIMARY KEY,
+                 filesize INTEGER NOT NULL,
+                 mtime_ns INTEGER NOT NULL
+             ) WITHOUT ROWID;
+             DELETE FROM _scan_files;",
+        )?;
+        Ok(())
+    }
+
+    pub fn stage_scan_path(&mut self, path: &Path, filesize: u64, mtime_ns: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO _scan_files(path, filesize, mtime_ns) VALUES (?1, ?2, ?3)",
+            params![crate::folders::store_path(path), filesize as i64, mtime_ns],
+        )?;
+        Ok(())
+    }
+
+    pub fn stage_scan_batch(&mut self, paths: &[(String, u64, i64)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO _scan_files(path, filesize, mtime_ns) VALUES (?1, ?2, ?3)",
+            )?;
+            for (path, filesize, mtime_ns) in paths {
+                stmt.execute(params![path, *filesize as i64, mtime_ns])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn scanned_count(&self) -> Result<usize> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM _scan_files", [], |r| {
+                r.get::<_, i64>(0)
+            })? as usize)
+    }
+
+    pub fn scan_batch(
+        &self,
+        after_path: Option<&str>,
+        limit: usize,
+        incremental: bool,
+    ) -> Result<Vec<ScannedPath>> {
+        use rusqlite::types::Value;
+        let (sql, args): (&str, Vec<Value>) = match (incremental, after_path) {
+            (true, Some(path)) => (
+                "SELECT f.path, f.filesize, f.mtime_ns
+                 FROM _scan_files f LEFT JOIN sounds s ON s.path = f.path
+                 WHERE f.path > ?1 AND (s.path IS NULL OR COALESCE(s.mtime_ns, 0) = 0
+                       OR s.mtime_ns <> f.mtime_ns OR COALESCE(s.filesize, 0) <> f.filesize)
+                 ORDER BY f.path LIMIT ?2",
+                vec![Value::Text(path.to_owned()), Value::Integer(limit as i64)],
+            ),
+            (true, None) => (
+                "SELECT f.path, f.filesize, f.mtime_ns
+                 FROM _scan_files f LEFT JOIN sounds s ON s.path = f.path
+                 WHERE s.path IS NULL OR COALESCE(s.mtime_ns, 0) = 0
+                       OR s.mtime_ns <> f.mtime_ns OR COALESCE(s.filesize, 0) <> f.filesize
+                 ORDER BY f.path LIMIT ?1",
+                vec![Value::Integer(limit as i64)],
+            ),
+            (false, Some(path)) => (
+                "SELECT path, filesize, mtime_ns FROM _scan_files
+                 WHERE path > ?1 ORDER BY path LIMIT ?2",
+                vec![Value::Text(path.to_owned()), Value::Integer(limit as i64)],
+            ),
+            (false, None) => (
+                "SELECT path, filesize, mtime_ns FROM _scan_files ORDER BY path LIMIT ?1",
+                vec![Value::Integer(limit as i64)],
+            ),
+        };
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let rows = stmt.query_map(params_from_iter(args.iter()), |r| {
+            Ok(ScannedPath {
+                path: r.get(0)?,
+                filesize: r.get::<_, i64>(1)? as u64,
+                mtime_ns: r.get(2)?,
+            })
+        })?;
+        let mut batch = Vec::new();
+        for row in rows {
+            batch.push(row?);
+        }
+        Ok(batch)
+    }
+
+    pub fn unchanged_scan_count(&self) -> Result<usize> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM _scan_files f JOIN sounds s ON s.path = f.path
+             WHERE COALESCE(s.mtime_ns, 0) <> 0 AND s.mtime_ns = f.mtime_ns
+               AND COALESCE(s.filesize, 0) = f.filesize",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? as usize)
+    }
+
+    pub fn prune_scan_missing(&mut self) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let removed = tx.execute(
+            "DELETE FROM sounds
+             WHERE NOT EXISTS (SELECT 1 FROM _scan_files f WHERE f.path = sounds.path)",
+            [],
+        )? as u64;
+        if removed > 0 {
+            bump_index_version_in(&tx)?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    pub fn bump_index_version(&self) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES ('index_version', '1')
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn index_version(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'index_version'), 0)",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn end_scan(&mut self) -> Result<()> {
+        self.conn.execute_batch("DROP TABLE IF EXISTS _scan_files;")?;
+        self.conn.pragma_update(None, "temp_store", "MEMORY")?;
+        Ok(())
     }
 
     /// The reference schema, verbatim. Safe to run against an existing database.
@@ -425,21 +654,34 @@ impl IndexDb {
                 tokenize = "unicode61 remove_diacritics 2"
             );
 
+            CREATE VIRTUAL TABLE IF NOT EXISTS sounds_trigram USING fts5(
+                filename,
+                content='sounds',
+                content_rowid='id',
+                tokenize='trigram'
+            );
+
             CREATE TRIGGER IF NOT EXISTS sounds_ai AFTER INSERT ON sounds BEGIN
               INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder)
               VALUES (new.id, new.filename, new.category, new.subcategory, new.folder);
+              INSERT INTO sounds_trigram(rowid, filename) VALUES (new.id, new.filename);
             END;
 
             CREATE TRIGGER IF NOT EXISTS sounds_ad AFTER DELETE ON sounds BEGIN
               INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder)
               VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder);
+              INSERT INTO sounds_trigram(sounds_trigram, rowid, filename)
+              VALUES ('delete', old.id, old.filename);
             END;
 
             CREATE TRIGGER IF NOT EXISTS sounds_au AFTER UPDATE ON sounds BEGIN
               INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder)
               VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder);
+              INSERT INTO sounds_trigram(sounds_trigram, rowid, filename)
+              VALUES ('delete', old.id, old.filename);
               INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder)
               VALUES (new.id, new.filename, new.category, new.subcategory, new.folder);
+              INSERT INTO sounds_trigram(rowid, filename) VALUES (new.id, new.filename);
             END;
             "#,
         )?;
@@ -535,6 +777,7 @@ impl IndexDb {
                 ])?;
             }
         }
+        bump_index_version_in(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -569,6 +812,9 @@ impl IndexDb {
             [],
         )? as u64;
         tx.execute_batch("DROP TABLE _current_paths;")?;
+        if removed > 0 {
+            bump_index_version_in(&tx)?;
+        }
         tx.commit()?;
         Ok(removed)
     }
@@ -591,6 +837,7 @@ impl IndexDb {
              DROP TRIGGER IF EXISTS sounds_ad;
              DROP TRIGGER IF EXISTS sounds_au;",
         )?;
+        self.favorite_index_available = false;
         // Secondary indexes are maintained per row, which is the right trade for
         // single edits and the wrong one for a 280k-row load: seven of them cost
         // 16 s of a 82 s pass. Dropping and rebuilding once is the documented
@@ -626,7 +873,9 @@ impl IndexDb {
         )?;
         self.create_fts()?;
         self.rebuild_fts()?;
+        self.rebuild_trigram_fts()?;
         self.set_meta("fts_dirty", "0")?;
+        self.favorite_index_available = true;
         Ok(())
     }
 
@@ -791,12 +1040,8 @@ impl IndexDb {
             )?;
             let mut changed = 0u64;
             for path in paths {
-                changed += stmt.execute(params![
-                    category,
-                    subcategory,
-                    manual as i64,
-                    path
-                ])? as u64;
+                changed +=
+                    stmt.execute(params![category, subcategory, manual as i64, path])? as u64;
             }
             changed
         };
@@ -805,8 +1050,21 @@ impl IndexDb {
     }
 
     pub fn search(&self, params: &SearchParams) -> Result<Vec<Sound>> {
-        let (sql, args) = self.build_search_sql(params, false);
-        let mut stmt = self.conn.prepare(&sql)?;
+        let (sql, args) = self.build_search_sql(params, false, false);
+        let mut out = self.read_sounds(&sql, &args)?;
+        if out.is_empty() && !params.query.trim().is_empty() {
+            if trigram_query(&params.query).is_some()
+                && self.count_search_mode(params, false)? == 0
+            {
+                let (sql, args) = self.build_search_sql(params, false, true);
+                out = self.read_sounds(&sql, &args)?;
+            }
+        }
+        Ok(out)
+    }
+
+    fn read_sounds(&self, sql: &str, args: &[rusqlite::types::Value]) -> Result<Vec<Sound>> {
+        let mut stmt = self.conn.prepare(sql)?;
         let mut rows = stmt.query(params_from_iter(args.iter()))?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -816,11 +1074,19 @@ impl IndexDb {
     }
 
     pub fn count_matching(&self, params: &SearchParams) -> Result<u64> {
-        let (sql, args) = self.build_search_sql(params, true);
-        let count: i64 = self
+        let count = self.count_search_mode(params, false)?;
+        if count == 0 && !params.query.trim().is_empty() && trigram_query(&params.query).is_some() {
+            return self.count_search_mode(params, true);
+        }
+        Ok(count)
+    }
+
+    fn count_search_mode(&self, params: &SearchParams, substring: bool) -> Result<u64> {
+        let (sql, args) = self.build_search_sql(params, true, substring);
+        Ok(self
             .conn
-            .query_row(&sql, params_from_iter(args.iter()), |r| r.get(0))?;
-        Ok(count as u64)
+            .query_row(&sql, params_from_iter(args.iter()), |r| r.get::<_, i64>(0))?
+            as u64)
     }
 
     /// `(sql, bound parameters)` for both the search and the count, so the two
@@ -829,26 +1095,38 @@ impl IndexDb {
         &self,
         params: &SearchParams,
         counting: bool,
+        substring: bool,
     ) -> (String, Vec<rusqlite::types::Value>) {
         use rusqlite::types::Value;
 
         let mut clauses: Vec<String> = Vec::new();
         let mut args: Vec<Value> = Vec::new();
 
-        let match_expr = fts_query(&params.query);
+        let match_expr = if substring {
+            trigram_query(&params.query)
+        } else {
+            fts_query(&params.query)
+        };
+        let fts_table = if substring {
+            "sounds_trigram"
+        } else {
+            "sounds_fts"
+        };
+        let from = if match_expr.is_some() {
+            format!("{fts_table} f JOIN sounds s ON s.id = f.rowid")
+        } else {
+            "sounds s".to_string()
+        };
         let mut sql = if counting {
             if match_expr.is_some() {
-                "SELECT COUNT(*) FROM sounds_fts f JOIN sounds s ON s.id = f.rowid WHERE sounds_fts MATCH ?"
-                    .to_string()
+                format!("SELECT COUNT(*) FROM {from} WHERE {fts_table} MATCH ?")
             } else {
-                "SELECT COUNT(*) FROM sounds s".to_string()
+                format!("SELECT COUNT(*) FROM {from}")
             }
         } else if match_expr.is_some() {
-            format!(
-                "SELECT {SOUND_COLUMNS} FROM sounds_fts f JOIN sounds s ON s.id = f.rowid WHERE sounds_fts MATCH ?"
-            )
+            format!("SELECT {SOUND_COLUMNS} FROM {from} WHERE {fts_table} MATCH ?")
         } else {
-            format!("SELECT {SOUND_COLUMNS} FROM sounds s")
+            format!("SELECT {SOUND_COLUMNS} FROM {from}")
         };
 
         if let Some(expr) = &match_expr {
@@ -958,8 +1236,14 @@ impl IndexDb {
     /// The sidebar shows both numbers next to each other; two separate queries
     /// would let them disagree for a frame right after a star click.
     pub fn summary(&self) -> Result<(u64, u64)> {
+        let sql = if self.favorite_index_available {
+            "SELECT COALESCE(SUM(favorite), 0), COUNT(favorite)
+             FROM sounds INDEXED BY idx_favorite"
+        } else {
+            "SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds"
+        };
         let (favorites, total) = self.conn.query_row(
-            "SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds",
+            sql,
             [],
             |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
         )?;
@@ -992,12 +1276,27 @@ impl IndexDb {
             .execute_batch("INSERT INTO sounds_fts(sounds_fts) VALUES ('rebuild');")?;
         Ok(())
     }
+
+    fn rebuild_trigram_fts(&self) -> Result<()> {
+        self.conn
+            .execute_batch("INSERT INTO sounds_trigram(sounds_trigram) VALUES ('rebuild');")?;
+        Ok(())
+    }
 }
 
 /// Column list shared by every read, in the order `read_sound` expects.
 const SOUND_COLUMNS: &str = "s.id, s.path, s.filename, s.duration, s.channels, s.sample_rate, \
      s.filesize, s.category, s.subcategory, s.confidence, s.matched_terms, s.favorite, \
      s.category_manual, s.folder, s.bpm";
+
+fn bump_index_version_in(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "INSERT INTO meta(key, value) VALUES ('index_version', '1')
+         ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+        [],
+    )?;
+    Ok(())
+}
 
 fn read_sound(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sound> {
     let terms_raw: Option<String> = row.get(10)?;
@@ -1090,6 +1389,45 @@ mod tests {
         IndexDb::open_in_memory("C:/lib").unwrap()
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn the_lock_allows_same_process_reuse_but_rejects_another_process() {
+        if let Ok(root) = std::env::var("MIO_LOCK_CHILD_ROOT") {
+            let error = match IndexDb::open(root) {
+                Ok(_) => panic!("a second process unexpectedly opened the locked library"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("already open"));
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "mio-lock-same-process-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let first = IndexDb::open(&root).unwrap();
+        let second = IndexDb::open(&root).unwrap();
+        assert_eq!(first.count().unwrap(), second.count().unwrap());
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "db::tests::the_lock_allows_same_process_reuse_but_rejects_another_process",
+                "--nocapture",
+            ])
+            .env("MIO_LOCK_CHILD_ROOT", &root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        drop((first, second));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn upsert_is_idempotent_on_path() {
         let mut db = db();
@@ -1148,6 +1486,44 @@ mod tests {
     }
 
     #[test]
+    fn summary_uses_indexed_counts_and_stays_consistent_after_favorite_edits() {
+        let mut db = db();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley"), row("C:/lib/b.wav", "Music")])
+            .unwrap();
+        assert_eq!(db.summary().unwrap(), (0, 2));
+        db.set_favorite_many(&["C:/lib/b.wav".into()], true)
+            .unwrap();
+        assert_eq!(db.summary().unwrap(), (1, 2));
+
+        let plan: Vec<String> = db
+            .connection()
+            .prepare("EXPLAIN QUERY PLAN SELECT COALESCE(SUM(favorite), 0), COUNT(favorite) FROM sounds INDEXED BY idx_favorite")
+            .unwrap()
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(plan.iter().any(|detail| detail.contains("idx_favorite")));
+
+        db.begin_bulk().unwrap();
+        assert_eq!(db.summary().unwrap(), (1, 2));
+        db.end_bulk().unwrap();
+        assert_eq!(db.summary().unwrap(), (1, 2));
+    }
+
+    #[test]
+    fn scan_diff_reprobes_when_size_changes_even_if_mtime_is_unchanged() {
+        let mut db = db();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
+        db.begin_scan().unwrap();
+        db.stage_scan_batch(&[("C:/lib/a.wav".into(), 101, 1)]).unwrap();
+        let batch = db.scan_batch(None, 10, true).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].filesize, 101);
+        db.end_scan().unwrap();
+    }
+
+    #[test]
     fn search_matches_every_word_as_a_prefix_in_any_order() {
         let mut db = db();
         db.upsert_batch(&[
@@ -1163,6 +1539,55 @@ mod tests {
 
         let hits = db.search(&SearchParams::new("doo")).unwrap();
         assert_eq!(hits.len(), 2, "prefix match should find both doors");
+    }
+
+    #[test]
+    fn search_falls_back_to_filename_substrings_only_after_prefix_misses() {
+        let mut db = db();
+        db.upsert_batch(&[
+            row(r"C:\lib\Piano_C4.wav", "Music"),
+            row(r"C:\lib\Pianist_C4.wav", "Music"),
+        ])
+        .unwrap();
+
+        let hits = db.search(&SearchParams::new("iano_c4")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].filename, "Piano_C4.wav");
+        assert_eq!(db.count_matching(&SearchParams::new("iano_c4")).unwrap(), 1);
+
+        let mut second_page = SearchParams::new("iano_c4");
+        second_page.offset = 1;
+        assert!(
+            db.search(&second_page).unwrap().is_empty(),
+            "the trigram fallback must not repeat first-page matches at a nonzero offset"
+        );
+
+        let prefix = db.search(&SearchParams::new("pian")).unwrap();
+        assert_eq!(prefix.len(), 2, "the existing prefix search stays primary");
+        assert!(
+            db.search(&SearchParams::new("no-match"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(db.search(&SearchParams::new("ia")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn trigram_index_tracks_filename_updates_and_deletes() {
+        let mut db = db();
+        db.upsert_batch(&[row(r"C:\lib\Piano_C4.wav", "Music")])
+            .unwrap();
+        assert_eq!(db.search(&SearchParams::new("iano")).unwrap().len(), 1);
+
+        let mut renamed = row(r"C:\lib\Piano_C4.wav", "Music");
+        renamed.filename = "Violin_C4.wav".into();
+        db.upsert_batch(&[renamed]).unwrap();
+        let stale = db.search(&SearchParams::new("iano")).unwrap();
+        assert!(stale.is_empty(), "stale trigram hits: {stale:?}");
+        assert_eq!(db.search(&SearchParams::new("ioli")).unwrap().len(), 1);
+
+        db.prune_missing(&[]).unwrap();
+        assert!(db.search(&SearchParams::new("ioli")).unwrap().is_empty());
     }
 
     #[test]
@@ -1246,7 +1671,11 @@ mod tests {
 
         let db = IndexDb::open(&root).expect("open migrates the schema");
         let kick = db.get_by_path("C:/lib/Kick_128BPM.wav").unwrap().unwrap();
-        assert_eq!(kick.bpm, Some(128.0), "backfilled from the stored file name");
+        assert_eq!(
+            kick.bpm,
+            Some(128.0),
+            "backfilled from the stored file name"
+        );
         let snare = db.get_by_path("C:/lib/Snare_02.wav").unwrap().unwrap();
         assert_eq!(snare.bpm, None, "a name without a marker stays unmarked");
         // The upgrade must not cost the user their index or their mtime.

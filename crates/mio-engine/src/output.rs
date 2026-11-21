@@ -133,6 +133,11 @@ impl Default for EngineConfig {
 
 pub(crate) struct Shared {
     slots: [ArcSwapOption<DecodedAudio>; 2],
+    /// The queued next segment for long-material playback. Published by
+    /// `queue_next` from the decode-ahead thread; the render callback consumes
+    /// it in the callback where the current buffer runs out and swaps it into
+    /// the active slot itself, so the handoff never waits for a polling loop.
+    next: ArcSwapOption<DecodedAudio>,
     active: AtomicUsize,
     pub_ns: AtomicU64,
     pub_seq: AtomicU64,
@@ -145,6 +150,12 @@ pub(crate) struct Shared {
     /// position poll never has to take an `arc-swap` guard on the audio thread's
     /// slot. Pure atomics on the polling path (architecture section 7.3).
     active_frames: AtomicU64,
+    active_buffer_frames: AtomicU64,
+    /// First frame of the active clip's buffer in the file's audible stream, in
+    /// device frames. Zero for a full decode; the window start for a window
+    /// decode. `snapshot` adds it to `pos_frames` so the playhead shows the
+    /// position in the file rather than in the buffer.
+    active_window_start: AtomicU64,
     /// Set by `pause`, cleared by `publish` and `resume`. While set the render
     /// callback writes silence and leaves `pos_frames` alone, so the playhead
     /// freezes exactly where the listener heard it stop.
@@ -176,6 +187,11 @@ pub(crate) struct Shared {
 impl Shared {
     fn now_ns(&self) -> u64 {
         self.t0.elapsed().as_nanos() as u64
+    }
+
+    /// Take the queued next segment. Render-callback path: atomic swap, no lock.
+    pub(crate) fn take_queued(&self) -> Option<Arc<DecodedAudio>> {
+        self.next.swap(None)
     }
 
     /// Whether the render thread should keep going. The WASAPI loop polls the
@@ -263,19 +279,28 @@ impl Mixer {
                 // Paused: leave `pos_frames` where it is. The clip stays in the
                 // slot so resuming is one flag flip, and the position the
                 // listener hears is the position the playhead shows.
-            } else if clip_frame_bytes == frame_bytes && pos < clip.frames {
+            } else if clip_frame_bytes == frame_bytes
+                && pos < shared.active_buffer_frames.load(Ordering::Acquire) as usize
+            {
                 let looping = shared.looping.load(Ordering::Acquire);
                 // Clamp the region to the clip. An empty or inverted region — a
                 // selection left over from a longer file — falls back to the whole
                 // clip rather than playing silence nobody asked for.
                 let (loop_from, loop_to) = if looping {
-                    let frames = clip.frames;
+                    let frames = shared.active_buffer_frames.load(Ordering::Acquire) as usize;
                     let from = (shared.loop_start.load(Ordering::Acquire) as usize).min(frames);
                     let raw_to = shared.loop_end.load(Ordering::Acquire) as usize;
-                    let to = if raw_to == 0 { frames } else { raw_to.min(frames) };
+                    let to = if raw_to == 0 {
+                        frames
+                    } else {
+                        raw_to.min(frames)
+                    };
                     if to > from { (from, to) } else { (0, frames) }
                 } else {
-                    (0, clip.frames)
+                    (
+                        0,
+                        shared.active_buffer_frames.load(Ordering::Acquire) as usize,
+                    )
                 };
 
                 // A playhead outside the region means the selection moved while
@@ -293,8 +318,19 @@ impl Mixer {
                 // above), so this cannot spin.
                 let mut written = 0usize;
                 let mut cursor = pos;
+                let mut clip = clip;
+                let mut clip_frame_bytes = clip_frame_bytes;
+                let mut buffer_end = if looping {
+                    loop_to
+                } else {
+                    shared.active_buffer_frames.load(Ordering::Acquire) as usize
+                };
                 while written < want_frames {
-                    let segment_end = if looping { loop_to } else { clip.frames };
+                    let segment_end = if looping {
+                        loop_to
+                    } else {
+                        buffer_end
+                    };
                     let n = (segment_end - cursor).min(want_frames - written);
                     if n == 0 {
                         break;
@@ -311,6 +347,81 @@ impl Mixer {
                         } else {
                             break;
                         }
+                    }
+                }
+
+                // Segment handoff. When the buffer ran out with room left in
+                // this callback — or exactly at the boundary — and a next
+                // segment is queued, swap it into the active slot and keep
+                // copying from its head in the same callback. Everything is an
+                // atomic swap or store, which is what the callback is allowed
+                // to do. The position is relative to the new clip's buffer, so
+                // the old coordinate is discarded deliberately: the queued
+                // window is cut to continue exactly where this one ends.
+                //
+                // The guard variables (`clip`, `clip_frame_bytes`, the
+                // `active`/`seq` locals) go stale after the swap; the code
+                // below uses only the new clip via `next_clip` and updated
+                // locals. `seen_seq` is set from the pre-swap `seq` — the
+                // handoff publishes no new sequence, so the latency report for
+                // the original publish is still the one to measure.
+                let mut handed_off = false;
+                let mut queued_clip: Option<Arc<DecodedAudio>> = None;
+                if !looping && written < want_frames && cursor >= buffer_end {
+                    if let Some(next_clip) = shared.take_queued() {
+                        if next_clip.format == clip.format {
+                            let next_frames = next_clip.frames;
+                            shared.slots[active].store(Some(Arc::clone(&next_clip)));
+                            shared
+                                .active_buffer_frames
+                                .store(next_frames as u64, Ordering::Release);
+                            shared
+                                .active_window_start
+                                .store(next_clip.window_start_frames as u64, Ordering::Release);
+                            // `active_frames` (the total duration the UI shows)
+                            // stays untouched: both segments report the whole
+                            // file's length.
+                            shared.pos_frames.store(0, Ordering::Release);
+                            cursor = 0;
+                            buffer_end = next_frames;
+                            queued_clip = Some(next_clip);
+                            handed_off = true;
+                        }
+                    }
+                }
+                // Keep the handed-off clip alive for the copy below; the active
+                // slot holds its own strong reference from here on.
+                if let Some(next_clip) = queued_clip.as_ref() {
+                    clip = next_clip;
+                    clip_frame_bytes = clip.frame_bytes();
+                }
+
+                // Continue filling from the handed-off clip. At most one
+                // handoff per callback: the queued slot is now empty, so a
+                // second pass would find nothing — the loop below just writes
+                // silence for whatever is still missing, which is the correct
+                // response to a decode-ahead thread that has not caught up.
+                if handed_off && written < want_frames {
+                    while written < want_frames {
+                        let n = (buffer_end - cursor).min(want_frames - written);
+                        if n == 0 {
+                            break;
+                        }
+                        let src = cursor * clip_frame_bytes;
+                        let dst = written * clip_frame_bytes;
+                        self.scratch[dst..dst + n * clip_frame_bytes]
+                            .copy_from_slice(&clip.bytes[src..src + n * clip_frame_bytes]);
+                        written += n;
+                        cursor += n;
+                        if cursor >= buffer_end {
+                            break;
+                        }
+                    }
+                    // The new segment's own end: finished only if it is also
+                    // the file's last segment (`complete`), otherwise the
+                    // decode-ahead thread is expected to queue the next one.
+                    if cursor >= buffer_end && !clip.complete {
+                        shared.finished.store(false, Ordering::Release);
                     }
                 }
 
@@ -349,8 +460,12 @@ impl Mixer {
                 }
 
                 // A looped clip is never finished: reaching the loop point is the
-                // point of the feature, not the end of playback.
-                if !looping && cursor >= clip.frames {
+                // point of the feature, not the end of playback. A handed-off
+                // segment that ran out again in the same callback is not the end
+                // either — the decode-ahead thread will queue its successor; the
+                // `!clip.complete` guard inside the handoff block has already
+                // cleared a stale `finished` in that case.
+                if !looping && cursor >= buffer_end && !handed_off {
                     shared.finished.store(true, Ordering::Release);
                 }
             }
@@ -425,7 +540,9 @@ pub struct PlaybackMonitor {
 
 impl PlaybackMonitor {
     pub fn snapshot(&self) -> PlaybackSnapshot {
-        let position = self.shared.pos_frames.load(Ordering::Acquire);
+        let buffer_pos = self.shared.pos_frames.load(Ordering::Acquire);
+        let window_start = self.shared.active_window_start.load(Ordering::Acquire);
+        let position = window_start + buffer_pos;
         let frames = self.shared.active_frames.load(Ordering::Acquire);
         let paused = self.shared.paused.load(Ordering::Acquire);
         let finished = self.shared.finished.load(Ordering::Acquire);
@@ -528,11 +645,14 @@ impl Engine {
     pub fn start(config: EngineConfig) -> Result<Self> {
         let shared = Arc::new(Shared {
             slots: [const { ArcSwapOption::const_empty() }; 2],
+            next: ArcSwapOption::const_empty(),
             active: AtomicUsize::new(0),
             pub_ns: AtomicU64::new(0),
             pub_seq: AtomicU64::new(0),
             pos_frames: AtomicU64::new(0),
             active_frames: AtomicU64::new(0),
+            active_buffer_frames: AtomicU64::new(0),
+            active_window_start: AtomicU64::new(0),
             paused: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             looping: AtomicBool::new(false),
@@ -632,18 +752,34 @@ impl Engine {
     /// seek costs the same atomic store a normal start does (architecture 3.3 —
     /// every supported format is seekable from the header, so this never needs a
     /// decode from the top).
+    ///
+    /// `offset_frames` is relative to the clip's buffer: for a full decode it is
+    /// the same coordinate the playhead shows, and for a window decode the
+    /// caller computes it against `window_start_frames` (`seek_from` does this).
+    /// Positions beyond the buffer are clamped to its end, which a zero-length
+    /// window decode (a seek past EOF) degrades to instead of an error.
     pub fn publish_from(&self, clip: Arc<DecodedAudio>, offset_frames: u64) -> u64 {
         let current = self.shared.active.load(Ordering::Acquire);
         let next = 1 - current;
 
-        let total = clip.frames as u64;
-        let offset = offset_frames.min(total);
+        let buffer_frames = clip.frames as u64;
+        let total_frames = clip.total_frames.max(clip.frames) as u64;
+        let offset = offset_frames.min(buffer_frames);
+        let window_start = (clip.window_start_frames + offset as usize) as u64;
 
         self.shared.slots[next].store(Some(clip));
         self.shared.pos_frames.store(offset, Ordering::Release);
         // Total frames, not remaining: `snapshot` derives the clip duration from
         // it, and the playhead still starts at `offset`.
-        self.shared.active_frames.store(total, Ordering::Release);
+        self.shared
+            .active_frames
+            .store(total_frames, Ordering::Release);
+        self.shared
+            .active_buffer_frames
+            .store(buffer_frames, Ordering::Release);
+        self.shared
+            .active_window_start
+            .store(window_start, Ordering::Release);
         self.shared.finished.store(false, Ordering::Release);
         // A new publish always starts audible: leaving `paused` set would play a
         // silent clip, which is the one state that looks like a broken engine.
@@ -664,6 +800,32 @@ impl Engine {
         seq
     }
 
+    /// Queue the next segment of a long file for the render callback to pick up.
+    ///
+    /// Long-material playback publishes a bounded window, and this parks the
+    /// following window next to the two play slots. The render callback takes it
+    /// in the callback where the current buffer runs out — one atomic swap on
+    /// the audio thread, no lock, no polling loop — so consecutive windows
+    /// hand off without an audible seam. Storing a different clip replaces
+    /// whatever was queued; `stop` clears it.
+    pub fn queue_next(&self, clip: Arc<DecodedAudio>) {
+        self.shared.next.store(Some(clip));
+    }
+
+    /// Drop a queued segment without publishing it. Used when a newer play or a
+    /// stop makes the queued window stale.
+    pub fn clear_queued(&self) {
+        self.shared.next.store(None);
+    }
+
+    /// The queued segment, if any, taking it out of the slot.
+    ///
+    /// Called from the render callback only (and by tests). The swap is atomic;
+    /// the caller owns the clip afterwards.
+    pub fn take_queued(&self) -> Option<Arc<DecodedAudio>> {
+        self.shared.take_queued()
+    }
+
     /// Stop playback now: clear both slots and park `finished`.
     ///
     /// This is the `stop` half of the IPC surface. It does not touch the stream,
@@ -674,8 +836,11 @@ impl Engine {
         self.shared.active.store(0, Ordering::Release);
         self.shared.slots[0].store(None);
         self.shared.slots[1].store(None);
+        self.shared.next.store(None);
         self.shared.pos_frames.store(0, Ordering::Release);
         self.shared.active_frames.store(0, Ordering::Release);
+        self.shared.active_buffer_frames.store(0, Ordering::Release);
+        self.shared.active_window_start.store(0, Ordering::Release);
         self.shared.paused.store(false, Ordering::Release);
         self.shared.finished.store(true, Ordering::Release);
     }
@@ -878,6 +1043,7 @@ pub struct DeviceChoice {
 /// counts. Pass `false` while an ASIO driver is live in this process: probing
 /// calls the SDK's `loadDriver`, which closes whatever driver is currently open,
 /// so it would kill the stream it is supposed to describe.
+#[cfg_attr(not(feature = "asio"), allow(unused_variables))]
 pub fn list_devices(probe_asio: bool) -> Vec<DeviceChoice> {
     let mut out = Vec::new();
 

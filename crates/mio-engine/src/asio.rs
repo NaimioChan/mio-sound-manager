@@ -152,7 +152,12 @@ fn probe_driver(asio: &Asio, name: &str) -> Option<(u32, u32, Option<u32>, Optio
     // The driver is unloaded here: `Driver`'s `Drop` calls `ASIOExit`, and ASIO
     // allows exactly one loaded driver at a time, so holding it would make the
     // next probe fail.
-    Some((channels.ins.max(0) as u32, channels.outs.max(0) as u32, buffer, rate))
+    Some((
+        channels.ins.max(0) as u32,
+        channels.outs.max(0) as u32,
+        buffer,
+        rate,
+    ))
 }
 
 /// Pick a driver by case-insensitive substring, or the first one when no filter

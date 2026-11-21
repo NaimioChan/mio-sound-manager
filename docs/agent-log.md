@@ -2,6 +2,26 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-21 16:10 · opencode · 超长素材窗口 seek 与连续播放（TODO 2 收尾 + 8 最后一项）
+
+- 改: `crates/mio-engine/src/decode.rs` — `DecodeWindow` + `Decoder::with_window`：demuxer `seek(Accurate)` 到目标时间，packet 循环按 trimmed-timeline 丢/裁包头，输出与全量解码逐样本对齐（WAV/MP3/MP4 三个 demuxer 的 seek 与 packet.ts 语义逐一核实过）；`DecodedAudio.window_start_frames`（源帧坐标，audible 流）。`crates/mio-engine/src/output.rs` — `Shared.next` 排队槽 + `queue_next`/`clear_queued`/`take_queued`；render 回调在 buffer 耗尽的同一次回调里接管下一窗口（原子 swap，无锁无轮询）；`active_window_start` 使 `pos_frames` 保持 buffer 坐标、`snapshot` 输出文件坐标；`stop` 清队列。`crates/mio-app/src/state.rs` — `play` 长文件路径改为窗口链：首窗口（`WINDOW_SECONDS=15s`，起点任意含 seek 目标）+ `start_window_chain`（`mio-decode-ahead` 线程逐窗口解码、排队、等回调消费；epoch/generation 双守卫；最后一窗口 complete 进 LRU）；替代原「5s 前缀 + 全量 decode-ahead 接续」（全量解码在超 256MiB 时被拒，即 TODO 中未完成的 seek 缺口）。
+- 验证: `cargo test --release` 全绿（engine 24、index 81、app 20、IPC 28）。新增：engine 窗口解码逐样本对齐/越界窗口安全测试；IPC `long_file_seek_to_an_undecoded_position_plays_from_there`（90s WAV seek 40s，播放头落位、顺播前进、时长完整）。CDP 真实库验证：`check-interactions.mjs` 全过——22 分钟素材点波形 70% 后播放头 800.07s（此前失败：停在 1.43s），1.2s 后 801.27s 顺播；`check-volume/layout/themes/tags/i18n` 全过。播放头 `duration_s` 来自容器 `n_frames`（无损 WAV 与 data chunk 一致；有损格式略有出入属容器声明口径）。
+- 遗留: 未做人耳听感验收（交接为同回调硬切，与原 prefix→全量接续同一口径）；`queue_next` 队列深 1，解码慢于播放时回调写静音直到下一窗口就位（冷盘第一窗口后可能出现 <1s 空隙）；256MiB 现按「两窗口 + LRU」天然满足，未另设记账；下一窗口就位判定靠轮询 monitor 快照（5ms/20ms），与原接续线程同口径。
+
+## 2026-11-21 14:22 · opencode · 后端 TODO 最终验收与长素材 seek 缺口
+
+- 改: 完成 `docs/backend-todo.md` 的测量/限制校正；修正邻行缓存为当前项 + 4 邻项、共用 256MiB LRU 记账；长素材验证发现 seek 限制并补入 TODO
+- 验证: `cargo test --release --workspace` 150 passed（app 20、IPC 27、engine 22、index 81）；`cargo build -p mio-app --release`、`npm run build`、`git diff --check` 通过；`check-layout.mjs`、`check-volume.mjs` 通过；`check-interactions.mjs` 其余交互通过，但 22 分钟素材波形 seek 断言失败（播放头停在 1.43s，目标素材时长 1352.90s）；真实库 282,762 行分类 parity 仍为 0 mismatch（此前验证）；65s WAV 前缀/接续 IPC 测试通过
+- 遗留: 超过 PCM 内存预算的素材无法 seek 到已解码窗口之外，需实现有界窗口解码和 render segment handoff；当前 256MiB 只限制单 clip retained PCM/LRU 记账，未约束重采样临时 buffer 与引擎双槽的进程峰值；真实库 FILE-backed staging 的最终耗时/RSS未测，旧基线波动 4–20.7s、基线5.4s；Aho 正确但比 HashMap 基线慢约2–39%；trigram 增加约35.5MB，写入耗时未测；真实96k听感与预取缓存命中断言未验；单次阻塞文件读取不可被线程 deadline 强制取消；`cargo fmt --check` 仍受生成文件 `ucs.rs` 的既有格式差异影响
+- 下一步: 实现并验证长素材窗口 seek/无缝接续；将 decode 临时缓冲和引擎双槽纳入可证明的总内存上限；再测 FILE-backed staging 的真实耗时和 RSS
+
+## 2026-11-21 00:43 · opencode · 后端索引保护与解码 SIMD
+
+- 改: `crates/mio-index/src/{error,probe,indexer}.rs`（walk 错误传播；根目录扫描在打开数据库前完成；缺失根目录回归测试）、`crates/mio-engine/Cargo.toml`（启用 Symphonia 0.5.5 `opt-simd`）、`crates/mio-engine/src/decode.rs`（priming 负例）、`docs/backend-todo.md`（标记已完成项并记暂缓条件）
+- 验证: `cargo test --release --workspace` 通过（app 18、IPC 25、engine 20、index 72）；`cargo tree -p mio-engine -e features` 确认 `opt-simd`；`git diff --check` 通过
+- 遗留: 邻行预解码与 waveform/play 解码复用需要先定义共享 PCM 内存预算及并发/取消语义；trigram 搜索等用户确认真实需求；Aho-Corasick 与归并流要用真实库跑分类等价、耗时和峰值内存基准；`cargo fmt --check` 仍会报告原有 `ucs.rs` 与 `db.rs` 格式差异；保留原有 `probe_asio` 与 `History::clear` 警告
+- 下一步: 取得本机真实音频库和基准口径后再推进第 2、4、6、7 项；先确认子串搜索是否高频需求
+
 ## 2026-11-19 19:05 · hermes · 发 0.1.2：只发安装版，release 建好
 
 - 改: `tools/check-shipped.mjs`（版本断言改成 `plugin:app|version`——原来读 `<meta name="version">`，前端没这个标签，`if (version)` 从写下起就一直跳过，版本号从来没被验过；补三条本版事实：默认 `windows-dark`、`--theme-color-1` = `#202020`、`--theme-color-primary` = `#4cc2ff`）、`tools/README.md` 与 `docs/app.md`（发版流程去掉便携版那步）、`AGENTS.md`（`package-portable.sh` 的注释改成「0.1.2 起不再发」，发版条目去掉「便携版 zip」）

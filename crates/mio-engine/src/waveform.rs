@@ -238,9 +238,11 @@ mod tests {
     #[test]
     fn an_out_of_range_lane_is_silence_not_a_panic() {
         let samples = [0.5, 0.5];
-        assert!(bucket_peaks_lane(&samples, 2, 7, 4)
-            .iter()
-            .all(|&p| p == 0.0));
+        assert!(
+            bucket_peaks_lane(&samples, 2, 7, 4)
+                .iter()
+                .all(|&p| p == 0.0)
+        );
     }
 
     #[test]

@@ -276,11 +276,11 @@ fn decode_head(
 /// Symlinked directories are not followed: a library that links back to itself
 /// would otherwise walk forever, and the reference implementation did not follow
 /// them either.
-pub fn walk_audio_files(root: &Path) -> Vec<PathBuf> {
-    walk_audio_entries(root)
+pub fn walk_audio_files(root: &Path) -> crate::error::Result<Vec<PathBuf>> {
+    Ok(walk_audio_entries(root)?
         .into_iter()
         .map(|entry| entry.path)
-        .collect()
+        .collect())
 }
 
 /// Same walk, but keeping the size and mtime the directory scan already returned.
@@ -288,27 +288,52 @@ pub fn walk_audio_files(root: &Path) -> Vec<PathBuf> {
 /// The indexer wants both for the incremental check and for the row, so getting
 /// them here removes two `stat` calls per file. Measured on 280k files: `stat`
 /// alone was 8.2 s of a 95 s pass.
-pub fn walk_audio_entries(root: &Path) -> Vec<FileEntry> {
-    let mut files: Vec<FileEntry> = walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| is_audio_path(entry.path()))
-        .map(|entry| {
-            // `DirEntry::metadata` on Windows comes from the directory scan
-            // (`FindNextFileW`), not a second open. On other platforms it is a
-            // stat, which is still no worse than doing it later.
-            let meta = entry.metadata().ok();
-            FileEntry {
-                path: entry.into_path(),
-                filesize: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                mtime_ns: meta.as_ref().map(mtime_ns).unwrap_or(0),
-            }
-        })
-        .collect();
+pub fn walk_audio_entries(root: &Path) -> crate::error::Result<Vec<FileEntry>> {
+    let mut files = Vec::new();
+    walk_audio_entries_into(root, |entry| {
+        files.push(entry);
+        Ok(())
+    })?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    files
+    Ok(files)
+}
+
+/// Walk every directory or fail; callers that prune must never use a partial scan.
+pub fn try_walk_audio_entries(root: &Path) -> crate::error::Result<Vec<FileEntry>> {
+    walk_audio_entries(root)
+}
+
+pub fn walk_audio_entries_into<F>(root: &Path, mut visit: F) -> crate::error::Result<usize>
+where
+    F: FnMut(FileEntry) -> crate::error::Result<()>,
+{
+    let root_handle = std::fs::read_dir(root).map_err(|e| crate::error::IndexError::Walk {
+        path: root.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    drop(root_handle);
+
+    let mut count = 0;
+    for result in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = result.map_err(|e| crate::error::IndexError::Walk {
+            path: e.path().unwrap_or(root).display().to_string(),
+            detail: e.to_string(),
+        })?;
+        if !entry.file_type().is_file() || !is_audio_path(entry.path()) {
+            continue;
+        }
+        // `DirEntry::metadata` on Windows comes from the directory scan
+        // (`FindNextFileW`), not a second open. On other platforms it is a
+        // stat, which is still no worse than doing it later.
+        let meta = entry.metadata().ok();
+        visit(FileEntry {
+            path: entry.into_path(),
+            filesize: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            mtime_ns: meta.as_ref().map(mtime_ns).unwrap_or(0),
+        })?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -356,6 +381,31 @@ mod tests {
         assert_eq!(meta.filesize, 44 + 44_100 * 4);
         assert!(meta.mtime_ns > 0);
         assert!(!meta.decoded_head);
+    }
+
+    #[test]
+    fn a_directory_disappearing_during_walk_is_an_error() {
+        let root = std::env::temp_dir().join(format!(
+            "mio-walk-race-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("nested/gone.wav"), wav_bytes(10)).unwrap();
+        let mut visited = 0;
+        let error = walk_audio_entries_into(&root, |_| {
+            visited += 1;
+            Err(crate::error::IndexError::Walk {
+                path: root.join("nested").display().to_string(),
+                detail: "mock directory disappeared".into(),
+            })
+        })
+        .unwrap_err();
+
+        assert_eq!(visited, 1);
+        assert!(error.to_string().contains("mock directory disappeared"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

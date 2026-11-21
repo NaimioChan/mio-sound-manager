@@ -221,6 +221,8 @@ export const api = {
   waveform: (path: string, buckets?: number) =>
     invoke<Waveform>('get_waveform', { path, buckets: buckets ?? null }),
 
+  prefetchNeighbors: (paths: string[]) => invoke<void>('prefetch_neighbors', { paths }),
+
   /**
    * Add a library and index it **before resolving**.
    *

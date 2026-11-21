@@ -14,10 +14,11 @@
 //! * The **library** is a SQLite handle plus a folder path, replaced when the user
 //!   opens a different folder.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -36,6 +37,16 @@ use crate::error::{AppError, AppResult};
 use crate::history::{EditKind, History};
 use crate::library::Library;
 use crate::session::{Session, SessionStore};
+
+/// Length of one decode window for long files (>60 s), in seconds.
+///
+/// Architecture 3.3's budget: a stereo 96 kHz window is a few MB of PCM, and a
+/// window this long decodes in a fraction of the time playback takes to
+/// consume it, so the decode-ahead thread stays ahead of the render callback
+/// even on a cold disk. The engine's queue is one window deep, so the resident
+/// PCM for a 22-minute file is two windows plus the LRU accounting — never the
+/// whole file.
+const WINDOW_SECONDS: f64 = 15.0;
 
 /// What the app learns about audio when it opens a device.
 #[derive(Debug, Clone)]
@@ -56,6 +67,8 @@ pub struct EngineInfo {
 struct DecodeJob {
     path: String,
     decoder: Decoder,
+    max_duration_s: Option<f64>,
+    window: Option<mio_engine::DecodeWindow>,
     reply: Sender<AppResult<Arc<DecodedAudio>>>,
 }
 
@@ -211,7 +224,7 @@ impl LatestSlot {
 pub struct AppState {
     /// The render device, the format it needs, and the reason it is not there.
     /// One mutex because switching device swaps all of it at once.
-    audio: Mutex<AudioSlot>,
+    audio: Arc<Mutex<AudioSlot>>,
 
     jobs: Arc<LatestSlot>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -223,7 +236,13 @@ pub struct AppState {
 
     /// The last decoded clip, so replaying the same sound is a publish rather
     /// than a decode. Keyed by path so a different sound never reuses it.
-    last_clip: Mutex<Option<(String, Arc<DecodedAudio>)>>,
+    last_clip: Arc<Mutex<Option<(String, Weak<DecodedAudio>)>>>,
+    prefetch_cache: Arc<Mutex<PrefetchCache>>,
+    prefetch_sender: SyncSender<(String, Decoder, u64)>,
+    prefetch_worker: Mutex<Option<JoinHandle<()>>>,
+    prefetch_closed: Arc<std::sync::atomic::AtomicBool>,
+    prefetch_generation: Arc<AtomicU64>,
+    failed_decodes: Arc<Mutex<HashMap<String, (u64, u128)>>>,
 
     /// Publishes the render thread never reached (superseded inside one engine
     /// period). Diagnostic for the status bar.
@@ -231,7 +250,7 @@ pub struct AppState {
 
     /// Bumped on every play/stop so a decode that finishes late can be discarded
     /// instead of starting stale audio.
-    play_epoch: AtomicU64,
+    play_epoch: Arc<AtomicU64>,
 
     /// The output gain, mirrored outside the audio lock.
     ///
@@ -307,16 +326,33 @@ impl AppState {
         let audio = AudioSlot::open(backend, device_filter, asio_frames);
 
         let jobs = Arc::new(LatestSlot::new());
-        let worker = spawn_decoder(Arc::clone(&jobs));
+        let failed_decodes = Arc::new(Mutex::new(HashMap::new()));
+        let worker = spawn_decoder(Arc::clone(&jobs), Arc::clone(&failed_decodes));
+        let prefetch_cache = Arc::new(Mutex::new(PrefetchCache::new()));
+        let (prefetch_sender, prefetch_receiver) = sync_channel(4);
+        let prefetch_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let prefetch_generation = Arc::new(AtomicU64::new(0));
+        let prefetch_worker = spawn_prefetcher(
+            prefetch_receiver,
+            Arc::clone(&prefetch_cache),
+            Arc::clone(&prefetch_closed),
+            Arc::clone(&prefetch_generation),
+        );
 
         Self {
-            audio: Mutex::new(audio),
+            audio: Arc::new(Mutex::new(audio)),
             jobs,
             worker: Mutex::new(Some(worker)),
             libraries: Mutex::new(LibrarySet::default()),
-            last_clip: Mutex::new(None),
+            last_clip: Arc::new(Mutex::new(None)),
+            prefetch_cache,
+            prefetch_sender,
+            prefetch_worker: Mutex::new(Some(prefetch_worker)),
+            prefetch_closed,
+            prefetch_generation,
+            failed_decodes,
             dropped_publishes: AtomicU64::new(0),
-            play_epoch: AtomicU64::new(0),
+            play_epoch: Arc::new(AtomicU64::new(0)),
             gain_bits: AtomicU32::new(1.0f32.to_bits()),
             loop_state: Mutex::new(LoopSetting::default()),
             history: Mutex::new(crate::history::History::new()),
@@ -346,9 +382,9 @@ impl AppState {
             }
         }
         if !set.libs.is_empty() {
-            set.active = session.first_open().filter(|root| {
-                set.libs.iter().any(|l| l.root() == root.as_path())
-            });
+            set.active = session
+                .first_open()
+                .filter(|root| set.libs.iter().any(|l| l.root() == root.as_path()));
             if set.active.is_none() {
                 set.active = set.libs.first().map(|l| l.root().to_path_buf());
             }
@@ -407,6 +443,7 @@ impl AppState {
         device_filter: Option<String>,
         asio_frames: Option<u32>,
     ) -> Option<String> {
+        self.bump_epoch();
         if let Ok(mut slot) = self.audio.lock() {
             // Dropping the engine here stops its stream and joins its render
             // thread, which is what releases the device.
@@ -441,6 +478,10 @@ impl AppState {
         if let Ok(mut cached) = self.last_clip.lock() {
             *cached = None;
         }
+        if let Ok(mut cache) = self.prefetch_cache.lock() {
+            *cache = PrefetchCache::new();
+        }
+        self.prefetch_generation.fetch_add(1, Ordering::AcqRel);
         error
     }
 
@@ -476,10 +517,7 @@ impl AppState {
     /// open, which would kill the live stream. A plain WASAPI stream is not
     /// affected, so the channel counts are still filled in then.
     pub fn list_audio_devices(&self) -> Vec<AudioDeviceDto> {
-        let probing_asio = !matches!(
-            self.audio.lock().map(|a| a.backend),
-            Ok(Backend::Asio)
-        );
+        let probing_asio = !matches!(self.audio.lock().map(|a| a.backend), Ok(Backend::Asio));
         mio_engine::output::list_devices(probing_asio)
             .into_iter()
             .map(|d| AudioDeviceDto {
@@ -548,25 +586,21 @@ impl AppState {
 
     /// A decoder configured for the current device format.
     pub fn decoder(&self) -> Decoder {
-        self.audio
-            .lock()
-            .map(|a| a.decoder())
-            .unwrap_or_else(|_| Decoder::new(OutputFormat {
-                sample_rate: 48_000,
-                channels: 2,
-                sample: mio_engine::DeviceSample::F32,
-            }))
-    }
-
-    pub fn output_format(&self) -> OutputFormat {
-        self.audio
-            .lock()
-            .map(|a| a.format)
-            .unwrap_or(OutputFormat {
+        self.audio.lock().map(|a| a.decoder()).unwrap_or_else(|_| {
+            Decoder::new(OutputFormat {
                 sample_rate: 48_000,
                 channels: 2,
                 sample: mio_engine::DeviceSample::F32,
             })
+        })
+    }
+
+    pub fn output_format(&self) -> OutputFormat {
+        self.audio.lock().map(|a| a.format).unwrap_or(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+            sample: mio_engine::DeviceSample::F32,
+        })
     }
 
     /// Run `f` against the live engine, or report why there is none.
@@ -649,6 +683,22 @@ impl AppState {
     /// device is reopened — the same shape as the gain, and for the same reason:
     /// a switch flipped while no device is open must not be forgotten.
     pub fn set_loop(&self, enabled: bool, region: Option<(f64, f64)>) -> AppResult<LoopState> {
+        if enabled
+            && self
+                .last_clip
+                .lock()
+                .ok()
+                .and_then(|slot| {
+                    slot.as_ref()
+                        .and_then(|(_, clip)| clip.upgrade())
+                        .map(|clip| !clip.complete)
+                })
+                .unwrap_or(false)
+        {
+            return Err(AppError::internal(
+                "looping is unavailable until the long-file decode completes",
+            ));
+        }
         let mut remembered = self
             .loop_state
             .lock()
@@ -762,14 +812,50 @@ impl AppState {
 
     /// The clip for `path` if it is already decoded.
     pub fn cached_clip(&self, path: &str) -> Option<Arc<DecodedAudio>> {
-        let slot = self.last_clip.lock().ok()?;
-        let (cached_path, clip) = slot.as_ref()?;
-        (cached_path == path).then(|| Arc::clone(clip))
+        if let Ok(slot) = self.last_clip.lock() {
+            if let Some((cached_path, clip)) = slot.as_ref() {
+                if cached_path == path {
+                    return clip.upgrade();
+                }
+            }
+        }
+        self.prefetch_cache.lock().ok()?.get(path)
     }
 
     pub fn remember_clip(&self, path: String, clip: Arc<DecodedAudio>) {
+        let mut cache = self.prefetch_cache.lock().ok();
+        if let Some(cache) = cache.as_mut() {
+            cache.insert(path.clone(), Arc::clone(&clip));
+        }
         if let Ok(mut slot) = self.last_clip.lock() {
-            *slot = Some((path, clip));
+            *slot = Some((path, Arc::downgrade(&clip)));
+        }
+    }
+
+    pub fn prefetch_neighbors(&self, paths: &[String]) {
+        let decoder = self.decoder();
+        for path in paths.iter().take(PrefetchCache::MAX_NEIGHBORS) {
+            let requested = self
+                .prefetch_cache
+                .lock()
+                .map(|mut cache| cache.request(path))
+                .unwrap_or(false);
+            if !requested {
+                continue;
+            }
+            if self
+                .prefetch_sender
+                .try_send((
+                    path.clone(),
+                    decoder,
+                    self.prefetch_generation.load(Ordering::Acquire),
+                ))
+                .is_err()
+            {
+                if let Ok(mut cache) = self.prefetch_cache.lock() {
+                    cache.finish_request(path);
+                }
+            }
         }
     }
 
@@ -789,7 +875,25 @@ impl AppState {
     ///
     /// The decoder is attached to the job, not read off the worker, so a device
     /// switch mid-session cannot leave a decode converting to the old format.
-    pub fn request_decode(&self, path: String) -> AppResult<Receiver<AppResult<Arc<DecodedAudio>>>> {
+    pub fn request_decode(
+        &self,
+        path: String,
+        max_duration_s: Option<f64>,
+        window: Option<mio_engine::DecodeWindow>,
+    ) -> AppResult<Receiver<AppResult<Arc<DecodedAudio>>>> {
+        if let Some((size, modified)) = decode_fingerprint(&path) {
+            if self
+                .failed_decodes
+                .lock()
+                .ok()
+                .and_then(|failed| failed.get(&path).copied())
+                == Some((size, modified))
+            {
+                return Err(AppError::internal(format!(
+                    "decoding this unchanged file previously exceeded the time limit: {path}"
+                )));
+            }
+        }
         let (tx, rx) = channel();
         let decoder = self.decoder();
         // A full slot is impossible (one job, replaced), so a failed send means
@@ -799,6 +903,8 @@ impl AppState {
             DecodeJob {
                 path,
                 decoder,
+                max_duration_s,
+                window,
                 reply: tx,
             },
         ) {
@@ -867,7 +973,10 @@ impl AppState {
     pub fn status(&self) -> AppResult<AppStatus> {
         let info = self.engine_info();
         let library = self.library().ok();
-        let backend = info.as_ref().map(|i| i.backend).unwrap_or_else(|| self.backend());
+        let backend = info
+            .as_ref()
+            .map(|i| i.backend)
+            .unwrap_or_else(|| self.backend());
         Ok(AppStatus {
             audio_available: info.is_some(),
             audio_error: self.engine_error(),
@@ -875,9 +984,7 @@ impl AppState {
             backend: backend.label().to_string(),
             sample_rate: info.as_ref().map(|i| i.format.sample_rate),
             channels: info.as_ref().map(|i| i.format.channels),
-            sample_format: info
-                .as_ref()
-                .map(|i| i.format.sample.label().to_string()),
+            sample_format: info.as_ref().map(|i| i.format.sample.label().to_string()),
             endpoint_frames: info.as_ref().map(|i| i.endpoint_frames),
             engine_period_ms: info.as_ref().map(|i| i.engine_period_ms),
             library: match library {
@@ -896,25 +1003,73 @@ impl AppState {
     /// Decoding happens on the decode worker. A repeat of the same sound skips it
     /// — the previous clip is still in `last_clip` — which is what makes arrowing
     /// back and forth cost one atomic store.
+    ///
+    /// Files longer than 60 s are played as a chain of bounded windows
+    /// (`WINDOW_SECONDS`, architecture 3.3): the first publish is a window at
+    /// `start_at` (or the head), and `start_window_chain` decodes each following
+    /// window and hands it to the engine's queue, which the render callback
+    /// consumes in the callback where the previous buffer runs out. The full
+    /// file is never resident: a 22-minute mono WAV plays through ~40 windows of
+    /// a few MB each, and seeking to an undecoded position is the same window
+    /// decode as a start, just further in.
     pub async fn play(&self, path: &str, start_at: Option<f64>) -> AppResult<()> {
         if !mio_index::is_audio_path(std::path::Path::new(path)) {
             return Err(AppError::NotAudio(path.to_string()));
         }
         // Any decode already in flight belongs to a request this one supersedes.
         let epoch = self.bump_epoch();
+        // A superseded decode-ahead may have parked a window in the engine.
+        self.with_engine(|engine| engine.clear_queued())
+            .ok();
 
+        let looping = self
+            .loop_state
+            .lock()
+            .map(|state| state.enabled)
+            .unwrap_or(false);
+        let duration_s = mio_index::probe_file(std::path::Path::new(path)).duration_s;
+        let long_file = !looping && duration_s.is_some_and(|duration| duration > 60.0);
+        let start = start_at.unwrap_or(0.0).max(0.0);
+
+        // A complete cached clip serves any position (it holds the whole file).
+        // A prefix window only serves its own start.
         if let Some(clip) = self.cached_clip(path) {
-            return match start_at {
-                Some(at) if at > 0.0 => self.publish_at(clip, at).map(|_| ()),
-                _ => self.publish(clip, PublishSource::Initial).map(|_| ()),
-            };
+            if clip.complete {
+                let result = match start_at {
+                    Some(at) if at > 0.0 => self.publish_at(Arc::clone(&clip), at),
+                    _ => self.publish(Arc::clone(&clip), PublishSource::Initial),
+                };
+                result?;
+                self.remember_clip(path.to_string(), Arc::clone(&clip));
+                return Ok(());
+            }
+            if !long_file || start < clip.window_start_frames as f64 / clip.format.sample_rate as f64 {
+                let result = match start_at {
+                    Some(at) if at > 0.0 => self.publish_at(Arc::clone(&clip), at),
+                    _ => self.publish(Arc::clone(&clip), PublishSource::Initial),
+                };
+                result?;
+                self.remember_clip(path.to_string(), Arc::clone(&clip));
+                self.start_window_chain(path.to_string(), Arc::clone(&clip), epoch);
+                return Ok(());
+            }
         }
 
-        let receiver = self.request_decode(path.to_string())?;
-        let clip = tauri::async_runtime::spawn_blocking(move || receiver.recv())
-            .await
-            .map_err(|e| AppError::internal(format!("decode task failed: {e}")))?
-            .map_err(|_| AppError::internal("decode worker closed before answering"))??;
+        let window = long_file.then(|| mio_engine::DecodeWindow::at(start, WINDOW_SECONDS));
+        let receiver = self.request_decode(path.to_string(), None, window)?;
+        let clip = tauri::async_runtime::spawn_blocking(move || {
+            receiver.recv_timeout(std::time::Duration::from_secs(35))
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("decode task failed: {e}")))?
+        .map_err(|e| match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => {
+                AppError::internal("decode worker did not respond before the 35s command limit")
+            }
+            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                AppError::internal("decode worker closed before answering")
+            }
+        })??;
 
         // A newer play or a stop arrived while this decoded. Dropping the result
         // is correct: starting it now would play a sound the user already left.
@@ -922,11 +1077,138 @@ impl AppState {
             return Ok(());
         }
 
-        self.remember_clip(path.to_string(), Arc::clone(&clip));
-        match start_at {
-            Some(at) if at > 0.0 => self.publish_at(clip, at).map(|_| ()),
-            _ => self.publish(clip, PublishSource::Initial).map(|_| ()),
+        if window.is_some() {
+            // The decode starts exactly at the window's first frame, so the
+            // buffer plays from frame 0 of the clip.
+            self.with_engine(|engine| engine.publish_from(Arc::clone(&clip), 0))?;
+        } else {
+            match start_at {
+                Some(at) if at > 0.0 => self.publish_at(Arc::clone(&clip), at)?,
+                _ => self.publish(Arc::clone(&clip), PublishSource::Initial)?,
+            };
         }
+        self.remember_clip(path.to_string(), Arc::clone(&clip));
+        if !clip.complete {
+            self.start_window_chain(path.to_string(), Arc::clone(&clip), epoch);
+        }
+        Ok(())
+    }
+
+    /// Decode the following windows of a long file and queue each for the
+    /// render callback, until the file is complete.
+    ///
+    /// Runs on a dedicated thread (the old `mio-decode-ahead`), one window at a
+    /// time. The engine's queue holds at most one pending window, so memory
+    /// stays at two windows plus whatever the LRU accounts. Every step checks
+    /// the play epoch and the prefetch generation: a newer play, a stop or a
+    /// device switch invalidates the whole chain.
+    fn start_window_chain(&self, path: String, first: Arc<DecodedAudio>, epoch: u64) {
+        if self
+            .loop_state
+            .lock()
+            .map(|state| state.enabled)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let audio = Arc::clone(&self.audio);
+        let last_clip = Arc::clone(&self.last_clip);
+        let prefetch_cache = Arc::clone(&self.prefetch_cache);
+        let prefetch_generation = Arc::clone(&self.prefetch_generation);
+        let requested_generation = prefetch_generation.load(Ordering::Acquire);
+        let engine_format = self.output_format();
+        let play_epoch = Arc::clone(&self.play_epoch);
+        let decoder = self.decoder();
+        let total_frames = first.total_frames;
+        let window_rate = first.format.sample_rate;
+        let start_frame = first.window_start_frames + first.frames;
+        std::thread::Builder::new()
+            .name("mio-decode-ahead".into())
+            .spawn(move || {
+                let alive = |epoch: u64| -> bool {
+                    play_epoch.load(Ordering::Acquire) == epoch
+                        && prefetch_generation.load(Ordering::Acquire) == requested_generation
+                };
+                // The file's total in device frames: the clip reports it in
+                // source frames (`total_frames` is source-rate based), so the
+                // chain bound converts at the device rate.
+                let total_device_frames =
+                    (total_frames as f64 * engine_format.sample_rate as f64 / window_rate as f64)
+                        .ceil() as usize;
+                // Frames already covered by published or queued windows. The
+                // chain stops when that reaches the file's total; the render
+                // callback reports `finished` on its own for the last segment.
+                let mut covered = start_frame;
+                while alive(epoch) && covered < total_device_frames {
+                    let window_start_s = covered as f64 / window_rate as f64;
+                    let window = mio_engine::DecodeWindow::at(window_start_s, WINDOW_SECONDS);
+                    let decoded = decoder.with_window(window).decode_with_source(&path);
+                    let clip = match decoded {
+                        Ok((clip, _)) => clip,
+                        Err(error) => {
+                            log::warn!("long-file window decode failed for {path}: {error}");
+                            return;
+                        }
+                    };
+                    if !alive(epoch) {
+                        return;
+                    }
+                    let clip = Arc::new(clip);
+                    // Queue for the render callback. The queue holds one
+                    // window; wait until the callback has consumed the
+                    // previous one before queueing the next. Pause freezes
+                    // the callback's consumption, so wait for that too.
+                    let mut queued = false;
+                    while alive(epoch) {
+                        let monitor = audio.lock().ok().and_then(|slot| slot.monitor.clone());
+                        let Some(monitor) = monitor else { return };
+                        let snapshot = monitor.snapshot();
+                        if snapshot.paused {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                            continue;
+                        }
+                        if !queued {
+                            if let Ok(slot) = audio.lock() {
+                                if let Some(engine) = slot.engine.as_ref() {
+                                    engine.queue_next(Arc::clone(&clip));
+                                    queued = true;
+                                } else {
+                                    return;
+                                }
+                            } else {
+                                return;
+                            }
+                        } else {
+                            // Queued and still playing this chain. Wait for
+                            // the callback to take it before producing the
+                            // next window: the queue is one deep, and the
+                            // position having moved past the queued boundary
+                            // proves the handoff happened.
+                            let position_frames =
+                                snapshot.position_s * engine_format.sample_rate as f64;
+                            if position_frames >= covered as f64 {
+                                break;
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    if !alive(epoch) {
+                        return;
+                    }
+                    covered += clip.frames;
+                    // The final window is `complete`; remember it so a replay
+                    // of this file serves any position without a decode.
+                    if clip.complete {
+                        if let Ok(mut cache) = prefetch_cache.lock() {
+                            cache.insert(path.clone(), Arc::clone(&clip));
+                        }
+                        if let Ok(mut cache) = last_clip.lock() {
+                            *cache = Some((path.clone(), Arc::downgrade(&clip)));
+                        }
+                    }
+                }
+            })
+            .ok();
     }
 
     /// The playhead, as atomics only.
@@ -965,6 +1247,22 @@ impl AppState {
         let decoder = self.decoder();
         let buckets = buckets.unwrap_or(DEFAULT_BUCKETS).clamp(16, 16_384);
         let owned = path.to_string();
+
+        if let Some(clip) = self.cached_clip(path) {
+            if clip.complete {
+                if let Some(source) = clip.source.as_ref() {
+                    let waveform = mio_engine::waveform::Waveform::from_source(source, buckets);
+                    return Ok(WaveformDto {
+                        peaks: waveform.peaks,
+                        lanes: waveform.lanes,
+                        duration_s: waveform.duration_s,
+                        sample_rate: waveform.sample_rate,
+                        channels: waveform.channels,
+                        decode_ms: 0.0,
+                    });
+                }
+            }
+        }
 
         let started = Instant::now();
         let scan = tauri::async_runtime::spawn_blocking(move || {
@@ -1124,10 +1422,7 @@ impl AppState {
         }
     }
 
-    pub fn search(
-        &self,
-        request: SearchRequest,
-    ) -> AppResult<Vec<SoundDto>> {
+    pub fn search(&self, request: SearchRequest) -> AppResult<Vec<SoundDto>> {
         let library = self.library()?;
         let params = request.into_params()?;
         Ok(library
@@ -1149,7 +1444,11 @@ impl AppState {
         // clamp is for pages, and this is not a page.
         let mut params = request.into_params()?;
         params.limit = u32::MAX;
-        Ok(library.search(&params)?.into_iter().map(|s| s.path).collect())
+        Ok(library
+            .search(&params)?
+            .into_iter()
+            .map(|s| s.path)
+            .collect())
     }
 
     /// How many rows the filter matches, for the status bar's "38 of 27,525".
@@ -1260,6 +1559,12 @@ impl AppState {
 
 impl Drop for AppState {
     fn drop(&mut self) {
+        if let Ok(mut slot) = self.prefetch_worker.lock() {
+            if let Some(handle) = slot.take() {
+                self.prefetch_closed.store(true, Ordering::Release);
+                let _ = handle.join();
+            }
+        }
         self.jobs.close();
         if let Ok(mut slot) = self.worker.lock() {
             if let Some(handle) = slot.take() {
@@ -1282,15 +1587,35 @@ fn try_submit(jobs: &LatestSlot, job: DecodeJob) -> std::result::Result<(), ()> 
 /// it, so a pool would add threads that are idle by construction. Per-file decode
 /// is 1–6ms for a typical sample (measured, architecture 3.1), which is far below
 /// the ~12ms of device queueing that dominates a click anyway.
-fn spawn_decoder(jobs: Arc<LatestSlot>) -> JoinHandle<()> {
+fn spawn_decoder(
+    jobs: Arc<LatestSlot>,
+    failed_decodes: Arc<Mutex<HashMap<String, (u64, u128)>>>,
+) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("mio-decode".into())
         .spawn(move || {
             while let Some(job) = jobs.take() {
-                let clip = job
+                let path = job.path.clone();
+                let mut decoder = job
                     .decoder
-                    .decode(&job.path)
-                    .map(Arc::new)
+                    .with_max_duration(job.max_duration_s.unwrap_or(f64::INFINITY));
+                if let Some(window) = job.window {
+                    decoder = decoder.with_window(window);
+                }
+                let result = decoder.decode_with_source(&job.path);
+                if matches!(&result, Err(mio_engine::EngineError::DecodeTimeout { .. })) {
+                    if let Some(fingerprint) = decode_fingerprint(&path) {
+                        if let Ok(mut failed) = failed_decodes.lock() {
+                            failed.insert(path.clone(), fingerprint);
+                        }
+                    }
+                } else if result.is_ok() {
+                    if let Ok(mut failed) = failed_decodes.lock() {
+                        failed.remove(&path);
+                    }
+                }
+                let clip = result
+                    .map(|(clip, _source)| Arc::new(clip))
                     .map_err(AppError::from);
                 // A dropped receiver means the command was cancelled (the window
                 // closed, or a newer request superseded it). Either way the decode
@@ -1299,6 +1624,131 @@ fn spawn_decoder(jobs: Arc<LatestSlot>) -> JoinHandle<()> {
             }
         })
         .expect("spawn decode worker")
+}
+
+fn spawn_prefetcher(
+    receiver: Receiver<(String, Decoder, u64)>,
+    cache: Arc<Mutex<PrefetchCache>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    generation: Arc<AtomicU64>,
+) -> JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("mio-prefetch".into())
+        .spawn(move || {
+            while !closed.load(Ordering::Acquire) {
+                let Ok((path, decoder, requested_generation)) =
+                    receiver.recv_timeout(std::time::Duration::from_millis(100))
+                else {
+                    continue;
+                };
+                if let Ok(mut cache) = cache.lock() {
+                    if cache.get(&path).is_some() {
+                        cache.finish_request(&path);
+                        continue;
+                    }
+                }
+                let max_duration_s = mio_index::probe_file(std::path::Path::new(&path))
+                    .duration_s
+                    .filter(|duration| *duration > 60.0)
+                    .map(|_| 5.0);
+                let decoder = max_duration_s
+                    .map(|seconds| decoder.with_max_duration(seconds))
+                    .unwrap_or(decoder);
+                let result = decoder.decode_with_source(&path);
+                if let Ok(mut cache) = cache.lock() {
+                    cache.finish_request(&path);
+                    if generation.load(Ordering::Acquire) == requested_generation {
+                        if let Ok((clip, _)) = result {
+                            cache.insert(path, Arc::new(clip));
+                        }
+                    }
+                }
+                if closed.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+        })
+        .expect("spawn prefetch worker")
+}
+
+struct PrefetchCache {
+    entries: HashMap<String, (Arc<DecodedAudio>, Instant, u64)>,
+    pending: std::collections::HashSet<String>,
+    bytes: u64,
+}
+
+impl PrefetchCache {
+    const MAX_NEIGHBORS: usize = 4;
+    const MAX_ENTRIES: usize = Self::MAX_NEIGHBORS + 1;
+    const MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            pending: std::collections::HashSet::new(),
+            bytes: 0,
+        }
+    }
+
+    fn request(&mut self, path: &str) -> bool {
+        if self.entries.contains_key(path) || !self.pending.insert(path.to_string()) {
+            return false;
+        }
+        true
+    }
+
+    fn finish_request(&mut self, path: &str) {
+        self.pending.remove(path);
+    }
+
+    fn get(&mut self, path: &str) -> Option<Arc<DecodedAudio>> {
+        let (clip, used, _) = self.entries.get_mut(path)?;
+        *used = Instant::now();
+        Some(Arc::clone(clip))
+    }
+
+    fn insert(&mut self, path: String, clip: Arc<DecodedAudio>) {
+        let size = clip.bytes.len() as u64
+            + clip.source.as_ref().map_or(0, |source| {
+                (source.samples.len() * std::mem::size_of::<f32>()) as u64
+            });
+        self.insert_with_size(path, clip, size);
+    }
+
+    fn insert_with_size(&mut self, path: String, clip: Arc<DecodedAudio>, size: u64) {
+        if size > Self::MAX_BYTES {
+            return;
+        }
+        if let Some((_, _, old_size)) = self.entries.remove(&path) {
+            self.bytes = self.bytes.saturating_sub(old_size);
+        }
+        while self.entries.len() >= Self::MAX_ENTRIES || self.bytes.saturating_add(size) > Self::MAX_BYTES {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, used, _))| *used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some((_, _, old_size)) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(old_size);
+            }
+        }
+        self.bytes = self.bytes.saturating_add(size);
+        self.entries.insert(path, (clip, Instant::now(), size));
+    }
+
+}
+
+fn decode_fingerprint(path: &str) -> Option<(u64, u128)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some((metadata.len(), modified.as_nanos()))
 }
 
 /// Strip the characters Windows refuses in a file name.
@@ -1319,4 +1769,54 @@ fn sanitize_file_name(name: &str) -> String {
     // library does contain names that begin with a space, and an exported file
     // called " kick.wav" is a nuisance in a DAW's clip list.
     cleaned.trim_matches(['.', ' ']).to_string()
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    fn clip(path: &str, bytes: usize) -> Arc<DecodedAudio> {
+        Arc::new(DecodedAudio {
+            bytes: vec![0; bytes],
+            frames: bytes / 4,
+            total_frames: bytes / 4,
+            format: OutputFormat {
+                sample_rate: 48_000,
+                channels: 1,
+                sample: mio_engine::DeviceSample::F32,
+            },
+            source_rate: 48_000,
+            source_channels: 1,
+            decode_ms: 0.0,
+            resampled: false,
+            path: path.into(),
+            trimmed_leading_frames: 0,
+            source: None,
+            complete: true,
+            window_start_frames: 0,
+        })
+    }
+
+    #[test]
+    fn prefetch_cache_enforces_entry_and_byte_limits_and_updates_lru() {
+        let mut cache = PrefetchCache::new();
+        for index in 0..PrefetchCache::MAX_ENTRIES {
+            cache.insert(format!("{index}"), clip(&index.to_string(), 1024));
+        }
+        assert!(cache.get("0").is_some());
+        cache.insert("new".into(), clip("new", 1024));
+        assert_eq!(cache.entries.len(), PrefetchCache::MAX_ENTRIES);
+        assert!(cache.get("0").is_some(), "recently used entries stay hot");
+        assert!(
+            cache.get("1").is_none(),
+            "least recently used entry is evicted"
+        );
+
+        cache.insert_with_size(
+            "oversized".into(),
+            clip("oversized", 1),
+            PrefetchCache::MAX_BYTES + 1,
+        );
+        assert!(cache.get("oversized").is_none());
+    }
 }

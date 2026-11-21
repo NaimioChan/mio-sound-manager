@@ -27,11 +27,12 @@ pub mod asio;
 
 mod error;
 
-pub use decode::{DecodedAudio, Decoder, DeviceSample, OutputFormat, SourceAudio};
+pub use decode::{
+    DecodedAudio, DecodeWindow, Decoder, DeviceSample, OutputFormat, SourceAudio,
+};
 pub use error::{EngineError, Result};
 pub use output::{
     Backend, DeviceChoice, Engine, EngineConfig, LatencyReport, PlaybackMonitor, PlaybackSnapshot,
     PublishSource,
 };
 pub use waveform::{DEFAULT_BUCKETS, Waveform, bucket_peaks, bucket_peaks_lane};
-

@@ -64,6 +64,7 @@ pub struct Library {
     db: Arc<Mutex<IndexDb>>,
     progress: Arc<Progress>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    folder_tree_cache: Mutex<Option<(i64, FolderNode)>>,
 }
 
 impl Library {
@@ -79,6 +80,7 @@ impl Library {
             db: Arc::new(Mutex::new(db)),
             progress: Arc::new(Progress::default()),
             worker: Mutex::new(None),
+            folder_tree_cache: Mutex::new(None),
         })
     }
 
@@ -214,9 +216,7 @@ impl Library {
         category: &str,
         subcategory: Option<&str>,
     ) -> AppResult<u64> {
-        Ok(self
-            .db()?
-            .set_category_many(paths, category, subcategory)?)
+        Ok(self.db()?.set_category_many(paths, category, subcategory)?)
     }
 
     /// Drop the manual category on many paths, letting the next pass reclassify.
@@ -244,7 +244,20 @@ impl Library {
     /// Folder tree with recursive counts. Built from indexed paths, never from
     /// `readdir` (see `docs/index.md`).
     pub fn folder_tree(&self) -> AppResult<FolderNode> {
-        Ok(self.db()?.folder_tree()?)
+        let db = self.db()?;
+        let version = db.index_version()?;
+        let mut cache = self
+            .folder_tree_cache
+            .lock()
+            .map_err(|_| AppError::internal("folder tree cache lock poisoned"))?;
+        if let Some((cached_version, tree)) = cache.as_ref() {
+            if *cached_version == version {
+                return Ok(tree.clone());
+            }
+        }
+        let tree = db.folder_tree()?;
+        *cache = Some((version, tree.clone()));
+        Ok(tree)
     }
 }
 

@@ -20,7 +20,7 @@ use rayon::prelude::*;
 use crate::classify::Classifier;
 use crate::db::{IndexDb, SoundRow, row_from_parts};
 use crate::error::Result;
-use crate::probe::{AudioMeta, FileEntry, probe_with_meta, walk_audio_entries};
+use crate::probe::{AudioMeta, FileEntry, probe_with_meta, walk_audio_entries_into};
 
 /// How the indexer should behave on this pass.
 #[derive(Debug, Clone)]
@@ -115,35 +115,78 @@ impl IndexReport {
 pub fn index_folder<F>(
     root: impl AsRef<Path>,
     options: &IndexOptions,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<IndexReport>
 where
     F: FnMut(usize, usize),
 {
-    let root = root.as_ref().to_path_buf();
-    let mut db = IndexDb::open(&root)?;
-    let classifier = Arc::new(Classifier::new());
+    index_folder_with_walk(
+        root.as_ref(),
+        options,
+        |root, db| {
+            let mut pending = Vec::with_capacity(options.batch_size.max(1));
+            let mut count = 0usize;
+            walk_audio_entries_into(root, |entry| {
+                pending.push((
+                    crate::folders::store_path(&entry.path),
+                    entry.filesize,
+                    entry.mtime_ns,
+                ));
+                count += 1;
+                if pending.len() >= options.batch_size.max(1) {
+                    db.stage_scan_batch(&pending)?;
+                    pending.clear();
+                }
+                Ok(())
+            })
+            .and_then(|walked| {
+                if !pending.is_empty() {
+                    db.stage_scan_batch(&pending)?;
+                }
+                Ok(walked.max(count))
+            })
+        },
+        on_progress,
+    )
+}
+
+fn index_folder_with_walk<F, W>(
+    root: &Path,
+    options: &IndexOptions,
+    walk: W,
+    mut on_progress: F,
+) -> Result<IndexReport>
+where
+    F: FnMut(usize, usize),
+    W: FnOnce(&Path, &mut IndexDb) -> Result<usize>,
+{
+    let root = root.to_path_buf();
     let mut report = IndexReport {
         threads: effective_threads(options.threads),
         ..Default::default()
     };
 
-    // 1. Walk. The entries carry size and mtime from the directory scan, so the
-    //    incremental check and the row both avoid a second `stat`.
-    let t = Instant::now();
-    let files = walk_audio_entries(&root);
-    report.timings.walk_ms = ms(t);
-    report.files_seen = files.len();
+    // Validate the root before opening SQLite; this catches an offline volume
+    // without creating a new, empty library database.
+    std::fs::read_dir(&root).map_err(|e| crate::error::IndexError::Walk {
+        path: root.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    let mut db = IndexDb::open(&root)?;
+    db.begin_scan()?;
 
-    // Which files can be skipped: unchanged means the recorded mtime matches.
-    // NTFS stores it at 100ns resolution, so an edit that keeps the size still
-    // changes it.
-    let known = if options.incremental {
-        db.path_mtimes()?
+    // Stage entries as they are walked. No live index rows are changed until the
+    // full directory traversal succeeds, and paths stay in SQLite rather than RAM.
+    let t = Instant::now();
+    let file_count = walk(&root, &mut db)?;
+    report.timings.walk_ms = ms(t);
+    report.files_seen = file_count;
+    let classifier = Arc::new(Classifier::new());
+    let unchanged = if options.incremental {
+        db.unchanged_scan_count()?
     } else {
-        Vec::new()
+        0
     };
-    let known: std::collections::HashMap<String, i64> = known.into_iter().collect();
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(report.threads)
@@ -157,7 +200,6 @@ where
     let classify_started = AtomicU64::new(0);
     let mut classify_ns = 0u64;
     let mut rows_written = 0usize;
-    let mut skipped = 0usize;
     let chunk = options.batch_size.max(1);
 
     // Trigger-maintained FTS costs a tokenizer pass per insert and per delete.
@@ -169,27 +211,21 @@ where
         db.begin_bulk()?;
     }
 
-    for batch in files.chunks(chunk) {
-        let (to_probe, skipped_here): (Vec<&FileEntry>, usize) =
-            batch
-                .iter()
-                .fold((Vec::new(), 0usize), |(mut acc, skipped), entry| {
-                    let unchanged = known
-                        .get(&crate::folders::store_path(&entry.path))
-                        .map(|mtime| *mtime != 0 && entry.mtime_ns == *mtime)
-                        .unwrap_or(false);
-                    if options.incremental && unchanged {
-                        (acc, skipped + 1)
-                    } else {
-                        acc.push(entry);
-                        (acc, skipped)
-                    }
-                });
-        skipped += skipped_here;
-        if to_probe.is_empty() {
-            continue;
+    let mut after_path: Option<String> = None;
+    loop {
+        let batch = db.scan_batch(after_path.as_deref(), chunk, options.incremental)?;
+        if batch.is_empty() {
+            break;
         }
-
+        after_path = batch.last().map(|entry| entry.path.clone());
+        let to_probe: Vec<FileEntry> = batch
+            .into_iter()
+            .map(|entry| FileEntry {
+                path: PathBuf::from(entry.path),
+                filesize: entry.filesize,
+                mtime_ns: entry.mtime_ns,
+            })
+            .collect();
         // Probe in parallel; classify on the same worker right after, since both
         // are CPU work on the same file and moving to another pool would only add
         // a hop.
@@ -223,24 +259,21 @@ where
 
         rows_written += rows.len();
         report.files_probed += rows.len();
-        on_progress(rows_written + skipped, files.len());
+        on_progress((rows_written + unchanged).min(file_count), file_count);
     }
     report.timings.probe_ms =
         ms(probe_started) - report.timings.write_ms - classify_ns as f64 / 1e6;
     report.timings.classify_ms = classify_ns as f64 / 1e6;
 
-    report.files_skipped = skipped;
+    report.files_skipped = unchanged;
     report.rows_written = rows_written;
+    on_progress(file_count, file_count);
 
     // 4. Prune. Only meaningful on a full pass: a partial scan has not seen the
     //    rest of the library, so absence proves nothing.
     if options.prune && !options.incremental {
         let p = Instant::now();
-        let paths: Vec<String> = files
-            .iter()
-            .map(|entry| crate::folders::store_path(&entry.path))
-            .collect();
-        report.rows_pruned = db.prune_missing(&paths)?;
+        report.rows_pruned = db.prune_scan_missing()?;
         report.timings.prune_ms = ms(p);
     }
 
@@ -250,6 +283,8 @@ where
         db.end_bulk()?;
         report.timings.index_ms = ms(i);
     }
+
+    db.end_scan()?;
 
     Ok(report)
 }
@@ -398,6 +433,69 @@ mod tests {
         let db = IndexDb::open(&root).unwrap();
         assert_eq!(db.count().unwrap(), 1);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_root_fails_without_creating_an_empty_library() {
+        let root = temp_lib("missing-root");
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let error = index_folder(
+            &root,
+            &IndexOptions {
+                incremental: false,
+                ..Default::default()
+            },
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("could not scan"));
+        assert!(
+            !root.exists(),
+            "a failed scan must not create a new database"
+        );
+    }
+
+    #[test]
+    fn a_walk_error_preserves_the_existing_index() {
+        let root = temp_lib("walk-error-keeps-index");
+        write_wav(&root.join("a.wav"), 100);
+        index_folder(
+            &root,
+            &IndexOptions {
+                incremental: false,
+                ..Default::default()
+            },
+            |_, _| {},
+        )
+        .unwrap();
+
+        let error = index_folder_with_walk(
+            &root,
+            &IndexOptions {
+                incremental: false,
+                ..Default::default()
+            },
+            |_, db| {
+                db.stage_scan_path(&root.join("b.wav"), 100, 2)?;
+                Err(crate::error::IndexError::Walk {
+                    path: root.join("nested").display().to_string(),
+                    detail: "mock directory disappeared".into(),
+                })
+            },
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("mock directory disappeared"));
+
+        let db = IndexDb::open(&root).unwrap();
+        assert_eq!(db.count().unwrap(), 1);
+        assert!(
+            db.get_by_path(&root.join("a.wav").to_string_lossy())
+                .unwrap()
+                .is_some()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

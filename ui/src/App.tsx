@@ -364,6 +364,14 @@ export function App() {
   const play = async (row: SoundRow, startAt?: number) => {
     setActive(row)
     setWaveMs(null)
+    const activeIndex = rows().findIndex((candidate) => candidate.path === row.path)
+    if (activeIndex >= 0) {
+      const neighbors = rows()
+        .slice(Math.max(0, activeIndex - 2), activeIndex + 3)
+        .filter((candidate) => candidate.path !== row.path)
+        .map((candidate) => candidate.path)
+      if (neighbors.length) void api.prefetchNeighbors(neighbors)
+    }
     // A selection belongs to the sound it was drawn on. Keeping it across a
     // different sound would either export the wrong region or loop a part of a
     // file the user never looked at.

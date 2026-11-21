@@ -315,6 +315,17 @@ if (box) {
     'clicking the waveform seeks past the halfway point',
     `${seeked.toFixed(2)}s of ${duration.toFixed(2)}s`
   )
+  // The seek target is ~70% of the file, far beyond any window decoded so
+  // far. With the window chain the playhead must land there and keep going:
+  // one second later it reads at or beyond the target, which only holds if
+  // the seek-window decode and the queued continuation both happened.
+  await page.waitForTimeout(1_200)
+  const after = await position()
+  check(
+    after >= seeked - 0.25,
+    'playback continues forward from the seek target (window chain)',
+    `${after.toFixed(2)}s after seeking to ${seeked.toFixed(2)}s`
+  )
 } else {
   check(false, 'the waveform canvas exists')
 }

@@ -131,11 +131,6 @@ impl History {
     fn push_undo_raw(&mut self, edit: Edit) {
         self.undo.push_back(edit);
     }
-
-    pub fn clear(&mut self) {
-        self.undo.clear();
-        self.redo.clear();
-    }
 }
 
 /// Look up the current state of every path an edit touched.
@@ -164,10 +159,8 @@ pub fn restore(library: &Library, states: &[FieldState]) -> AppResult<u64> {
     // handful of transactions rather than one per row.
     let mut favorites_on: Vec<String> = Vec::new();
     let mut favorites_off: Vec<String> = Vec::new();
-    let mut by_category: std::collections::BTreeMap<
-        (String, Option<String>, bool),
-        Vec<String>,
-    > = Default::default();
+    let mut by_category: std::collections::BTreeMap<(String, Option<String>, bool), Vec<String>> =
+        Default::default();
 
     for state in states {
         if state.favorite {

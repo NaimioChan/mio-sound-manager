@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-symphonia = { version = "0.5.5", features = ["all-formats", "all-codecs"] }
+symphonia = { version = "0.5.5", features = ["all-formats", "all-codecs", "opt-simd"] }
 wasapi = "0.27"
 # ASIO is opt-in. The Steinberg SDK is proprietary and cannot be redistributed,
 # and `asio-sys` builds it with bindgen (needs a libclang DLL), so a default

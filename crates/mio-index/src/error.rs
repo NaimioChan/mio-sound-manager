@@ -10,6 +10,11 @@ pub enum IndexError {
     Io(std::io::Error),
     /// The library root does not exist or is not a directory.
     BadRoot(String),
+    /// A directory could not be enumerated; pruning after a partial walk is unsafe.
+    Walk {
+        path: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for IndexError {
@@ -19,6 +24,7 @@ impl fmt::Display for IndexError {
             IndexError::Sqlite(e) => write!(f, "sqlite: {e}"),
             IndexError::Io(e) => write!(f, "io: {e}"),
             IndexError::BadRoot(p) => write!(f, "not a directory: {p}"),
+            IndexError::Walk { path, detail } => write!(f, "could not scan {path}: {detail}"),
         }
     }
 }

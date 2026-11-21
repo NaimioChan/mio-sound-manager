@@ -116,7 +116,7 @@ fn run() -> Result<()> {
     if let Some(command) = argv.first().map(|s| s.as_str()) {
         if matches!(
             command,
-            "index" | "index-stats" | "search" | "classify-diff" | "probe-bench"
+            "index" | "index-stats" | "search" | "classify-diff" | "probe-bench" | "classify-bench"
         ) {
             return run_index_command(command, &argv[1..]);
         }
@@ -148,6 +148,7 @@ fn run_index_command(command: &str, rest: &[String]) -> Result<()> {
         "search" => index_cmd::run_search(&args),
         "classify-diff" => index_cmd::run_classify_diff(&args),
         "probe-bench" => index_cmd::run_probe_bench(&args),
+        "classify-bench" => index_cmd::run_classify_bench(&args),
         other => bail!("unhandled index command {other}"),
     }
 }
@@ -160,7 +161,9 @@ fn run_index_command(command: &str, rest: &[String]) -> Result<()> {
 ///     python tools/classify-mirror.py --sample 3000 --db <library.db> > expect.json
 ///     mio-cli classify-check expect.json
 fn classify_check() -> Result<()> {
-    let path = std::env::args().nth(2).context("usage: mio-cli classify-check <expect.json>")?;
+    let path = std::env::args()
+        .nth(2)
+        .context("usage: mio-cli classify-check <expect.json>")?;
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
     let expected: Vec<(String, String, Option<String>)> =
         serde_json::from_str(&text).with_context(|| format!("parsing {path}"))?;

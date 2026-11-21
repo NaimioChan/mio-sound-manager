@@ -135,6 +135,38 @@ pub fn run_index_stats(args: &IndexArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn run_classify_bench(args: &IndexArgs) -> Result<()> {
+    let db = IndexDb::open(&args.folder)?;
+    let mut stmt = db
+        .connection()
+        .prepare("SELECT path FROM sounds ORDER BY path")?;
+    let paths = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let classifier = Classifier::new();
+    let started = Instant::now();
+    let mut count = 0usize;
+    let mut checksum = 0u64;
+    for path in paths {
+        let path = path?;
+        let result = classifier.classify(&path);
+        checksum = checksum.wrapping_add(result.raw_score as u64);
+        count += 1;
+        if args.limit > 0 && count >= args.limit as usize {
+            break;
+        }
+    }
+    let elapsed = started.elapsed();
+    println!(
+        "classified {count} paths in {:.1} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
+    println!(
+        "throughput {:.0} paths/s",
+        count as f64 / elapsed.as_secs_f64()
+    );
+    println!("checksum {checksum}");
+    Ok(())
+}
+
 pub fn run_search(args: &IndexArgs) -> Result<()> {
     let db = IndexDb::open(&args.folder)?;
     let mut params = SearchParams::new(&args.query);
@@ -298,7 +330,7 @@ pub fn run_classify_diff(args: &IndexArgs) -> Result<()> {
 /// and the full probe. The difference between the second and third is decoding
 /// and demuxing; the difference between the first and second is the OS.
 pub fn run_probe_bench(args: &IndexArgs) -> Result<()> {
-    let files = mio_index::walk_audio_files(&args.folder);
+    let files = mio_index::walk_audio_files(&args.folder)?;
     if files.is_empty() {
         anyhow::bail!("no audio files under {}", args.folder.display());
     }
@@ -521,6 +553,14 @@ pub fn parse(command: &str, folder: PathBuf, rest: &[String]) -> Result<IndexArg
             if let Some(db) = positional.first() {
                 args.reference_db = Some(PathBuf::from(db));
             }
+        }
+        "classify-bench" => {
+            args.limit = positional
+                .first()
+                .map(|n| n.parse())
+                .transpose()
+                .context("classify-bench limit must be a number")?
+                .unwrap_or(0);
         }
         _ => {}
     }

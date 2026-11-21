@@ -2407,6 +2407,7 @@ dependencies = [
 name = "mio-index"
 version = "0.1.2"
 dependencies = [
+ "aho-corasick",
  "log",
  "rayon",
  "rusqlite",
@@ -4017,6 +4018,7 @@ dependencies = [
  "bytemuck",
  "lazy_static",
  "log",
+ "rustfft",
 ]
 
 [[package]]

@@ -320,7 +320,11 @@ pub fn set_audio_device(
 
 /// Start playing `path`, optionally `startAt` seconds in.
 #[tauri::command]
-pub async fn play(state: State<'_, AppState>, path: String, start_at: Option<f64>) -> AppResult<()> {
+pub async fn play(
+    state: State<'_, AppState>,
+    path: String,
+    start_at: Option<f64>,
+) -> AppResult<()> {
     state.play(&path, start_at).await
 }
 
@@ -423,6 +427,11 @@ pub async fn get_waveform(
     buckets: Option<usize>,
 ) -> AppResult<WaveformDto> {
     state.waveform(&path, buckets).await
+}
+
+#[tauri::command]
+pub fn prefetch_neighbors(state: State<'_, AppState>, paths: Vec<String>) {
+    state.prefetch_neighbors(&paths);
 }
 
 /// One progress tick from a blocking index pass.
@@ -541,7 +550,10 @@ pub struct HistoryState {
 #[tauri::command]
 pub fn get_history(state: State<'_, AppState>) -> AppResult<HistoryState> {
     let (undo_kind, redo_kind) = state.history_state();
-    Ok(HistoryState { undo_kind, redo_kind })
+    Ok(HistoryState {
+        undo_kind,
+        redo_kind,
+    })
 }
 
 #[tauri::command]
@@ -553,7 +565,11 @@ pub fn get_library(state: State<'_, AppState>) -> AppResult<Option<LibraryStatus
 pub fn search(state: State<'_, AppState>, request: SearchRequest) -> AppResult<Vec<SoundDto>> {
     let library = state.library()?;
     let params = request.into_params()?;
-    Ok(library.search(&params)?.into_iter().map(SoundDto::from).collect())
+    Ok(library
+        .search(&params)?
+        .into_iter()
+        .map(SoundDto::from)
+        .collect())
 }
 
 #[tauri::command]
@@ -638,7 +654,9 @@ pub async fn pick_library_folder(app: tauri::AppHandle) -> AppResult<Option<Stri
     .await
     .map_err(|e| AppError::internal(format!("folder picker failed: {e}")))?;
 
-    Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
+    Ok(picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string()))
 }
 
 /// Show a sound in Windows Explorer with the file selected.

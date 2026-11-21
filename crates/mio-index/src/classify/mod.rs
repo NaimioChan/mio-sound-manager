@@ -74,6 +74,7 @@
 mod dictionary;
 mod ucs;
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use std::collections::HashMap;
 
 pub use dictionary::CATEGORY_DICTIONARY;
@@ -126,6 +127,43 @@ struct Phrase {
     target: Target,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Vocabulary {
+    Curated,
+    Ucs,
+}
+
+struct KeywordPattern {
+    target: Target,
+    kind: PatternKind,
+}
+
+#[derive(Clone, Copy)]
+enum PatternKind {
+    Keyword {
+        vocabulary: Vocabulary,
+        exact: bool,
+    },
+    Phrase {
+        vocabulary: Vocabulary,
+        order: usize,
+    },
+}
+
+struct KeywordMatches {
+    curated: Vec<Option<usize>>,
+    ucs: Vec<Option<usize>>,
+    phrases: std::collections::HashSet<(Vocabulary, usize)>,
+}
+
+struct TokenSpan {
+    text: String,
+    start: usize,
+    end: usize,
+    raw_start: usize,
+    directory: bool,
+}
+
 /// Built once per process (or once per indexing run) and then shared across
 /// threads: it is immutable and contains no interior mutability.
 ///
@@ -139,11 +177,11 @@ struct Phrase {
 ///    when 1 and 2 produced no match at all, so it can never move a file the
 ///    curated dictionary already decided.
 pub struct Classifier {
-    keyword_to_target: HashMap<&'static str, Target>,
+    keyword_matcher: AhoCorasick,
+    keyword_patterns: Vec<KeywordPattern>,
     phrases: Vec<Phrase>,
-    cat_id_to_target: HashMap<&'static str, Target>,
-    ucs_keyword_to_target: HashMap<&'static str, Target>,
     ucs_phrases: Vec<Phrase>,
+    cat_id_to_target: HashMap<&'static str, Target>,
 }
 
 impl Default for Classifier {
@@ -171,22 +209,35 @@ impl Classifier {
                 });
             }
         }
+        let ucs_keyword_to_target = build_ucs_keywords();
+        let ucs_phrases = build_ucs_phrases();
+        let (keyword_matcher, keyword_patterns) = build_pattern_matcher(
+            &keyword_to_target,
+            &phrases,
+            &ucs_keyword_to_target,
+            &ucs_phrases,
+        );
         Self {
-            keyword_to_target,
+            keyword_matcher,
+            keyword_patterns,
             phrases,
+            ucs_phrases,
             cat_id_to_target: build_cat_ids(),
-            ucs_keyword_to_target: build_ucs_keywords(),
-            ucs_phrases: build_ucs_phrases(),
         }
     }
 
     pub fn classify(&self, full_path: &str) -> Classification {
-        let (dir_part, filename) = split_path(full_path);
-
-        // Phrases match a normalised copy of the whole path, so `drum_loop` and
-        // `Drum Loop` are one phrase and a separator inside a phrase cannot
-        // silently defeat it.
-        let normalised = normalise(full_path);
+        let (haystack, mut tokens, filename_start) = tokenize_path_spans(full_path);
+        let filename = &full_path[filename_start..];
+        for token in &mut tokens {
+            token.directory = token.raw_start < filename_start;
+        }
+        let matches = find_pattern_matches(
+            &haystack,
+            &tokens,
+            &self.keyword_matcher,
+            &self.keyword_patterns,
+        );
 
         // Scores are first-insertion ordered rather than a `HashMap` because the
         // tie-break walks them in that order: on a tie the first target that
@@ -194,9 +245,8 @@ impl Classifier {
         let mut scores: Vec<(Target, u32)> = Vec::new();
         let mut matched: Vec<String> = Vec::new();
 
-        // 1. Phrases: unambiguous, so they carry the highest weight.
-        for phrase in &self.phrases {
-            if normalised.contains(phrase.phrase) {
+        for (order, phrase) in self.phrases.iter().enumerate() {
+            if matches.phrases.contains(&(Vocabulary::Curated, order)) {
                 add(&mut scores, &mut matched, &phrase.target, 4, phrase.phrase);
             }
         }
@@ -209,20 +259,24 @@ impl Classifier {
         //    Stock Media folder names are a whole sentence about the pack's theme,
         //    so reading them would label thousands of files with all of it.
         let mut dir_voted: Vec<&Target> = Vec::new();
-        for token in tokenize(&dir_part) {
-            // A brand token in a folder name is the pack's label, never its
-            // contents. `Fox Stevenson Universal Samples` is not about foxes.
-            if BRAND_TOKENS.contains(&token.as_str()) {
+        for (index, token) in tokens.iter().enumerate() {
+            if !token.directory {
                 continue;
             }
-            let Some(target) = self.lookup(&token) else {
+            // A brand token in a folder name is the pack's label, never its
+            // contents. `Fox Stevenson Universal Samples` is not about foxes.
+            if BRAND_TOKENS.contains(&token.text.as_str()) {
+                continue;
+            }
+            let Some(pattern_index) = matches.curated[index] else {
                 continue;
             };
+            let target = &self.keyword_patterns[pattern_index].target;
             if dir_voted.contains(&target) {
                 continue;
             }
             dir_voted.push(target);
-            add(&mut scores, &mut matched, target, 1, &token);
+            add(&mut scores, &mut matched, target, 1, &token.text);
         }
 
         // 3. Filename: one vote per distinct word.
@@ -235,11 +289,14 @@ impl Classifier {
         let mut file_voted: Vec<&Target> = Vec::new();
         let mut seen: Vec<String> = Vec::new();
         let mut first = true;
-        for token in tokenize(&filename) {
-            if seen.contains(&token) {
+        for (index, token) in tokens.iter().enumerate() {
+            if token.directory {
                 continue;
             }
-            seen.push(token.clone());
+            if seen.contains(&token.text) {
+                continue;
+            }
+            seen.push(token.text.clone());
             // A pack's own name is usually the first word of every filename in
             // it — `FOX_STVNSN_BASS_SHOT`, `CHIME_vox_chop_male_ohh` — and it is
             // the artist, not the sound. Those are skipped rather than deleted
@@ -247,17 +304,18 @@ impl Classifier {
             // elsewhere: `chime` is a bell here, `Chime` is an artist.
             let is_first = first;
             first = false;
-            if is_first && BRAND_TOKENS.contains(&token.as_str()) {
+            if is_first && BRAND_TOKENS.contains(&token.text.as_str()) {
                 continue;
             }
-            let Some(target) = self.lookup(&token) else {
+            let Some(pattern_index) = matches.curated[index] else {
                 continue;
             };
+            let target = &self.keyword_patterns[pattern_index].target;
             if file_voted.contains(&target) {
                 continue;
             }
             file_voted.push(target);
-            add(&mut scores, &mut matched, target, 3, &token);
+            add(&mut scores, &mut matched, target, 3, &token.text);
         }
 
         // 4. Nothing above fired. Now — and only now — the UCS layers get a look:
@@ -266,7 +324,7 @@ impl Classifier {
         //    makes "UCS never overrides the curated answer" true by construction
         //    instead of by weight arithmetic.
         if scores.is_empty() {
-            return self.classify_fallback(&normalised, &dir_part, &filename);
+            return self.classify_fallback(filename, &tokens, &matches);
         }
 
         finish(scores, matched)
@@ -282,7 +340,12 @@ impl Classifier {
     /// pass: `VEH4 Slides & Scratch\VEH4 Slide Scratch 10.wav` has no UCS word in
     /// its filename, and the folder is the only description it has. The cap is
     /// what makes this safe — one vote per target, whatever the folder says.
-    fn classify_fallback(&self, normalised: &str, dir_part: &str, filename: &str) -> Classification {
+    fn classify_fallback(
+        &self,
+        filename: &str,
+        tokens: &[TokenSpan],
+        matches: &KeywordMatches,
+    ) -> Classification {
         let mut scores: Vec<(Target, u32)> = Vec::new();
         let mut matched: Vec<String> = Vec::new();
 
@@ -295,73 +358,53 @@ impl Classifier {
             }
         }
 
-        for phrase in &self.ucs_phrases {
-            if normalised.contains(phrase.phrase) {
+        for (order, phrase) in self.ucs_phrases.iter().enumerate() {
+            if matches.phrases.contains(&(Vocabulary::Ucs, order)) {
                 add(&mut scores, &mut matched, &phrase.target, 3, phrase.phrase);
             }
         }
 
         let mut dir_voted: Vec<&Target> = Vec::new();
-        for token in tokenize(dir_part) {
-            if BRAND_TOKENS.contains(&token.as_str()) {
+        for (index, token) in tokens.iter().enumerate() {
+            if !token.directory || BRAND_TOKENS.contains(&token.text.as_str()) {
                 continue;
             }
-            let Some(target) = self.lookup_ucs(&token) else {
+            let Some(pattern_index) = matches.ucs[index] else {
                 continue;
             };
+            let target = &self.keyword_patterns[pattern_index].target;
             if dir_voted.contains(&target) {
                 continue;
             }
             dir_voted.push(target);
-            add(&mut scores, &mut matched, target, 1, &token);
+            add(&mut scores, &mut matched, target, 1, &token.text);
         }
 
         let mut voted: Vec<&Target> = Vec::new();
         let mut seen: Vec<String> = Vec::new();
         let mut first = true;
-        for token in tokenize(filename) {
-            if seen.contains(&token) {
+        for (index, token) in tokens.iter().enumerate() {
+            if token.directory || seen.contains(&token.text) {
                 continue;
             }
-            seen.push(token.clone());
+            seen.push(token.text.clone());
             let is_first = first;
             first = false;
-            if is_first && BRAND_TOKENS.contains(&token.as_str()) {
+            if is_first && BRAND_TOKENS.contains(&token.text.as_str()) {
                 continue;
             }
-            let Some(target) = self.lookup_ucs(&token) else {
+            let Some(pattern_index) = matches.ucs[index] else {
                 continue;
             };
+            let target = &self.keyword_patterns[pattern_index].target;
             if voted.contains(&target) {
                 continue;
             }
             voted.push(target);
-            add(&mut scores, &mut matched, target, 2, &token);
+            add(&mut scores, &mut matched, target, 2, &token.text);
         }
 
         finish(scores, matched)
-    }
-
-    fn lookup(&self, token: &str) -> Option<&Target> {
-        if let Some(t) = self.keyword_to_target.get(token) {
-            return Some(t);
-        }
-        let stemmed = stem(token);
-        if stemmed != token {
-            return self.keyword_to_target.get(stemmed);
-        }
-        None
-    }
-
-    fn lookup_ucs(&self, token: &str) -> Option<&Target> {
-        if let Some(t) = self.ucs_keyword_to_target.get(token) {
-            return Some(t);
-        }
-        let stemmed = stem(token);
-        if stemmed != token {
-            return self.ucs_keyword_to_target.get(stemmed);
-        }
-        None
     }
 }
 
@@ -413,7 +456,13 @@ fn finish(scores: Vec<(Target, u32)>, mut matched: Vec<String>) -> Classificatio
 }
 
 /// Accumulate a vote for `target`, merging into its existing score if it has one.
-fn add(scores: &mut Vec<(Target, u32)>, matched: &mut Vec<String>, target: &Target, weight: u32, term: &str) {
+fn add(
+    scores: &mut Vec<(Target, u32)>,
+    matched: &mut Vec<String>,
+    target: &Target,
+    weight: u32,
+    term: &str,
+) {
     match scores.iter_mut().find(|(t, _)| t == target) {
         Some((_, score)) => *score += weight,
         None => scores.push((target.clone(), weight)),
@@ -425,7 +474,13 @@ fn build_cat_ids() -> HashMap<&'static str, Target> {
     UCS_CAT_IDS
         .iter()
         .map(|(cat_id, category, subcategory)| {
-            (*cat_id, Target { category, subcategory: *subcategory })
+            (
+                *cat_id,
+                Target {
+                    category,
+                    subcategory: *subcategory,
+                },
+            )
         })
         .collect()
 }
@@ -442,6 +497,204 @@ fn build_ucs_keywords() -> HashMap<&'static str, Target> {
         }
     }
     map
+}
+
+fn build_pattern_matcher(
+    curated: &HashMap<&'static str, Target>,
+    curated_phrases: &[Phrase],
+    ucs: &HashMap<&'static str, Target>,
+    ucs_phrases: &[Phrase],
+) -> (AhoCorasick, Vec<KeywordPattern>) {
+    let mut variants: HashMap<(String, Vocabulary, bool), Target> = HashMap::new();
+    for (vocabulary, keywords) in [(Vocabulary::Curated, curated), (Vocabulary::Ucs, ucs)] {
+        let mut ordered: Vec<_> = keywords.iter().collect();
+        ordered.sort_by_key(|(word, _)| **word);
+        for (word, target) in ordered {
+            variants.insert(((*word).to_string(), vocabulary, true), target.clone());
+            for suffix in ["ing", "ed", "es", "s"] {
+                let variant = format!("{word}{suffix}");
+                if stem(&variant) == *word {
+                    variants
+                        .entry((variant, vocabulary, false))
+                        .or_insert_with(|| target.clone());
+                }
+            }
+        }
+    }
+
+    let mut patterns = Vec::new();
+    for ((text, vocabulary, exact), target) in variants {
+        patterns.push((
+            text,
+            KeywordPattern {
+                target,
+                kind: PatternKind::Keyword { vocabulary, exact },
+            },
+        ));
+    }
+    for (vocabulary, phrases) in [
+        (Vocabulary::Curated, curated_phrases),
+        (Vocabulary::Ucs, ucs_phrases),
+    ] {
+        for (order, phrase) in phrases.iter().enumerate() {
+            let normalized = normalise(phrase.phrase).trim().to_string();
+            let normalized = normalized.replace(' ', " ");
+            patterns.push((
+                normalized.clone(),
+                KeywordPattern {
+                    target: phrase.target.clone(),
+                    kind: PatternKind::Phrase { vocabulary, order },
+                },
+            ));
+        }
+    }
+    patterns.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| pattern_priority(&a.1).cmp(&pattern_priority(&b.1)))
+            .then_with(|| a.1.target.category.cmp(b.1.target.category))
+            .then_with(|| a.1.target.subcategory.cmp(&b.1.target.subcategory))
+    });
+    let matcher = AhoCorasickBuilder::new()
+        .match_kind(MatchKind::Standard)
+        .build(patterns.iter().map(|(pattern, _)| pattern.as_str()))
+        .expect("static classifier patterns are valid");
+    (
+        matcher,
+        patterns.into_iter().map(|(_, pattern)| pattern).collect(),
+    )
+}
+
+fn pattern_priority(pattern: &KeywordPattern) -> (u8, u8) {
+    match pattern.kind {
+        PatternKind::Keyword { vocabulary, exact } => (
+            if vocabulary == Vocabulary::Curated {
+                0
+            } else {
+                1
+            },
+            if exact { 0 } else { 1 },
+        ),
+        PatternKind::Phrase { vocabulary, order } => (
+            if vocabulary == Vocabulary::Curated {
+                2
+            } else {
+                3
+            },
+            order as u8,
+        ),
+    }
+}
+
+fn tokenize_path_spans(path: &str) -> (String, Vec<TokenSpan>, usize) {
+    let mut haystack = String::with_capacity(path.len());
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+    let mut word_start = 0;
+    let mut word_raw_start = 0;
+    let mut last_separator = None;
+
+    for (raw_offset, character) in path.char_indices() {
+        if character.is_ascii_alphanumeric() {
+            if word.is_empty() {
+                word_start = haystack.len();
+                word_raw_start = raw_offset;
+            }
+            let lower = character.to_ascii_lowercase();
+            word.push(lower);
+            haystack.push(lower);
+            continue;
+        }
+
+        push_token(
+            &mut word,
+            word_start,
+            word_raw_start,
+            haystack.len(),
+            &mut tokens,
+        );
+        if character == '\\' || character == '/' {
+            last_separator = Some(raw_offset);
+        }
+        if character.is_alphanumeric() {
+            haystack.push('\u{1}');
+        } else {
+            haystack.push(' ');
+        }
+    }
+    push_token(
+        &mut word,
+        word_start,
+        word_raw_start,
+        haystack.len(),
+        &mut tokens,
+    );
+    let filename_start = last_separator.map(|offset| offset + 1).unwrap_or(0);
+    (haystack, tokens, filename_start)
+}
+
+fn push_token(
+    word: &mut String,
+    start: usize,
+    raw_start: usize,
+    end: usize,
+    tokens: &mut Vec<TokenSpan>,
+) {
+    if word.len() >= MIN_TOKEN_LEN && !STOP_WORDS.contains(&word.as_str()) {
+        tokens.push(TokenSpan {
+            text: std::mem::take(word),
+            start,
+            end,
+            raw_start,
+            directory: false,
+        });
+    } else {
+        word.clear();
+    }
+}
+
+fn find_pattern_matches(
+    haystack: &str,
+    tokens: &[TokenSpan],
+    matcher: &AhoCorasick,
+    patterns: &[KeywordPattern],
+) -> KeywordMatches {
+    let mut found = KeywordMatches {
+        curated: vec![None; tokens.len()],
+        ucs: vec![None; tokens.len()],
+        phrases: std::collections::HashSet::new(),
+    };
+    for matched in matcher.find_overlapping_iter(haystack) {
+        let pattern_index = matched.pattern().as_usize();
+        let pattern = &patterns[pattern_index];
+        match pattern.kind {
+            PatternKind::Phrase { vocabulary, order } => {
+                found.phrases.insert((vocabulary, order));
+            }
+            PatternKind::Keyword { vocabulary, exact } => {
+                let Ok(index) = tokens.binary_search_by_key(&matched.start(), |token| token.start)
+                else {
+                    continue;
+                };
+                if tokens[index].end != matched.end() {
+                    continue;
+                }
+                let slots = match vocabulary {
+                    Vocabulary::Curated => &mut found.curated,
+                    Vocabulary::Ucs => &mut found.ucs,
+                };
+                let current_is_exact = slots[index].is_some_and(|current| {
+                    matches!(
+                        patterns[current].kind,
+                        PatternKind::Keyword { exact: true, .. }
+                    )
+                });
+                if slots[index].is_none() || (exact && !current_is_exact) {
+                    slots[index] = Some(pattern_index);
+                }
+            }
+        }
+    }
+    found
 }
 
 fn build_ucs_phrases() -> Vec<Phrase> {
@@ -475,27 +728,13 @@ fn cat_id_prefix(filename: &str) -> Option<&str> {
     let stem = &filename[..stem_end];
     let head_end = stem.find(['_', '-', ' ', '.']).unwrap_or(stem.len());
     let head = &stem[..head_end];
-    if head.is_empty() {
-        None
-    } else {
-        Some(head)
-    }
+    if head.is_empty() { None } else { Some(head) }
 }
 
 /// Split into (directory part with its separators intact, filename).
 ///
 /// The directory part keeps its separators; tokenisation turns them into spaces
 /// on its own, so a token never spans two folder names.
-fn split_path(full_path: &str) -> (String, String) {
-    match full_path.rfind(['\\', '/']) {
-        Some(index) => (
-            full_path[..index].to_string(),
-            full_path[index + 1..].to_string(),
-        ),
-        None => (String::new(), full_path.to_string()),
-    }
-}
-
 /// Lowercase, and turn everything that is not a letter or digit into a space.
 fn normalise(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -517,14 +756,77 @@ fn normalise(input: &str) -> String {
 /// most pack folder names in this library, and every one of them that reached the
 /// dictionary would vote for a single category on tens of thousands of files.
 const STOP_WORDS: &[&str] = &[
-    "sfx", "sound", "sounds", "audio", "stereo", "mono", "wav", "mp3", "ogg", "aif", "aiff", "flac",
-    "raw", "snd", "take", "final", "master", "export", "render", "loop", "looped", "loops", "ver",
-    "version", "bit", "sample", "samples", "pack", "packs", "bundle", "edition", "complete",
-    "formats", "format", "custom", "library", "vol", "volume", "bpm", "kit", "kits", "epic",
-    "cinematic", "trailer", "game", "games", "source", "designed", "stock", "media", "sonniss",
-    "gdc", "aaa", "esm", "spg", "vedm", "dpte", "advanced", "mobile", "app", "starter",
-    "essentials", "essential", "ultimate", "modern", "pro", "professional", "premium", "collection",
-    "series", "part",
+    "sfx",
+    "sound",
+    "sounds",
+    "audio",
+    "stereo",
+    "mono",
+    "wav",
+    "mp3",
+    "ogg",
+    "aif",
+    "aiff",
+    "flac",
+    "raw",
+    "snd",
+    "take",
+    "final",
+    "master",
+    "export",
+    "render",
+    "loop",
+    "looped",
+    "loops",
+    "ver",
+    "version",
+    "bit",
+    "sample",
+    "samples",
+    "pack",
+    "packs",
+    "bundle",
+    "edition",
+    "complete",
+    "formats",
+    "format",
+    "custom",
+    "library",
+    "vol",
+    "volume",
+    "bpm",
+    "kit",
+    "kits",
+    "epic",
+    "cinematic",
+    "trailer",
+    "game",
+    "games",
+    "source",
+    "designed",
+    "stock",
+    "media",
+    "sonniss",
+    "gdc",
+    "aaa",
+    "esm",
+    "spg",
+    "vedm",
+    "dpte",
+    "advanced",
+    "mobile",
+    "app",
+    "starter",
+    "essentials",
+    "essential",
+    "ultimate",
+    "modern",
+    "pro",
+    "professional",
+    "premium",
+    "collection",
+    "series",
+    "part",
 ];
 
 /// Tokens that are a pack's own name and, being the first word of nearly every
@@ -547,6 +849,7 @@ const MIN_TOKEN_LEN: usize = 2;
 /// Two characters instead of the usual three is deliberate: `ui` is among the
 /// most common index terms in this library's game-audio packs, and a
 /// three-letter floor silently discarded it.
+#[cfg(test)]
 fn tokenize(input: &str) -> Vec<String> {
     input
         .to_lowercase()
@@ -619,6 +922,49 @@ mod tests {
                 "{word} must not reach the dictionary"
             );
         }
+    }
+
+    #[test]
+    fn an_exact_keyword_beats_a_stem_variant_in_the_same_token() {
+        let root = Target {
+            category: "Foley",
+            subcategory: None,
+        };
+        let exact = Target {
+            category: "Weapons",
+            subcategory: None,
+        };
+        let curated = HashMap::from([("dog", root), ("dogs", exact)]);
+        let ucs = HashMap::new();
+        let (matcher, patterns) = build_pattern_matcher(&curated, &[], &ucs, &[]);
+        let (_, tokens, _) = tokenize_path_spans("dogs.wav");
+        let matches = find_pattern_matches("dogs wav", &tokens, &matcher, &patterns);
+        let target = &patterns[matches.curated[0].expect("exact match")].target;
+        assert_eq!(target.category, "Weapons");
+    }
+
+    #[test]
+    fn phrase_patterns_can_overlap_in_the_single_automaton_scan() {
+        let target = Target {
+            category: "Foley",
+            subcategory: None,
+        };
+        let phrases = vec![
+            Phrase {
+                phrase: "ha ha",
+                target: target.clone(),
+            },
+            Phrase {
+                phrase: "ha ha ha",
+                target,
+            },
+        ];
+        let empty = HashMap::new();
+        let (matcher, patterns) = build_pattern_matcher(&empty, &phrases, &empty, &[]);
+        let (haystack, tokens, _) = tokenize_path_spans("ha-ha-ha.wav");
+        let found = find_pattern_matches(&haystack, &tokens, &matcher, &patterns);
+        assert!(found.phrases.contains(&(Vocabulary::Curated, 0)));
+        assert!(found.phrases.contains(&(Vocabulary::Curated, 1)));
     }
 
     #[test]
@@ -771,9 +1117,9 @@ mod tests {
         assert_eq!(c.category, "Magic");
         // The UCS table is only reachable when the curated pass scores nothing, so
         // a file the curated dictionary names keeps its answer no matter what.
-        let curated = CATEGORY_DICTIONARY.iter().filter(|d| {
-            d.keywords.contains(&"magic") && d.category != "Magic"
-        });
+        let curated = CATEGORY_DICTIONARY
+            .iter()
+            .filter(|d| d.keywords.contains(&"magic") && d.category != "Magic");
         assert_eq!(curated.count(), 0, "no other category may claim `magic`");
     }
 
@@ -825,7 +1171,10 @@ mod tests {
         // `barbershop` and `hair dryer` are not in the curated dictionary. The UCS
         // table reaches it, which is the whole reason for the fallback pass.
         let c = classify(r"D:\lib\x\Barbershop hair dryer idle off.wav");
-        assert_ne!(c.category, "Uncategorized", "the UCS pass should have decided");
+        assert_ne!(
+            c.category, "Uncategorized",
+            "the UCS pass should have decided"
+        );
         assert!(c.raw_score > 0);
     }
 
@@ -856,10 +1205,8 @@ mod tests {
 
     #[test]
     fn every_cat_id_maps_to_a_real_category() {
-        let known: std::collections::HashSet<&str> = CATEGORY_DICTIONARY
-            .iter()
-            .map(|d| d.category)
-            .collect();
+        let known: std::collections::HashSet<&str> =
+            CATEGORY_DICTIONARY.iter().map(|d| d.category).collect();
         for (cat_id, category, subcategory) in UCS_CAT_IDS {
             assert!(
                 known.contains(category),
