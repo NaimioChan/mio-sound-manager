@@ -5,8 +5,8 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 ## 2026-11-22 · opencode · BPM 提取放宽到名字与路径
 
 - 完成：`crates/mio-index/src/bpm.rs` 从「只认显式 `bpm` 标记」改成四层提取，先命中先赢：① 文件名标记（新增 `BPM_138.4` 一位小数、`before_first` 规则——标记后面的数字是 take 编号，`DubstepRiddim_..._140bpm_23` 是 140 不是 23）② 文件名 Splice 约定 `(90, Em)`（括号内必须 tempo + 调名，`(95, Atonal)` / `(95, C to Fm)` 不算）③ 祖先文件夹标记，就近取，区间段（`83-98 BPM`）跳过 ④ 循环类文件名里的裸数字。裸数字区间 60–200，且时长须整小节（25ms 绝对容差）。文件夹层只在名字自称循环时才用时长否决（一次性采样长度不承载音乐信息）。`db.rs` 的 `row_from_parts` 与 `backfill_bpm` 改为传 `folder` + `duration`，`meta.bpm_rule = "2"` 让旧库重填。
-- 验证：真实库 271,350 行从 21,814 行有 BPM 提到 47,864（17.6%）。回归 21,812 行不变、2 行改进（RIORT 两行 24→138.4 / 29→129.2）、0 丢失。按证据分：显式标记 26,748、文件夹 3,728、裸数字 17,388。裸数字层在已知 tempo 上保留 95.3%、随机数对照只 3.0%（32×）。`cargo test --release` 103 项通过。首次回填 28 万行约 26s，之后 open 约 1s。
-- 遗留：`Ghosthack-Vibez Em600bpm`（标记粘在单词里）、`9_bpm_approx120`（「大约」不是断言）仍为 None，属可接受——不制造自信的错误值。裸数字层含 `break` 词的风险已知（`MFCB_100_Live_Drum_Break_*` 的 100 在区间段内且时长整小节），已按 loop 词纳入。
+- 验证：真实库 271,350 行从 21,814 行有 BPM 提到 47,864（17.6%）。回归 21,812 行不变、2 行改进（RIORT 两行 24→138.4 / 29→129.2）、0 丢失。按证据分：显式标记 26,748、文件夹 3,728、裸数字 17,388。裸数字层在已知 tempo 上保留 95.3%、随机数对照只 3.0%（32×）。`cargo test --release` 103 项通过。首次回填 28 万行约 26s，之后 open 约 1s。release 构建（`tools/build-app.sh`，WASAPI+ASIO）通过，产物 `check-shipped.mjs` 11 项全过；用户库 `Documents\SoundLibrary` 已回填到 `bpm_rule=2`，55,343/282,762 行有值，三层来源各取样确认在库中。
+- 遗留：`Ghosthack-Vibez Em600bpm`（标记粘在单词里）、`9_bpm_approx120`（「大约」不是断言）仍为 None，属可接受——不制造自信的错误值。裸数字层含 `break` 词的风险已知（`MFCB_100_Live_Drum_Break_*` 的 100 在区间段内且时长整小节），已按 loop 词纳入。`check-shipped.mjs` 的默认主题三项断言读的是 localStorage：本机存过 `tokyo-night` 时会失败，那是本机偏好不是构建缺陷（清掉后回落到 `windows-dark` / `#202020` / `#4cc2ff`）。
 
 ## 2026-11-22 · opencode · 搜索筛选与底栏信息调整
 
