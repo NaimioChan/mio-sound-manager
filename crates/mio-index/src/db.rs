@@ -26,8 +26,19 @@ use crate::folders::{FolderNode, build_folder_tree, folder_range, relative_folde
 
 /// Current schema version, stored in `meta`. Bump when a migration is added.
 ///
-/// 2 added `bpm`, read from the file name when the indexer sees the file.
+/// 2 added `bpm`, read from the file's name and folders when the indexer sees the
+/// file. A change to how that value is derived needs a new [`BPM_BACKFILL`], not a
+/// new schema version: the column does not change, only what goes in it.
 pub const SCHEMA_VERSION: i64 = 2;
+
+/// `meta` key recording which version of the tempo rule last touched the `bpm`
+/// column, and the current version.
+///
+/// The value is the rule, not the run: rows the previous rule left NULL stay NULL
+/// through an incremental index (their files have not changed), so a wider rule has
+/// to be told apart from the narrower one that filled the column before it.
+pub const BPM_BACKFILL_KEY: &str = "bpm_rule";
+pub const BPM_BACKFILL: &str = "2";
 
 /// File name of the index inside a library folder.
 ///
@@ -587,10 +598,13 @@ impl IndexDb {
         // filling it can be separated by a build that was interrupted: a database
         // whose column exists but whose values are all NULL still needs the pass,
         // and one that has already been through it must not repeat it on every
-        // open.
-        if self.get_meta("bpm_backfilled")?.as_deref() != Some("1") {
+        // open. The recorded number is the version of the *rule*, not of the pass:
+        // a wider extractor has to revisit the rows a narrower one left NULL, and
+        // an incremental index would never touch them because the files (and their
+        // mtimes) have not changed.
+        if self.get_meta(BPM_BACKFILL_KEY)?.as_deref() != Some(BPM_BACKFILL) {
             self.backfill_bpm()?;
-            self.set_meta("bpm_backfilled", "1")?;
+            self.set_meta(BPM_BACKFILL_KEY, BPM_BACKFILL)?;
         }
 
         // The incremental-reindex lookup is `WHERE path = ?`, already covered by
@@ -614,12 +628,17 @@ impl IndexDb {
         Ok(())
     }
 
-    /// Fill `bpm` for every existing row from its stored file name.
+    /// Fill `bpm` for every existing row from its stored file name, folder and
+    /// duration.
     ///
-    /// Runs once, on the schema upgrade. The FTS triggers are suspended for the
-    /// duration: `bpm` is not one of the searchable columns, so the tokenizer has
-    /// nothing to update, and letting `sounds_au` run per row would pay a
-    /// tokenizer pass 280k times over a column FTS does not read.
+    /// Runs on the schema upgrade and again when [`BPM_BACKFILL`] is newer than what
+    /// the database recorded: the extraction rule is part of the value, so a wider
+    /// rule has to revisit rows the narrower one left NULL.
+    ///
+    /// The FTS triggers are suspended for the duration: `bpm` is not one of the
+    /// searchable columns, so the tokenizer has nothing to update, and letting
+    /// `sounds_au` run per row would pay a tokenizer pass 280k times over a column
+    /// FTS does not read.
     ///
     /// A name the parser cannot read leaves the column NULL, which is the same
     /// state a fresh index would produce — unmarked, not zero.
@@ -631,9 +650,12 @@ impl IndexDb {
         )?;
 
         let tx = self.conn.unchecked_transaction()?;
-        let pairs: Vec<(i64, String)> = {
-            let mut stmt = tx.prepare("SELECT id, filename FROM sounds")?;
-            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows: Vec<(i64, String, String, Option<f64>)> = {
+            let mut stmt =
+                tx.prepare("SELECT id, filename, COALESCE(folder, ''), duration FROM sounds")?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -642,8 +664,8 @@ impl IndexDb {
         };
         {
             let mut stmt = tx.prepare("UPDATE sounds SET bpm = ?1 WHERE id = ?2")?;
-            for (id, filename) in &pairs {
-                match crate::bpm::from_filename(filename) {
+            for (id, filename, folder, duration) in &rows {
+                match crate::bpm::tempo(filename, folder, *duration) {
                     Some(bpm) => {
                         stmt.execute(params![bpm, id])?;
                     }
@@ -1521,12 +1543,14 @@ pub fn row_from_parts(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    // Read before `filename` is moved into the row. From the name only: a WAV
+    let folder = relative_folder(&root_str, &path_str);
+    // Read before `filename` is moved into the row. From the names only: a WAV
     // header carries no tempo, and deriving it from the waveform would mean
-    // decoding every file during the index pass.
-    let bpm = crate::bpm::from_filename(&filename);
+    // decoding every file during the index pass. The duration is passed as
+    // corroboration for a bare number in a loop name, never as a source.
+    let bpm = crate::bpm::tempo(&filename, &folder, meta.duration_s);
     SoundRow {
-        folder: relative_folder(&root_str, &path_str),
+        folder,
         path: path_str,
         filename,
         duration_s: meta.duration_s,
@@ -1815,6 +1839,70 @@ mod tests {
             let hits = db.search(&params).unwrap();
             assert_eq!(hits[1].duration_s, None, "nulls must sort last ({dir:?})");
         }
+    }
+
+    #[test]
+    fn a_wider_tempo_rule_refills_rows_the_older_rule_left_empty() {
+        // A library that went through the marker-only rule records `bpm_rule = 1`.
+        // Its bare-number rows are NULL, and an incremental pass will never revisit
+        // them because the files have not changed, so opening the database has to
+        // run the wider rule over the names it already has.
+        let root = std::env::temp_dir().join(format!(
+            "mio-bpm-rule-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        {
+            let mut db = IndexDb::open(&root).unwrap();
+            let mut loop_row = row("C:/lib/Loops/Vocal Stack Loop 128.wav", "Vocals");
+            loop_row.filename = "Vocal Stack Loop 128.wav".into();
+            loop_row.folder = "Loops".into();
+            loop_row.duration_s = Some(3.75); // exactly 2 bars at 128
+            let mut indexed = row("C:/lib/OneShots/Snare_128.wav", "Drums");
+            indexed.filename = "Snare_128.wav".into();
+            indexed.folder = "OneShots".into();
+            indexed.duration_s = Some(3.75);
+            db.upsert_batch(&[loop_row, indexed]).unwrap();
+            // Stand in for the older build: the column exists, the values this rule
+            // would fill were never computed, and the recorded rule is the narrow one.
+            db.conn
+                .execute_batch("UPDATE sounds SET bpm = NULL")
+                .unwrap();
+            db.set_meta(BPM_BACKFILL_KEY, "1").unwrap();
+        }
+
+        let db = IndexDb::open(&root).expect("open re-runs the wider rule");
+        let looped = db
+            .get_by_path("C:/lib/Loops/Vocal Stack Loop 128.wav")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            looped.bpm,
+            Some(128.0),
+            "a loop name with a bare number is filled on upgrade"
+        );
+        let one_shot = db
+            .get_by_path("C:/lib/OneShots/Snare_128.wav")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            one_shot.bpm, None,
+            "a one-shot name keeps its number out of the tempo column"
+        );
+
+        // A second open must not redo the pass.
+        drop(db);
+        let again = IndexDb::open(&root).unwrap();
+        assert_eq!(
+            again.get_meta(BPM_BACKFILL_KEY).unwrap().as_deref(),
+            Some(BPM_BACKFILL)
+        );
+
+        drop(again);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

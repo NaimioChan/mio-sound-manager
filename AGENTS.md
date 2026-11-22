@@ -109,7 +109,7 @@ The seven window-driving `check-*.mjs` assert on English copy and pin `mio:local
 | 可复现的验证程序 | `probes/`（用法见 `probes/README.md`） |
 | 外壳的 CDP 驱动与检查脚本 | `tools/` |
 | 发版（安装包、产物验收） | `tools/README.md`「发版」一节 |
-| BPM 解析（只从文件名取，不从音频推断） | `crates/mio-index/src/bpm.rs` |
+| BPM 解析 | `crates/mio-index/src/bpm.rs` |
 | 分类词表（改这里，再跑生成器） | `tools/taxonomy.py` |
 | 分类词典生成器（勿手改 `dictionary.rs` / `ucs.rs`） | `tools/gen-category-dict.py` |
 | UCS 兜底词表：映射、导入、证据、报告 | `tools/ucs_mapping.py`、`tools/import-ucs.py`、`tools/ucs-evidence.py`、`tools/ucs-report.py` |
