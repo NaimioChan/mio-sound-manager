@@ -33,7 +33,7 @@ export const ja: Record<MessageKey, string> = {
   'topbar.redoLabel': 'やり直す',
   'topbar.addLibrary': 'ライブラリを追加 (Ctrl+O)',
 
-  'search.placeholder': 'サンプルを検索…',
+  'search.placeholder': '語句を入力して Enter で検索…',
   'search.matches': '{count} 件',
   'search.matchesOne': '1 件',
   'search.addLibrary': 'ライブラリを追加',
@@ -48,7 +48,6 @@ export const ja: Record<MessageKey, string> = {
   'status.noDevice': 'オーディオデバイスを利用できません',
   'status.enginePeriod': 'エンジン周期 {ms} ms',
   'status.selected': '{count} 件選択',
-  'status.waveform': '波形 {ms} ms',
 
   'menu.play': '再生',
   'menu.addFavorite': 'お気に入りに追加',

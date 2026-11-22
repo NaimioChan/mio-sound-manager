@@ -115,6 +115,19 @@ button {
   min-width: 0;
 }
 
+.topbar .match-count {
+  white-space: nowrap;
+}
+
+.slim-button {
+  font-size: var(--mio-ms--2);
+  font-weight: 400;
+}
+
+.topbar .slim-button {
+  flex: none;
+}
+
 .brand {
   display: flex;
   align-items: baseline;
@@ -215,18 +228,24 @@ button {
    the list, so it belongs with the list. */
 .main-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  height: 48px;
-  padding: 0 12px;
+  min-height: 48px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--theme-color-3);
   background: var(--theme-color-1);
   min-width: 0;
 }
 
 .main-head .search {
-  width: 260px;
-  flex: none;
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.main-head .search ix-input {
+  display: block;
+  width: 100%;
 }
 
 /* Filter chips are iX chips, so the only thing here is the width cap. */
@@ -287,8 +306,8 @@ button {
   padding: 0 4px;
   border: 1px solid var(--theme-color-3);
   color: var(--theme-color-soft-text);
-  font-size: var(--mio-ms--1);
-  font-weight: 700;
+  font-size: var(--mio-ms--2);
+  font-weight: 400;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;

@@ -1,4 +1,5 @@
 import { Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
+import { getVersion } from '@tauri-apps/api/app'
 import {
   api,
   startDrag,
@@ -109,6 +110,12 @@ const GAIN_KEY = 'mio:gain'
  */
 const UNMUTE_KEY = 'mio:unmute-gain'
 
+const formatSampleRate = (rate: number | null): string => {
+  if (rate === null) return '—'
+  const decimals = rate % 1000 === 0 ? 0 : rate % 100 === 0 ? 1 : 2
+  return `${(rate / 1000).toFixed(decimals)} kHz`
+}
+
 /**
  * A stored gain, or `fallback` when nothing usable is stored.
  *
@@ -155,7 +162,8 @@ export function App() {
   const [favorites, setFavorites] = createSignal(0)
   const [total, setTotal] = createSignal(0)
 
-  const [query, setQuery] = createSignal('')
+  const [searchDraft, setSearchDraft] = createSignal('')
+  const [queryTerms, setQueryTerms] = createSignal<string[]>([])
   /**
    * The rail's lit rows, as sets rather than one pair.
    *
@@ -219,7 +227,7 @@ export function App() {
   })
 
   const [notice, setNotice] = createSignal<string | null>(null)
-  const [waveMs, setWaveMs] = createSignal<number | null>(null)
+  const [appVersion, setAppVersion] = createSignal('')
 
   /** A blocking index pass is running; the window is locked behind the overlay. */
   const [indexing, setIndexing] = createSignal<{ label: string; progress: IndexProgress | null } | null>(
@@ -276,7 +284,7 @@ export function App() {
    * Length click fail.
    */
   const request = createMemo(() => ({
-    query: query(),
+    query: queryTerms().join(' '),
     categories: categories().length > 0 ? categories() : undefined,
     subcategories:
       subcategories().length > 0 ? subcategories().map((entry) => entry.sub) : undefined,
@@ -313,16 +321,23 @@ export function App() {
   const fetchWindow = (offset: number, limit: number) =>
     api.search({ ...request(), offset, limit })
 
-  // Coalesce keystrokes at ~80ms. The index answers a search in ~2ms, so the only
-  // thing an unthrottled call buys is a table that flickers through intermediate
-  // result sets while a word is being typed.
-  let searchTimer = 0
-  const scheduleSearch = () => {
-    clearTimeout(searchTimer)
-    // Raised here, not only inside `runSearch`, so the debounce window is not a
-    // gap where the table looks settled while a query is already queued.
-    setQuerying(true)
-    searchTimer = window.setTimeout(() => void runSearch(), 80)
+  const commitSearchTerm = () => {
+    const term = searchDraft().trim()
+    setSearchDraft('')
+    if (!term || queryTerms().some((existing) => existing.toLocaleLowerCase() === term.toLocaleLowerCase())) return
+    setQueryTerms([...queryTerms(), term])
+    void runSearch()
+  }
+
+  const removeSearchTerm = (term: string) => {
+    setQueryTerms(queryTerms().filter((existing) => existing !== term))
+    void runSearch()
+  }
+
+  const clearSearchTerms = () => {
+    if (queryTerms().length === 0) return
+    setQueryTerms([])
+    void runSearch()
   }
 
   const loadTree = async () => {
@@ -376,7 +391,6 @@ export function App() {
 
   const play = async (row: SoundRow, startAt?: number) => {
     setActive(row)
-    setWaveMs(null)
     // A selection belongs to the sound it was drawn on. Keeping it across a
     // different sound would either export the wrong region or loop a part of a
     // file the user never looked at.
@@ -1140,6 +1154,7 @@ export function App() {
     // Push the remembered level into the engine: the slider is renderer state,
     // and the engine starts at unity.
     void api.setGain(gain()).catch(() => {})
+    void getVersion().then(setAppVersion).catch(() => {})
     // Mirror the engine's loop state at startup: the switch is engine state, so
     // the renderer has to read it rather than assume it starts off.
     void api
@@ -1198,6 +1213,24 @@ export function App() {
         </div>
 
         <div class="spacer" />
+
+        <Show when={matching() > 0}>
+          <span class="dim small match-count" id="match-count">
+            {matching() === 1
+              ? t('search.matchesOne')
+              : t('search.matches', { count: matching().toLocaleString() })}
+          </span>
+        </Show>
+        <ix-button
+          id="add-library"
+          class="slim-button"
+          variant="secondary"
+          icon={ICON.folderOpen}
+          onClick={() => void addLibrary()}
+          title={t('topbar.addLibrary')}
+        >
+          {t('search.addLibrary')}
+        </ix-button>
 
         <Show when={history().undo}>
           <ix-icon-button
@@ -1277,48 +1310,46 @@ export function App() {
               <ix-input
                 id="search-input"
                 placeholder={t('search.placeholder')}
-                value={query()}
-                on:valueChange={(e: CustomEvent<string>) => {
-                  setQuery(e.detail)
-                  scheduleSearch()
-                }}
+                value={searchDraft()}
+                on:valueChange={(e: CustomEvent<string>) => setSearchDraft(e.detail)}
                 onKeyDown={(e: KeyboardEvent) => {
-                  if (e.key === 'Escape') {
-                    setQuery('')
-                    void runSearch()
+                  if (e.isComposing || e.keyCode === 229) return
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    commitSearchTerm()
+                  } else if (e.key === 'Escape') {
+                    if (searchDraft()) setSearchDraft('')
+                    else clearSearchTerms()
                   }
                 }}
               />
             </div>
-            {filterChips().map((chip) => (
-              <ix-chip
-                class="filter-chip"
-                variant="primary"
-                outline
-                closable
-                onClick={chip.clear}
-                on:closeChip={chip.clear}
-              >
-                {chip.label}
-              </ix-chip>
-            ))}
-            <div class="spacer" />
-            <Show when={matching() > 0}>
-              <span class="dim small">
-                {matching() === 1
-                  ? t('search.matchesOne')
-                  : t('search.matches', { count: matching().toLocaleString() })}
-              </span>
-            </Show>
-            <ix-button
-              variant="secondary"
-              icon={ICON.folderOpen}
-              onClick={() => void addLibrary()}
-              title={t('topbar.addLibrary')}
+          {queryTerms().map((term) => (
+            <ix-chip
+              class="filter-chip query-chip"
+              data-term={term}
+              variant="primary"
+              outline
+              closable
+              onClick={() => removeSearchTerm(term)}
+              on:closeChip={() => removeSearchTerm(term)}
             >
-              {t('search.addLibrary')}
-            </ix-button>
-          </div>
+              {term}
+            </ix-chip>
+          ))}
+          {filterChips().map((chip) => (
+            <ix-chip
+              class="filter-chip"
+              variant="primary"
+              outline
+              closable
+              onClick={chip.clear}
+              on:closeChip={chip.clear}
+            >
+              {chip.label}
+            </ix-chip>
+          ))}
+        </div>
 
           <Show
             when={libraries().length > 0}
@@ -1382,7 +1413,6 @@ export function App() {
             }}
             onRegion={changeRegion}
             onDragOut={(atSeconds) => void dragRegionOut(atSeconds)}
-            onDecoded={setWaveMs}
           />
         </main>
       </div>
@@ -1396,7 +1426,7 @@ export function App() {
           <span class="backend-tag">{status()?.backend}</span>
           <span>{status()?.deviceName}</span>
           <span class="dim">
-            {status()?.sampleRate} Hz · {status()?.channels} ch · {status()?.sampleFormat}
+            {formatSampleRate(status()?.sampleRate ?? null)} · {status()?.channels} ch · {status()?.sampleFormat}
           </span>
           <span class="dim">
             {t('status.enginePeriod', { ms: status()?.enginePeriodMs?.toFixed(2) ?? '—' })}
@@ -1409,8 +1439,8 @@ export function App() {
           <span class="dim">{t('status.selected', { count: selectionCount().toLocaleString() })}</span>
         </Show>
 
-        <Show when={waveMs()}>
-          {(ms) => <span class="dim">{t('status.waveform', { ms: ms().toFixed(1) })}</span>}
+        <Show when={appVersion()}>
+          {(version) => <span class="dim">v{version()}</span>}
         </Show>
       </footer>
 

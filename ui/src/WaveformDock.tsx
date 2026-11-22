@@ -43,8 +43,6 @@ interface Props {
    * knows the pointer position.
    */
   onDragOut: (atSeconds: number) => void
-  /** Decode cost of the waveform, reported to the status bar only. */
-  onDecoded: (ms: number) => void
 }
 
 const MIN_H = 64
@@ -149,7 +147,6 @@ export function WaveformDock(props: Props) {
         if (cancelled) return
         setPeaks(w.peaks)
         setLanes(w.lanes)
-        props.onDecoded(w.decodeMs)
       })
       .catch((e) => {
         if (!cancelled) setLoadError(String(e))
@@ -637,6 +634,7 @@ export function WaveformDock(props: Props) {
         */}
         <ix-toggle-button
           id="auto-play"
+          class="slim-button"
           variant="secondary"
           pressed={props.autoPlay}
           title={`${props.autoPlay ? t('dock.autoPlayOn') : t('dock.autoPlayOff')} — ${t('dock.autoPlayHint')}`}

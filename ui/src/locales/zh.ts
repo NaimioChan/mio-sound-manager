@@ -30,7 +30,7 @@ export const zh: Record<MessageKey, string> = {
   'topbar.redoLabel': '重做',
   'topbar.addLibrary': '添加音色库（Ctrl+O）',
 
-  'search.placeholder': '搜索采样…',
+  'search.placeholder': '输入词条后按回车筛选…',
   'search.matches': '{count} 个匹配',
   'search.matchesOne': '1 个匹配',
   'search.addLibrary': '添加库',
@@ -45,7 +45,6 @@ export const zh: Record<MessageKey, string> = {
   'status.noDevice': '音频设备不可用',
   'status.enginePeriod': '引擎周期 {ms} ms',
   'status.selected': '已选 {count} 项',
-  'status.waveform': '波形 {ms} ms',
 
   'menu.play': '播放',
   'menu.addFavorite': '加入收藏',

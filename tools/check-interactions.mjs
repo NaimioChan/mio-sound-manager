@@ -33,14 +33,17 @@ const check = (ok, label, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`)
 }
 
-// --- search through the iX input, which emits `valueChange` from inside a shadow
-//     root; typing into the host does not work, so the event is dispatched the way
-//     the component does it.
+// --- Search terms commit on Enter. iX emits `valueChange` from its shadow root.
 const search = async (text) => {
   await page.evaluate((text) => {
     const input = document.querySelector('#search-input')
+    if (!text) {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }))
+      return
+    }
     input.value = text
     input.dispatchEvent(new CustomEvent('valueChange', { detail: text, bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }))
   }, text)
   await page.waitForFunction(
     () => document.querySelector('.table')?.dataset.querying === 'false',
@@ -59,7 +62,7 @@ const first = await page.locator('.row[data-path]').first().getAttribute('data-p
 check(!!first, 'rows carry their path', first?.slice(-40))
 
 const matchingCount = await page.evaluate(() => {
-  const text = document.querySelector('.main-head .dim.small')?.textContent ?? ''
+  const text = document.querySelector('#match-count')?.textContent ?? ''
   return Number(text.replace(/\D/g, ''))
 })
 const spacerHeight = await page.locator('.table-body > div').evaluate((el) => parseFloat(el.style.height))
@@ -117,19 +120,31 @@ check(
 )
 check(!!sortBefore, 'the default sort shows an arrow', sortBefore)
 
-// --- search filters the list, and clearing restores it
+// --- Enter adds a removable search condition, and Escape clears all terms
 await search('kick')
 const kickCount = await rowCount()
 check(kickCount > 0, 'searching "kick" finds rows', `${kickCount}`)
-const matchLabel = (await page.locator('.main-head .dim.small').textContent()) ?? ''
+check((await page.locator('.query-chip').count()) === 1, 'Enter adds a search-term chip')
+const matchLabel = (await page.locator('#match-count').textContent()) ?? ''
 check(/matches/.test(matchLabel), 'the header reports the full match count', matchLabel.trim())
 await search('zzzznotasoundzzz')
 check((await rowCount()) === 0, 'a query with no hits empties the list')
 check((await page.locator('.table-empty').count()) === 1, 'an empty result shows the empty state')
+await page.locator('.query-chip').filter({ hasText: 'zzzznotasoundzzz' }).click()
+await page.waitForFunction(
+  () => {
+    const table = document.querySelector('.table')
+    return table?.dataset.querying === 'false' && table.dataset.epoch === table.dataset.segmentsEpoch
+  },
+  undefined,
+  { timeout: 20_000 }
+)
+await page.waitForSelector('.row[data-path]', { timeout: 10_000 })
+check((await rowCount()) > 0, 'removing one term preserves the other condition')
 await search('')
 await page.waitForTimeout(400)
 check((await rowCount()) > 0, 'clearing the query restores visible rows')
-const restoredMatchLabel = (await page.locator('.main-head .dim.small').textContent()) ?? ''
+const restoredMatchLabel = (await page.locator('#match-count').textContent()) ?? ''
 check(/282,762/.test(restoredMatchLabel), 'clearing the query restores the full result count', restoredMatchLabel)
 
 // Scroll across sparse windows and verify each target window is populated while

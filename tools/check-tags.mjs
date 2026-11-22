@@ -438,6 +438,29 @@ const settingsGone = () =>
 await openSettings()
 check(await settingsVisible(), 'settings opens the first time')
 check(subtitles.modalSub.every((value) => value === null), 'the settings header has no subheading')
+const slimControls = await page.evaluate(() => {
+  const modal = [...document.querySelectorAll('ix-modal')].find((el) => el.querySelector('.theme-card'))
+  const buttons = [...(modal?.querySelectorAll('ix-button.slim-button') ?? [])]
+  const sizes = buttons.map((button) => Number.parseFloat(getComputedStyle(button).fontSize))
+  const autoPlaySize = Number.parseFloat(getComputedStyle(document.querySelector('#auto-play')).fontSize)
+  return {
+    modalCount: buttons.length,
+    modalSizes: sizes,
+    autoPlaySize,
+    autoPlayWeight: getComputedStyle(document.querySelector('#auto-play')).fontWeight
+  }
+})
+check(slimControls.modalCount >= 2, 'Reveal and Open library use the slim button style', JSON.stringify(slimControls.modalSizes))
+check(
+  slimControls.modalSizes.every((size) => size < 12),
+  'settings action text uses the smaller font size',
+  JSON.stringify(slimControls.modalSizes)
+)
+check(
+  slimControls.autoPlaySize < 12 && slimControls.autoPlayWeight === '400',
+  'AUTO PLAY uses non-bold slim text',
+  `${slimControls.autoPlaySize}px / ${slimControls.autoPlayWeight}`
+)
 
 // ------------------------------------------------- 7. no explanatory small print
 // The rule is "no subtitles", and a settings row's helper line is one: a

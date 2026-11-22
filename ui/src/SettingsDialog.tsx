@@ -272,6 +272,7 @@ export function SettingsDialog(props: Props) {
                   <div class="setting">
                     <span class="setting-label">{t('settings.revealIndex')}</span>
                     <ix-button
+                      class="slim-button"
                       variant="secondary"
                       onClick={() => void api.revealInFolder(library().root)}
                     >
@@ -284,7 +285,7 @@ export function SettingsDialog(props: Props) {
 
             <div class="setting">
               <span class="setting-label">{t('settings.addLibrary')}</span>
-              <ix-button variant="secondary" onClick={props.onAddLibrary}>
+              <ix-button class="slim-button" variant="secondary" onClick={props.onAddLibrary}>
                 {t('settings.openLibrary')}
               </ix-button>
             </div>

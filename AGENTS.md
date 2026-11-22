@@ -45,6 +45,7 @@ node tools/check-region.mjs         # 行可拖、框选、循环跟随框选、
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/check-tags.mjs           # 分类/文件夹切换按钮的边框、设置弹窗重开、BPM 列与排序、tag 多选、文件夹右键菜单、无副标题
+node tools/check-stress.mjs         # 压力测试：仅在前后端数据结构/算法有破坏性改动时运行
 node tools/check-shipped.mjs [port] # 对着打包产物验版本/ASIO/设备/新控件（解压 zip 后起那个 exe 再跑）
 node tools/shot.mjs [out.png]       # 截图（给人看）
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
@@ -52,7 +53,7 @@ node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 
 They resolve `playwright-core` from `slip-sound/package.json` through `createRequire`, so they run from any directory — that module is not a dependency of this repo. See `docs/app.md`.
 
-The six `check-*.mjs` that drive a window assert on English copy and pin `mio:locale` to `en` before reloading — on a Chinese or Japanese machine they would otherwise fail on a missing locator rather than a broken feature. Column headers and menu items are also addressable by `data-sort-key` / `data-menu-id`, so a selector never depends on translated text. Copy coverage belongs to `check-i18n.mjs`.
+The seven window-driving `check-*.mjs` assert on English copy and pin `mio:locale` to `en` before reloading — on a Chinese or Japanese machine they would otherwise fail on a missing locator rather than a broken feature. Column headers and menu items are also addressable by `data-sort-key` / `data-menu-id`, so a selector never depends on translated text. Copy coverage belongs to `check-i18n.mjs`; run `check-stress.mjs` only for destructive data-structure or algorithm changes.
 
 **`check-region.mjs` 会进入原生 OLE 拖拽循环，跑完 webview 不再响应 IPC**：它必须单独跑，之后要 `kill-app.sh` 再起窗口。详情见 `tools/README.md`。
 

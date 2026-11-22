@@ -62,6 +62,42 @@ const report = await page.evaluate(() => {
     if (!el) problems.push(`missing region: ${name}`)
   }
 
+  const searchInput = document.querySelector('#search-input')
+  const matchCount = document.querySelector('#match-count')
+  const addLibrary = document.querySelector('#add-library')
+  if (!searchInput || !matchCount || !addLibrary) {
+    problems.push('search input, match count, or Add Library control is missing')
+  } else {
+    const searchWidth = searchInput.getBoundingClientRect().width
+    const settings = document.querySelector('#settings-button')?.getBoundingClientRect()
+    const count = matchCount.getBoundingClientRect()
+    const add = addLibrary.getBoundingClientRect()
+    const title = document.querySelector('.brand-name')?.getBoundingClientRect()
+    facts.searchWidth = Math.round(searchWidth)
+    if (searchWidth < 300) problems.push(`search input does not fill the row (${Math.round(searchWidth)}px)`)
+    const center = (rect) => (rect.top + rect.bottom) / 2
+    if (
+      !title ||
+      !settings ||
+      Math.abs(center(count) - center(title)) > 4 ||
+      Math.abs(center(add) - center(settings)) > 4
+    ) {
+      problems.push('match count and Add Library are not aligned with the title/settings row')
+    }
+    const modeStyle = getComputedStyle(document.querySelector('.side-mode'))
+    const buttonStyle = getComputedStyle(addLibrary)
+    if (Number.parseFloat(modeStyle.fontSize) >= 12 || modeStyle.fontWeight === '700') {
+      problems.push(`sidebar mode button is not slim (${modeStyle.fontSize}, ${modeStyle.fontWeight})`)
+    }
+    if (Number.parseFloat(buttonStyle.fontSize) >= 12 || buttonStyle.fontWeight === '700') {
+      problems.push(`Add Library button is not slim (${buttonStyle.fontSize}, ${buttonStyle.fontWeight})`)
+    }
+  }
+
+  const statusText = document.querySelector('.statusbar')?.textContent ?? ''
+  if (!/\d+(?:\.\d+)?\s*kHz/.test(statusText)) problems.push('status bar does not show sample rate in kHz')
+  if (!/v\d+\.\d+\.\d+/.test(statusText)) problems.push('status bar does not show the app version')
+
   // --- the regions tile the window
   facts.regions = Object.entries(regions).map(([name, el]) => {
     const r = el?.getBoundingClientRect()

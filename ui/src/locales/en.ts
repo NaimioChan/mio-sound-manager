@@ -28,7 +28,7 @@ export const en = {
   'topbar.addLibrary': 'Add a library (Ctrl+O)',
 
   // ------------------------------------------------------------------ search
-  'search.placeholder': 'Search samples…',
+  'search.placeholder': 'Type a term and press Enter…',
   'search.matches': '{count} matches',
   'search.matchesOne': '1 match',
   'search.addLibrary': 'Add library',
@@ -45,7 +45,6 @@ export const en = {
   'status.noDevice': 'audio device unavailable',
   'status.enginePeriod': 'engine period {ms} ms',
   'status.selected': '{count} selected',
-  'status.waveform': 'waveform {ms} ms',
 
   // -------------------------------------------------------------- row menu
   'menu.play': 'Play',

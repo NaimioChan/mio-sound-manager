@@ -2,6 +2,12 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-22 · opencode · 搜索筛选与底栏信息调整
+
+- 完成：搜索词改为回车提交的独立筛选 chip，搜索框扩展至主栏，匹配数和 Add Library 移至顶栏；细化 Categories/Folders、Add Library、AUTO PLAY、设置里的 Reveal/Open library；状态栏采样率改为 kHz，右侧显示应用版本；新增按需运行的 `tools/check-stress.mjs`。
+- 验证：`npm run build`、`check-i18n.mjs`、interactions、themes、volume、layout、tags、region 与 stress 均通过；stress 包含 8 词并发提交、错词无结果与恢复、36 次快速跨列表跳转、20 次连续试听；release 构建通过。`check-region.mjs` 后重启应用完成其余检查。
+- 遗留：无。搜索词以空格合并，沿用索引端所有词都需匹配的 FTS 语义。`tools/kill-app.sh` 在当前 shell 缺少 `powershell` 命令，测试实例改由 PowerShell 停止。
+
 ## 2026-11-22 · opencode · 28 万行滚动超 5% 卡死修复
 
 - 根因（三层叠加）: ① `search`/`count_matching` 是同步 Tauri command，跑在主线程上，webview 自己的 IPC 排队其后 → 「不渲染、点不动、但不报未响应」；② `ORDER BY {col} IS NULL, {col} …` 的前缀表达式使任何排序索引都不可用，每次取页对全表物化排序；③ `ORDER BY … , s.filename …` 的重复 filename 项使 SQLite 即使有索引也走 TEMP B-TREE。前 5%（≈ MAX_SEGMENTS 24×500=12000 行）全在缓存所以流畅，一超出每个滚动步都是新段 + 全表排序。
