@@ -163,10 +163,34 @@ export function WaveformDock(props: Props) {
     })
   })
 
-  /** A CSS variable resolved on the document, for the two canvas colours. */
-  const token = (name: string, fallback: string): string => {
-    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-    return value || fallback
+  /**
+   * Theme tokens, cached.
+   *
+   * `getComputedStyle` was called four times per animation frame to resolve the
+   * same handful of variables; the canvas colours only move when the theme
+   * moves, and the theme observer below already knows when that happens. The
+   * cache is invalidated there and filled lazily on first read.
+   */
+  let tokenCache: Record<string, string> | null = null
+  const tokens = (): Record<string, string> => {
+    if (!tokenCache) {
+      const style = getComputedStyle(document.documentElement)
+      const names = [
+        '--mio-wave',
+        '--theme-color-3',
+        '--mio-region-scrim',
+        '--mio-region-fill',
+        '--mio-region-edge',
+        '--mio-playhead'
+      ]
+      const table: Record<string, string> = {}
+      for (const name of names) {
+        const value = style.getPropertyValue(name).trim()
+        if (value) table[name] = value
+      }
+      tokenCache = table
+    }
+    return tokenCache
   }
 
   const drawPeaks = () => {
@@ -177,8 +201,14 @@ export function WaveformDock(props: Props) {
     const h = canvas.clientHeight
     if (w === 0 || h === 0) return
     const dpr = window.devicePixelRatio || 1
-    canvas.width = Math.round(w * dpr)
-    canvas.height = Math.round(h * dpr)
+    // Same rule as the head layer: assigning width/height reallocates the
+    // backing store, so it only happens on a real size change.
+    const pxW = Math.round(w * dpr)
+    const pxH = Math.round(h * dpr)
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width = pxW
+      canvas.height = pxH
+    }
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
@@ -194,10 +224,8 @@ export function WaveformDock(props: Props) {
     // two half-covered columns and the panel reads as alternating light and dark
     // stripes. Snapping each bucket's edges to whole device pixels makes adjacent
     // buckets tile exactly, and one colour stays one colour.
-    const pxW = canvas.width
-    const pxH = canvas.height
-    const wave = token('--mio-wave', '#00eaff')
-    const zero = token('--theme-color-3', '#3c484d')
+    const wave = tokens()['--mio-wave'] ?? '#00eaff'
+    const zero = tokens()['--theme-color-3'] ?? '#3c484d'
     // One lane per channel for mono and stereo; a wider file keeps the merged
     // envelope in a single lane, because a third strip would be too thin to read.
     const stacked = lanes()
@@ -240,17 +268,21 @@ export function WaveformDock(props: Props) {
     const h = canvas.clientHeight
     if (w === 0 || h === 0) return
     const dpr = window.devicePixelRatio || 1
-    canvas.width = Math.round(w * dpr)
-    canvas.height = Math.round(h * dpr)
+    // Assigning width/height resets the backing store: doing it every frame
+    // reallocates the canvas under the playhead 60 times a second. Only a real
+    // size (or scaling) change may reset it.
+    const pxW = Math.round(w * dpr)
+    const pxH = Math.round(h * dpr)
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width = pxW
+      canvas.height = pxH
+    }
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     const duration = props.durationS
     if (duration <= 0) return
-
-    const pxW = canvas.width
-    const pxH = canvas.height
 
     // The selection is marked by taking light *away* from everything else, not by
     // tinting what is inside it. A translucent accent over bright bars is the
@@ -262,14 +294,14 @@ export function WaveformDock(props: Props) {
     if (region) {
       const x0 = Math.round((region[0] / duration) * pxW)
       const x1 = Math.round((region[1] / duration) * pxW)
-      ctx.fillStyle = token('--mio-region-scrim', 'rgba(15,22,25,0.62)')
+      ctx.fillStyle = tokens()['--mio-region-scrim'] ?? 'rgba(15,22,25,0.62)'
       ctx.fillRect(0, 0, x0, pxH)
       ctx.fillRect(x1, 0, pxW - x1, pxH)
 
-      ctx.fillStyle = token('--mio-region-fill', 'rgba(0,189,227,0.10)')
+      ctx.fillStyle = tokens()['--mio-region-fill'] ?? 'rgba(0,189,227,0.10)'
       ctx.fillRect(x0, 0, Math.max(1, x1 - x0), pxH)
 
-      ctx.fillStyle = token('--mio-region-edge', '#00bde3')
+      ctx.fillStyle = tokens()['--mio-region-edge'] ?? '#00bde3'
       const edge = Math.max(2, Math.round(dpr))
       ctx.fillRect(x0, 0, edge, pxH)
       ctx.fillRect(Math.max(0, x1 - edge), 0, edge, pxH)
@@ -278,7 +310,7 @@ export function WaveformDock(props: Props) {
     const fraction = Math.min(1, Math.max(0, props.positionS / duration))
     const x = Math.round(fraction * pxW)
     const headW = Math.max(1, Math.round(dpr))
-    ctx.fillStyle = token('--mio-playhead', '#ffffff')
+    ctx.fillStyle = tokens()['--mio-playhead'] ?? '#ffffff'
     ctx.fillRect(x - Math.floor(headW / 2), 0, headW, pxH)
   }
 
@@ -308,6 +340,8 @@ export function WaveformDock(props: Props) {
    */
   onMount(() => {
     const observer = new MutationObserver(() => {
+      // The theme moved, so the cached canvas colours are stale.
+      tokenCache = null
       drawPeaks()
       drawHead()
     })
@@ -332,6 +366,12 @@ export function WaveformDock(props: Props) {
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    // A gesture interrupted by unmount (a library switch, an index pass) would
+    // otherwise leave the listeners on the window for the life of the page.
+    onCleanup(() => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    })
   }
 
   /** Canvas x → seconds, clamped to the clip. */
@@ -446,6 +486,12 @@ export function WaveformDock(props: Props) {
       }
       window.addEventListener('pointermove', move)
       window.addEventListener('pointerup', up)
+      // Same unmount guard as the resize gesture: the listeners live on the
+      // window, so they would outlive the component that started them.
+      onCleanup(() => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+      })
       return
     }
 
@@ -483,6 +529,10 @@ export function WaveformDock(props: Props) {
 
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    onCleanup(() => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    })
   }
 
   const label = () => {

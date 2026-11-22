@@ -325,8 +325,8 @@ FTS5 配置不变（`unicode61 remove_diacritics 2`，索引 `filename`/`categor
 | 播放 | `play`、`stop`、`pause`、`resume`、`get_playback_position` |
 | 输出与波形 | `set_gain`、`get_gain`、`set_loop`、`get_loop`、`get_waveform`、`export_region` |
 | 库与索引 | `add_library`、`list_libraries`、`remove_library`、`set_active_library`、`reindex_library`、`get_library` |
-| 浏览与搜索 | `search`、`count_matching`、`list_matching_paths`、`list_folders`、`get_sidebar` |
-| 编辑与撤销 | `set_favorite`、`set_category`、`clear_category`、`undo`、`redo`、`get_history` |
+| 浏览与搜索 | `search`、`count_matching`、`list_folders`、`get_sidebar` |
+| 编辑与撤销 | `set_favorite`、`set_category`、`clear_category`、`set_favorite_matching`、`set_category_matching`、`clear_category_matching`、`undo`、`redo`、`get_history` |
 | 系统 | `pick_library_folder`、`reveal_in_folder` |
 
 这张表只说明分组，不重复签名：线上字段一律 camelCase，前端类型手写在 `ui/src/ipc.ts` 与 Rust 侧一一对应，改任何一条要同时改三处（`commands.rs` 的线上类型、`lib.rs` 的 `invoke_handler`、`ipc.ts`）。

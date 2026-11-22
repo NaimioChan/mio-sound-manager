@@ -1,6 +1,6 @@
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { categoryName, channelLabel, t } from './i18n'
-import { startDrag, type SoundRow } from './ipc'
+import { api, startDrag, type SearchRequest, type SoundRow } from './ipc'
 
 /**
  * The sound list.
@@ -136,7 +136,19 @@ export interface RowMenuRequest {
   x: number
   y: number
   targets: SoundRow[]
+  count: number
+  scope: EditScope
 }
+
+export type EditScope =
+  | { kind: 'paths'; paths: string[] }
+  | {
+      kind: 'matching'
+      request: SearchRequest
+      exclude: string[]
+      offset: number
+      limit: number
+    }
 
 /**
  * One cell of a row, chosen by column key.
@@ -146,52 +158,44 @@ export interface RowMenuRequest {
  * list, or a drag would leave the labels sitting over the wrong values — and that
  * is a class of bug no CSS can catch.
  */
-function Cell(props: {
-  col: SortKey
-  row: SoundRow
-  onToggleFavorite: (row: SoundRow) => void
-}) {
-  switch (props.col) {
+function cellNode(col: SortKey, row: SoundRow) {
+  switch (col) {
     case 'favorite':
       // Always a glyph, never an empty span: an empty cell has zero width, so the
       // star could not be clicked until the sound was already a favorite.
       return (
         <span
-          class={props.row.favorite ? 'cell favorite on' : 'cell favorite'}
-          onClick={(e) => {
-            e.stopPropagation()
-            props.onToggleFavorite(props.row)
-          }}
-          title={props.row.favorite ? t('row.removeFavorite') : t('row.addFavorite')}
+          class={row.favorite ? 'cell favorite on' : 'cell favorite'}
+          title={row.favorite ? t('row.removeFavorite') : t('row.addFavorite')}
         >
-          {props.row.favorite ? '★' : '☆'}
+          {row.favorite ? '★' : '☆'}
         </span>
       )
     case 'filename':
       return (
-        <span class="cell name" title={props.row.path}>
-          {props.row.filename}
+        <span class="cell name" title={row.path}>
+          {row.filename}
         </span>
       )
     case 'category':
       return (
-        <span class="cell dim" title={props.row.matchedTerms.join(', ')}>
-          {categoryName(props.row.category)}
-          <Show when={props.row.subcategory}>
-            <span class="sub"> / {props.row.subcategory}</span>
+        <span class="cell dim" title={row.matchedTerms.join(', ')}>
+          {categoryName(row.category)}
+          <Show when={row.subcategory}>
+            <span class="sub"> / {row.subcategory}</span>
           </Show>
         </span>
       )
     case 'durationS':
-      return <span class="cell numeric">{props.row.durationLabel}</span>
+      return <span class="cell numeric">{row.durationLabel}</span>
     case 'bpm':
-      return <span class="cell numeric dim">{formatBpm(props.row.bpm)}</span>
+      return <span class="cell numeric dim">{formatBpm(row.bpm)}</span>
     case 'channels':
-      return <span class="cell dim">{channelLabel(props.row.channels)}</span>
+      return <span class="cell dim">{channelLabel(row.channels)}</span>
     case 'sampleRate':
-      return <span class="cell numeric dim">{formatRate(props.row.sampleRate)}</span>
+      return <span class="cell numeric dim">{formatRate(row.sampleRate)}</span>
     case 'filesize':
-      return <span class="cell numeric dim">{formatBytes(props.row.filesize)}</span>
+      return <span class="cell numeric dim">{formatBytes(row.filesize)}</span>
     default:
       // A key with no cell is a column the user added to `COLUMNS` and forgot to
       // draw; the header already shows the label, so the row shows a dash rather
@@ -201,19 +205,18 @@ function Cell(props: {
 }
 
 interface Props {
-  rows: SoundRow[]
-  /** Paths currently selected. Owned by the app so the dock and menu can read it. */
-  selection: string[]
+  epoch: number
+  selectionReset: number
+  request: SearchRequest
+  fetchWindow: (offset: number, limit: number) => Promise<SoundRow[]>
   /** The row the keyboard moves from, and the one the dock shows. */
   active: SoundRow | null
   sortKey: SortKey
   sortAsc: boolean
   /** Hide the category column; the value is still filterable from the rail. */
   showCategory: boolean
-  /** Total rows the filter matches, for the "showing N of M" footer. */
+  /** Total rows matching the filter; also determines the full scroll height. */
   matching: number
-  /** Whether another page can still be fetched. */
-  hasMore: boolean
   /**
    * A first-page query is in flight: the rows on screen are the previous result
    * and are about to be replaced. Exposed to the DOM as `data-querying` so the
@@ -222,16 +225,22 @@ interface Props {
    */
   querying: boolean
   onSort: (key: SortKey) => void
-  onSelectionChange: (paths: string[], active: SoundRow | null) => void
+  onSelectionChange: (count: number, active: SoundRow | null) => void
   /** Clicking a row plays it when auto-play is on. */
   onActivate: (row: SoundRow) => void
   onRowMenu: (request: RowMenuRequest) => void
   onToggleFavorite: (row: SoundRow) => void
-  /** Ctrl+A: select every row the current filter matches, not just the page. */
-  onSelectAll: () => void
-  /** Infinite scroll: called when the viewport nears the end of what is loaded. */
-  onLoadMore: () => void
+  onSelectAll: (count: number) => void
 }
+
+const SEGMENT_ROWS = 500
+const MAX_SEGMENTS = 24
+const MAX_IN_FLIGHT = 8
+
+type Selection =
+  | { mode: 'paths'; paths: Set<string> }
+  | { mode: 'all'; excluded: Set<string> }
+  | { mode: 'range'; lo: number; hi: number; excluded: Set<string> }
 
 export function SoundTable(props: Props) {
   const [scrollTop, setScrollTop] = createSignal(0)
@@ -244,6 +253,14 @@ export function SoundTable(props: Props) {
   const [scrollbarW, setScrollbarW] = createSignal(0)
   /** Anchor for Shift+click. A path, so a re-query cannot move it to another row. */
   const [anchor, setAnchor] = createSignal<string | null>(null)
+  const [segments, setSegments] = createSignal<Map<number, SoundRow[]>>(new Map())
+  const [segmentsEpoch, setSegmentsEpoch] = createSignal(props.epoch)
+  const segmentUse = new Map<number, number>()
+  let useClock = 0
+  const [selection, setSelection] = createSignal<Selection>({ mode: 'paths', paths: new Set() })
+  const [pendingIndex, setPendingIndex] = createSignal<number | null>(null)
+  const [cursorIndex, setCursorIndex] = createSignal<number | null>(null)
+  const [anchorIndex, setAnchorIndex] = createSignal<number | null>(null)
   /** The user's column order, as keys. Persisted; see `ORDER_KEY`. */
   const [order, setOrder] = createSignal<SortKey[]>(loadColumnOrder())
   /** The column being dragged, and the one it would land on. */
@@ -312,36 +329,250 @@ export function SoundTable(props: Props) {
 
   let body: HTMLDivElement | undefined
 
-  const sorted = createMemo(() => {
-    const key = props.sortKey
-    const dir = props.sortAsc ? 1 : -1
-    const copy = props.rows.slice()
-    copy.sort((a, b) => {
-      const av = a[key]
-      const bv = b[key]
-      if (av === bv) return a.filename.localeCompare(b.filename) * dir
-      // NULLs last in both directions: an unprobed file must not jump to the top
-      // just because the user sorted descending.
-      if (av === null || av === undefined) return 1
-      if (bv === null || bv === undefined) return -1
-      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
-      return String(av).localeCompare(String(bv)) * dir
-    })
-    return copy
-  })
+  const rowAt = (index: number): SoundRow | undefined => {
+    if (index < 0 || index >= props.matching) return undefined
+    const segment = segments().get(Math.floor(index / SEGMENT_ROWS))
+    return segment?.[index % SEGMENT_ROWS]
+  }
 
-  const selectedSet = createMemo(() => new Set(props.selection))
-
-  const range = createMemo(() => {
-    const total = sorted().length
-    const first = Math.max(0, Math.floor(scrollTop() / ROW_H) - OVERSCAN)
-    const visible = Math.ceil(viewportH() / ROW_H) + OVERSCAN * 2
-    const last = Math.min(total, first + visible)
-    return { first, last }
+  const pathIndex = createMemo(() => {
+    const index = new Map<string, number>()
+    for (const [segment, rows] of segments()) {
+      rows.forEach((row, offset) => index.set(row.path, segment * SEGMENT_ROWS + offset))
+    }
+    return index
   })
 
   const indexOf = (path: string | null): number =>
-    path === null ? -1 : sorted().findIndex((r) => r.path === path)
+    path === null ? -1 : pathIndex().get(path) ?? -1
+
+  const activateAt = (row: SoundRow, index: number) => {
+    const neighbors = [-2, -1, 1, 2]
+      .map((offset) => rowAt(index + offset)?.path)
+      .filter((path): path is string => path !== undefined)
+    if (neighbors.length) void api.prefetchNeighbors(neighbors)
+    props.onActivate(row)
+  }
+
+  const selectionCount = () => {
+    const current = selection()
+    if (current.mode === 'paths') return current.paths.size
+    if (current.mode === 'all') return Math.max(0, props.matching - current.excluded.size)
+    return Math.max(0, current.hi - current.lo + 1 - current.excluded.size)
+  }
+
+  const isSelected = (row: SoundRow, index: number): boolean => {
+    const current = selection()
+    if (current.mode === 'paths') return current.paths.has(row.path)
+    if (current.mode === 'all') return !current.excluded.has(row.path)
+    return index >= current.lo && index <= current.hi && !current.excluded.has(row.path)
+  }
+
+  const loadedRows = createMemo(() => {
+    const out: { row: SoundRow; index: number }[] = []
+    for (const [segment, rows] of segments()) {
+      rows.forEach((row, offset) => out.push({ row, index: segment * SEGMENT_ROWS + offset }))
+    }
+    return out
+  })
+
+  const fetchSegment = (segment: number, requestedEpoch: number): void => {
+    if (segment < 0 || segment * SEGMENT_ROWS >= props.matching) return
+    if (segmentsEpoch() === requestedEpoch && segments().has(segment)) return
+    const key = `${requestedEpoch}:${segment}`
+    if (inFlight.has(key) || backlog.has(key)) return
+    // The in-flight cap is not a "drop on the floor" gate: a burst of programmatic
+    // jumps (the scroll-heap check) can occupy every slot, and a skipped segment
+    // would never be retried — the viewport would sit on skeletons until the user
+    // scrolled again. Park it in `backlog` instead; when a slot frees up the
+    // backlog drains oldest-first.
+    if (inFlight.size >= MAX_IN_FLIGHT) {
+      backlog.set(key, { segment, epoch: requestedEpoch })
+      return
+    }
+    let task!: Promise<void>
+    task = (async () => {
+      try {
+        const rows = await props.fetchWindow(segment * SEGMENT_ROWS, SEGMENT_ROWS)
+        if (requestedEpoch !== props.epoch) return
+        if (segmentsEpoch() !== requestedEpoch) {
+          setSegments(new Map())
+          segmentUse.clear()
+          setSegmentsEpoch(requestedEpoch)
+        }
+        segmentUse.set(segment, ++useClock)
+        setSegments((previous) => {
+          const next = new Map(previous)
+          next.set(segment, rows)
+          while (next.size > MAX_SEGMENTS) {
+            let oldestSegment: number | undefined
+            let oldestUse = Number.POSITIVE_INFINITY
+            for (const cached of next.keys()) {
+              const used = segmentUse.get(cached) ?? 0
+              if (used < oldestUse) {
+                oldestUse = used
+                oldestSegment = cached
+              }
+            }
+            if (oldestSegment === undefined) break
+            next.delete(oldestSegment)
+            segmentUse.delete(oldestSegment)
+          }
+          return next
+        })
+      } catch {
+        // A failed window can be retried the next time it enters the viewport.
+      } finally {
+        if (inFlight.get(key) === task) inFlight.delete(key)
+        drainBacklog()
+      }
+    })()
+    inFlight.set(key, task)
+  }
+
+  /**
+   * Segments that hit the in-flight cap and wait for a slot to free up.
+   *
+   * Trimmed to the viewport on every scroll: a scrollbar drag across half a
+   * 280k library would otherwise park hundreds of segment requests that are
+   * never shown again, each of which later runs a real query when a slot frees.
+   */
+  const backlog = new Map<string, { segment: number; epoch: number }>()
+  const trimBacklog = (firstSegment: number, lastSegment: number) => {
+    for (const [key, item] of backlog) {
+      if (item.segment < firstSegment - 1 || item.segment > lastSegment + 1) backlog.delete(key)
+    }
+  }
+  const drainBacklog = () => {
+    for (const [key, item] of [...backlog]) {
+      const { segment, epoch } = item
+      if (epoch !== props.epoch) {
+        backlog.delete(key)
+        continue
+      }
+      if (segmentsEpoch() === epoch && segments().has(segment)) {
+        backlog.delete(key)
+        continue
+      }
+      if (inFlight.has(key)) continue
+      if (inFlight.size >= MAX_IN_FLIGHT) break
+      backlog.delete(key)
+      fetchSegment(segment, epoch)
+    }
+  }
+
+  const inFlight = new Map<string, Promise<void>>()
+
+  const range = createMemo(() => {
+    const total = props.matching
+    const first = Math.min(total, Math.max(0, Math.floor(scrollTop() / ROW_H) - OVERSCAN))
+    const visible = Math.ceil(viewportH() / ROW_H) + OVERSCAN * 2
+    const last = Math.max(first, Math.min(total, first + visible))
+    return { first, last }
+  })
+
+  let lastFilterKey: string | null = null
+  let lastSortKey: string | null = null
+  let lastSelectionReset = props.selectionReset
+
+  createEffect(() => {
+    const reset = props.selectionReset
+    if (reset !== lastSelectionReset) {
+      lastSelectionReset = reset
+      setSelection({ mode: 'paths', paths: new Set() })
+      setAnchor(null)
+      setAnchorIndex(null)
+      setCursorIndex(null)
+      setPendingIndex(null)
+      props.onSelectionChange(0, null)
+    }
+  })
+
+  const visibleIndices = createMemo(() => {
+    const { first, last } = range()
+    return Array.from({ length: last - first }, (_, offset) => first + offset)
+  })
+
+  createEffect(() => {
+    const epoch = props.epoch
+    if (!props.querying && props.matching === 0 && segmentsEpoch() !== epoch) {
+      setSegmentsEpoch(epoch)
+      backlog.clear()
+      segmentUse.clear()
+      setSegments(new Map())
+    }
+  })
+
+  createEffect(() => {
+    const epoch = props.epoch
+    for (const [key, queued] of backlog) {
+      if (queued.epoch !== epoch) backlog.delete(key)
+    }
+    if (props.querying) return
+    const { first, last } = range()
+    const cached = segments()
+    const firstSegment = Math.floor(first / SEGMENT_ROWS)
+    const lastSegment = Math.floor(Math.max(first, last - 1) / SEGMENT_ROWS)
+    // Drop queue entries the viewport has left before they can spend a slot.
+    trimBacklog(firstSegment, lastSegment)
+    for (let segment = firstSegment; segment <= lastSegment; segment++) {
+      if (cached.has(segment)) segmentUse.set(segment, ++useClock)
+    }
+    for (let segment = Math.max(0, firstSegment - 1); segment <= lastSegment + 1; segment++) {
+      void fetchSegment(segment, epoch)
+    }
+  })
+
+  createEffect(() => {
+    const epoch = props.epoch
+    const pending = pendingIndex()
+    if (pending === null) return
+    if (segmentsEpoch() !== epoch) return
+    const row = rowAt(pending)
+    if (row) {
+      setPendingIndex(null)
+      setAnchor(row.path)
+      setAnchorIndex(pending)
+      setCursorIndex(pending)
+      setSelection({ mode: 'paths', paths: new Set([row.path]) })
+      props.onSelectionChange(1, row)
+      activateAt(row, pending)
+    } else if (pending >= props.matching || epoch !== props.epoch) {
+      setPendingIndex(null)
+    }
+  })
+
+  createEffect(() => {
+    const filterKey = JSON.stringify({
+      query: props.request.query,
+      categories: props.request.categories,
+      subcategories: props.request.subcategories,
+      folder: props.request.folder,
+      favoriteOnly: props.request.favoriteOnly
+    })
+    const sortKey = `${props.request.sortBy ?? ''}:${props.request.sortDir ?? ''}`
+    if (lastFilterKey !== null && filterKey !== lastFilterKey) {
+      setSelection({ mode: 'paths', paths: new Set() })
+      setAnchor(null)
+      setAnchorIndex(null)
+      setCursorIndex(null)
+      props.onSelectionChange(0, null)
+      if (body) body.scrollTop = 0
+      setScrollTop(0)
+    } else if (lastSortKey !== null && sortKey !== lastSortKey) {
+      setAnchorIndex(null)
+      setCursorIndex(null)
+      if (selection().mode === 'range') {
+        setSelection({ mode: 'paths', paths: new Set() })
+        setAnchor(null)
+        props.onSelectionChange(0, null)
+      }
+      if (body) body.scrollTop = 0
+      setScrollTop(0)
+    }
+    lastFilterKey = filterKey
+    lastSortKey = sortKey
+  })
 
   const scrollToRow = (index: number) => {
     const el = body
@@ -352,31 +583,57 @@ export function SoundTable(props: Props) {
     else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight
   }
 
-  /** Click behaviour: plain replaces, Ctrl toggles, Shift extends from the anchor. */
-  const handleRowClick = (row: SoundRow, event: MouseEvent) => {
+  const reportSelection = (next: Selection, active: SoundRow | null) => {
+    setSelection(next)
+    props.onSelectionChange(selectionCount(), active)
+  }
+
+  /** Click behaviour: plain replaces, Ctrl toggles/excludes, Shift selects an index range. */
+  const handleRowClick = (row: SoundRow, index: number, event: MouseEvent) => {
     if (event.shiftKey) {
-      const from = indexOf(anchor() ?? props.active?.path ?? null)
-      const to = indexOf(row.path)
-      if (from >= 0 && to >= 0) {
-        const [lo, hi] = from <= to ? [from, to] : [to, from]
-        const paths = sorted()
-          .slice(lo, hi + 1)
-          .map((r) => r.path)
-        props.onSelectionChange(paths, row)
+      const from = anchorIndex() ?? indexOf(anchor() ?? props.active?.path ?? null)
+      if (from >= 0) {
+        const [lo, hi] = from <= index ? [from, index] : [index, from]
+        reportSelection({ mode: 'range', lo, hi, excluded: new Set() }, row)
+        setAnchorIndex(from)
+        setCursorIndex(index)
         return
       }
     }
     if (event.ctrlKey || event.metaKey) {
-      const next = new Set(props.selection)
+      const current = selection()
+      if (current.mode === 'all') {
+        const excluded = new Set(current.excluded)
+        excluded.has(row.path) ? excluded.delete(row.path) : excluded.add(row.path)
+        setAnchor(row.path)
+        setAnchorIndex(index)
+        setCursorIndex(index)
+        reportSelection({ mode: 'all', excluded }, row)
+        return
+      }
+      if (current.mode === 'range' && index >= current.lo && index <= current.hi) {
+        const excluded = new Set(current.excluded)
+        excluded.has(row.path) ? excluded.delete(row.path) : excluded.add(row.path)
+        setAnchor(row.path)
+        setAnchorIndex(index)
+        setCursorIndex(index)
+        reportSelection({ ...current, excluded }, row)
+        return
+      }
+      const next = new Set(current.mode === 'paths' ? current.paths : [])
       if (next.has(row.path)) next.delete(row.path)
       else next.add(row.path)
       setAnchor(row.path)
-      props.onSelectionChange([...next], row)
+      setAnchorIndex(index)
+      setCursorIndex(index)
+      reportSelection({ mode: 'paths', paths: next }, row)
       return
     }
     setAnchor(row.path)
-    props.onSelectionChange([row.path], row)
-    props.onActivate(row)
+    setAnchorIndex(index)
+    setCursorIndex(index)
+    reportSelection({ mode: 'paths', paths: new Set([row.path]) }, row)
+    activateAt(row, index)
   }
 
   /**
@@ -401,27 +658,35 @@ export function SoundTable(props: Props) {
 
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !inField) {
       event.preventDefault()
-      props.onSelectAll()
+      setSelection({ mode: 'all', excluded: new Set() })
+      props.onSelectionChange(props.matching, null)
+      props.onSelectAll(props.matching)
       return
     }
 
     if (inField || event.ctrlKey || event.metaKey || event.altKey) return
-    if (props.rows.length === 0) return
+    if (props.matching === 0) return
 
-    const current = indexOf(props.active?.path ?? null)
+    const current = cursorIndex() ?? indexOf(props.active?.path ?? null)
     const move = (next: number) => {
-      const row = sorted()[next]
-      if (!row) return
-      setAnchor(row.path)
-      props.onSelectionChange([row.path], row)
-      props.onActivate(row)
+      setCursorIndex(next)
+      const row = rowAt(next)
       scrollToRow(next)
+      if (!row) {
+        setPendingIndex(next)
+        return
+      }
+      setPendingIndex(null)
+      setAnchor(row.path)
+      setAnchorIndex(next)
+      reportSelection({ mode: 'paths', paths: new Set([row.path]) }, row)
+      activateAt(row, next)
     }
 
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault()
-        move(current < 0 ? 0 : Math.min(current + 1, sorted().length - 1))
+        move(current < 0 ? 0 : Math.min(current + 1, props.matching - 1))
         break
       case 'ArrowUp':
         event.preventDefault()
@@ -429,7 +694,7 @@ export function SoundTable(props: Props) {
         break
       case 'PageDown':
         event.preventDefault()
-        move(Math.min(sorted().length - 1, (current < 0 ? 0 : current) + 10))
+        move(Math.min(props.matching - 1, (current < 0 ? 0 : current) + 10))
         break
       case 'PageUp':
         event.preventDefault()
@@ -441,7 +706,7 @@ export function SoundTable(props: Props) {
         break
       case 'End':
         event.preventDefault()
-        move(sorted().length - 1)
+        move(props.matching - 1)
         break
       default:
         break
@@ -453,25 +718,115 @@ export function SoundTable(props: Props) {
     onCleanup(() => window.removeEventListener('keydown', onKeyDown))
   })
 
-  /**
-   * Drag out to a DAW. `preventDefault` on dragstart is deliberate: the Tauri
-   * drag plugin starts a native OLE drag itself, and letting WebView2 also start
-   * a DOM drag would hand the OS two competing drag sources.
-   *
-   * `draggable` must be bound as a boolean. A bare `draggable` attribute renders
-   * as `draggable=""`, which is not a valid value for this enumerated attribute:
-   * the element falls back to `auto`, `row.draggable` reads `false`, and the
-   * browser never starts a drag at all — so this handler never ran and dragging
-   * a row into a DAW silently did nothing.
-   */
-  const onRowDragStart = (row: SoundRow, event: DragEvent) => {
-    event.preventDefault()
-    const paths = selectedSet().has(row.path) ? props.selection : [row.path]
-    void startDrag(paths)
+  const selectedRows = () => loadedRows().filter(({ row, index }) => isSelected(row, index))
+
+  const editScope = (): EditScope => {
+    const current = selection()
+    if (current.mode === 'paths') return { kind: 'paths', paths: [...current.paths] }
+    if (current.mode === 'all') {
+      return {
+        kind: 'matching',
+        request: { ...props.request },
+        exclude: [...current.excluded],
+        offset: 0,
+        limit: 0xffff_ffff
+      }
+    }
+    return {
+      kind: 'matching',
+      request: { ...props.request },
+      exclude: [...current.excluded],
+      offset: current.lo,
+      limit: current.hi - current.lo + 1
+    }
   }
 
+  const rowFromEvent = (event: Event): { row: SoundRow; index: number; element: HTMLElement } | null => {
+    const target = event.target
+    if (!(target instanceof Element)) return null
+    const element = target.closest<HTMLElement>('.row[data-index]')
+    if (!element) return null
+    const index = Number(element.dataset.index)
+    const row = rowAt(index)
+    return row ? { row, index, element } : null
+  }
+
+  const onBodyClick = (event: MouseEvent) => {
+    const found = rowFromEvent(event)
+    if (!found) return
+    const target = event.target
+    if (target instanceof Element && target.closest('.cell.favorite')) {
+      props.onToggleFavorite(found.row)
+      return
+    }
+    handleRowClick(found.row, found.index, event)
+  }
+
+  const onBodyDoubleClick = (event: MouseEvent) => {
+    const found = rowFromEvent(event)
+    if (found) activateAt(found.row, found.index)
+  }
+
+  const onBodyContextMenu = (event: MouseEvent) => {
+    const found = rowFromEvent(event)
+    if (!found) return
+    event.preventDefault()
+    if (!isSelected(found.row, found.index)) {
+      setAnchor(found.row.path)
+      setAnchorIndex(found.index)
+      setCursorIndex(found.index)
+      reportSelection({ mode: 'paths', paths: new Set([found.row.path]) }, found.row)
+      props.onRowMenu({
+        x: event.clientX,
+        y: event.clientY,
+        targets: [found.row],
+        count: 1,
+        scope: { kind: 'paths', paths: [found.row.path] }
+      })
+      return
+    }
+    const targets = selectedRows().map(({ row }) => row)
+    props.onRowMenu({
+      x: event.clientX,
+      y: event.clientY,
+      targets,
+      count: selectionCount(),
+      scope: editScope()
+    })
+  }
+
+  const onBodyDragStart = (event: DragEvent) => {
+    const found = rowFromEvent(event)
+    if (!found) return
+    event.preventDefault()
+    const targets = isSelected(found.row, found.index)
+      ? selectedRows().map(({ row }) => row.path)
+      : [found.row.path]
+    void startDrag(targets)
+  }
+
+  onMount(() => {
+    const el = body
+    if (!el) return
+    el.addEventListener('click', onBodyClick)
+    el.addEventListener('dblclick', onBodyDoubleClick)
+    el.addEventListener('contextmenu', onBodyContextMenu)
+    el.addEventListener('dragstart', onBodyDragStart)
+    onCleanup(() => {
+      el.removeEventListener('click', onBodyClick)
+      el.removeEventListener('dblclick', onBodyDoubleClick)
+      el.removeEventListener('contextmenu', onBodyContextMenu)
+      el.removeEventListener('dragstart', onBodyDragStart)
+    })
+  })
+
   return (
-    <div class="table" data-querying={props.querying ? 'true' : 'false'}>
+    <div
+      class="table"
+      data-querying={props.querying ? 'true' : 'false'}
+      data-epoch={props.epoch}
+      data-segments-epoch={segmentsEpoch()}
+    >
       <div
         class="table-head"
         style={{
@@ -545,95 +900,75 @@ export function SoundTable(props: Props) {
           const observer = new ResizeObserver(measure)
           observer.observe(el)
           measure()
+          // Without this the observer holds the body element after the table is
+          // gone, which pins the detached subtree against collection.
+          onCleanup(() => observer.disconnect())
         }}
         onScroll={(e) => {
           const el = e.currentTarget
           setScrollTop(el.scrollTop)
-          // Infinite scroll: ask for the next page once the viewport is within
-          // two screens of the end. The threshold is generous on purpose — a
-          // search answers in ~2ms, so there is no reason to wait for the user to
-          // hit the bottom and see a gap.
-          if (!props.hasMore) return
-          const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
-          if (remaining < el.clientHeight * 2) props.onLoadMore()
         }}
       >
-        <div style={{ height: `${sorted().length * ROW_H}px`, position: 'relative' }}>
-          <For each={sorted().slice(range().first, range().last)}>
-            {(row, index) => {
-              const isActive = () => props.active?.path === row.path
-              const isSelected = () => selectedSet().has(row.path)
+        <div role="list" style={{ height: `${props.matching * ROW_H}px`, position: 'relative' }}>
+          <For each={visibleIndices()}>
+            {(absoluteIndex) => {
+              const row = () => rowAt(absoluteIndex)
               return (
-                <div
-                  class={`row${isSelected() ? ' selected' : ''}${isActive() ? ' active' : ''}`}
-                  data-path={row.path}
-                  style={{
-                    position: 'absolute',
-                    top: `${(range().first + index()) * ROW_H}px`,
-                    height: `${ROW_H}px`,
-                    'grid-template-columns': template()
-                  }}
-                  onClick={(e) => handleRowClick(row, e)}
-                  onDblClick={() => props.onActivate(row)}
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    // Right-clicking outside the selection selects that row first,
-                    // so the menu never acts on sounds the user cannot see.
-                    if (!selectedSet().has(row.path)) {
-                      setAnchor(row.path)
-                      props.onSelectionChange([row.path], row)
-                      props.onRowMenu({ x: e.clientX, y: e.clientY, targets: [row] })
-                      return
-                    }
-                    const targets = sorted().filter((r) => selectedSet().has(r.path))
-                    props.onRowMenu({ x: e.clientX, y: e.clientY, targets })
-                  }}
-                  draggable={true}
-                  onDragStart={(e) => onRowDragStart(row, e)}
+                <Show
+                  when={row()}
+                  fallback={
+                    <div
+                      class="row skeleton"
+                      aria-hidden="true"
+                      aria-setsize={props.matching}
+                      aria-posinset={absoluteIndex + 1}
+                      style={{
+                        position: 'absolute',
+                        top: `${absoluteIndex * ROW_H}px`,
+                        height: `${ROW_H}px`,
+                        'grid-template-columns': template()
+                      }}
+                    />
+                  }
                 >
-                  {/* One cell per column, chosen by key rather than written in a
-                      fixed sequence: the header is reorderable now, so the labels
-                      and the values come from the same list — otherwise a drag
-                      would put "Length" over a sample rate. */}
-                  <For each={columns()}>
-                    {(col) => (
-                      <Cell col={col.key} row={row} onToggleFavorite={props.onToggleFavorite} />
-                    )}
-                  </For>
-                </div>
+                  {(loaded) => {
+                    const currentRow = loaded()
+                    const isActive = () => props.active?.path === currentRow.path
+                    const isRowSelected = () => isSelected(currentRow, absoluteIndex)
+                    return (
+                      <div
+                        class={`row${isRowSelected() ? ' selected' : ''}${isActive() ? ' active' : ''}`}
+                        role="listitem"
+                        data-path={currentRow.path}
+                        data-index={absoluteIndex}
+                        aria-setsize={props.matching}
+                        aria-posinset={absoluteIndex + 1}
+                        style={{
+                          position: 'absolute',
+                          top: `${absoluteIndex * ROW_H}px`,
+                          height: `${ROW_H}px`,
+                          'grid-template-columns': template()
+                        }}
+                        draggable={true}
+                      >
+                        {columns().map((col) => cellNode(col.key, currentRow))}
+                      </div>
+                    )
+                  }}
+                </Show>
               )
             }}
           </For>
         </div>
       </div>
 
-      <Show when={props.rows.length === 0}>
+      <Show when={props.matching === 0}>
         <div class="table-empty">{t('table.noMatch')}</div>
       </Show>
 
-      {/*
-        The footer says how much of the filter is loaded. With infinite scroll the
-        number creeps up as you scroll; without it, this is the only place that
-        tells you the list is not the whole library.
-      */}
-      <Show when={props.rows.length > 0}>
+      <Show when={props.querying}>
         <div class="table-foot">
-          <Show
-            when={props.querying}
-            fallback={
-              <>
-                {t('table.count', {
-                  shown: props.rows.length.toLocaleString(),
-                  total: props.matching.toLocaleString()
-                })}
-                <Show when={props.hasMore}>
-                  <span> · {t('table.scrollForMore')}</span>
-                </Show>
-              </>
-            }
-          >
-            <span class="foot-querying">{t('table.searching')}</span>
-          </Show>
+          <span class="foot-querying">{t('table.searching')}</span>
         </div>
       </Show>
     </div>

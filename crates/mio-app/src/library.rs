@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use mio_index::{
-    CategoryFacet, FolderNode, IndexDb, IndexOptions, IndexReport, SearchParams, SortColumn,
-    SortDir, Sound, index_folder,
+    CategoryFacet, EditState, FolderNode, IndexDb, IndexOptions, IndexReport, SearchParams,
+    SortColumn, SortDir, Sound, index_folder,
 };
 
 use crate::error::{AppError, AppResult};
@@ -189,6 +189,37 @@ impl Library {
 
     pub fn count_matching(&self, params: &SearchParams) -> AppResult<u64> {
         Ok(self.db()?.count_matching(params)?)
+    }
+
+    pub fn set_favorite_matching(
+        &self,
+        params: &SearchParams,
+        excluded: &[String],
+        favorite: bool,
+    ) -> AppResult<(Vec<EditState>, u64)> {
+        Ok(self
+            .db()?
+            .set_favorite_matching(params, excluded, favorite)?)
+    }
+
+    pub fn set_category_matching(
+        &self,
+        params: &SearchParams,
+        excluded: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+    ) -> AppResult<(Vec<EditState>, u64)> {
+        Ok(self
+            .db()?
+            .set_category_matching(params, excluded, category, subcategory)?)
+    }
+
+    pub fn clear_category_matching(
+        &self,
+        params: &SearchParams,
+        excluded: &[String],
+    ) -> AppResult<(Vec<EditState>, u64)> {
+        Ok(self.db()?.clear_category_matching(params, excluded)?)
     }
 
     pub fn facets(&self) -> AppResult<Vec<CategoryFacet>> {

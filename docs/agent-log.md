@@ -2,6 +2,27 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-22 · opencode · 28 万行滚动超 5% 卡死修复
+
+- 根因（三层叠加）: ① `search`/`count_matching` 是同步 Tauri command，跑在主线程上，webview 自己的 IPC 排队其后 → 「不渲染、点不动、但不报未响应」；② `ORDER BY {col} IS NULL, {col} …` 的前缀表达式使任何排序索引都不可用，每次取页对全表物化排序；③ `ORDER BY … , s.filename …` 的重复 filename 项使 SQLite 即使有索引也走 TEMP B-TREE。前 5%（≈ MAX_SEGMENTS 24×500=12000 行）全在缓存所以流畅，一超出每个滚动步都是新段 + 全表排序。
+- 改: `crates/mio-index/src/db.rs` — ORDER BY 改 `{col} {dir} NULLS LAST`，sort 列为 filename 时去掉重复 tiebreaker（否则索引被 TEMP B-TREE 作废）；新增 `idx_filename (filename COLLATE NOCASE)`、`idx_filesize`（create_base_schema、end_bulk、migrate 三处都建，旧库 open 时补）；`read_sounds` 用 `prepare_cached`。`crates/mio-app/src/commands.rs` — `search`/`count_matching` 改 async + `spawn_blocking`（同 `pick_library_folder` 模式，State 不能进闭包所以经 AppHandle.state）。`ui/src/SoundTable.tsx` — backlog 增加按视口裁剪（trimBacklog），长距拖动不再积压几百个出视口的段请求。
+- 验证: 真实库（D:\reslip-test-library，271,350 行）分页 bench——深层 offset 单页 750ms→10ms、8 页突发 6.3s→80ms；EXPLAIN 确认 `SCAN s USING INDEX idx_filename` 无 TEMP B-TREE。`cargo test --release`（index 81、app 20、IPC 29）全过；`npm run build`、`check-interactions`、`check-volume`、`check-themes`、`check-i18n` 全过。新增 `tools/check-scroll-deep.mjs`：真实库 scrollTop 跳 10/30/50/80/95%，断言新 offset 的真实行（非骨架、data-index 达标）在 5s 内画出并测耗时——实测各深度 ~110ms，跳完点排序头窗口仍响应。
+- 遗留: OFFSET 走索引的固有代价（95% 处 ~10ms/页）是 LIMIT/OFFSET 分页的下限，量级无害不再优化；`NULLS LAST` 需 SQLite 3.30+（本机 3.50），若要支持更老 WebView2 需回退 `CASE WHEN`。
+- 下一步: 无。（前端优化 TODO 全部完成，`docs/frontend-todo.md` 已删除；内容以 agent-log 2026-11-20/21/22 各条目为准。）
+
+## 2026-11-22 01:53 · opencode · 全量虚拟列表与 filter 批量编辑
+- 改: `ui/src/{App,SoundTable,SettingsDialog,ipc,styles.css,locales/*}` — 500 行稀疏窗口缓存，最多 24 段、最多 8 个并发请求；filter 全选 + 排除集；按 body 事件代理；移除分页/无限滚动 UI。`crates/mio-index/src/db.rs` + `crates/mio-app/src/{commands,history,library,state}.rs` — matching 批量编辑（快照与 UPDATE 在同一 Immediate 事务，按差异谓词只动真正变化的行），新增收藏/分类/清除分类 matching 命令，删除 `list_matching_paths`；undo 栈 128 MiB 估算预算。新增 IPC 回归测试与 CDP 全量滚动/heap 检查；更新 `docs/{app,architecture,frontend-todo}.md`。
+- 验证: `cargo test --release --workspace` 全通过（app 20、IPC 29、engine 24、index 81；matching 编辑覆盖 filter、exclude、offset/limit、undo 和 no-op）；`npm run build`、`check-i18n` 通过；CDP `check-interactions`（282,762 行全高、33 DOM 行、Home/End、Ctrl+A、20 段滚动 heap +8 MiB、长素材 seek）、`check-layout`、`check-volume`、`check-themes`、`check-tags`、独占窗口 `check-region` 全过；`git diff --check` 通过。
+- 遗留: 无。`cargo fmt --check` 仍报告生成文件 `crates/mio-index/src/classify/ucs.rs` 的既有格式差异；未改写生成词表。
+- 下一步: 无。
+
+## 2026-11-21 · opencode · 前端 TODO（性能/内存项）完成
+
+- 改: `ui/src/App.tsx` — usePlayhead 空闲/暂停降频 4Hz、`document.hidden` 停发；selection 从 `string[]` 改为 `selectionCount`（App 层不再持有路径副本），`selectAll` 变为返回路径的 Promise 交接。`ui/src/SoundTable.tsx` — 选中集 `Set<string>` 只在表格内一处持有；前端 `slice+sort` 整段删除（信任后端排序）；`indexOf` 改 `rowAt` Map memo；ResizeObserver 加 `onCleanup(disconnect)`；Ctrl+A 经 `onSelectAll()` 返回值直接进表格 Set。**排雷：`visibleRows` memo 引用了在其后声明的 `range`，`createMemo` 创建即执行一次，首跑就 TDZ ReferenceError，把组件剩余初始化（含 onMount 的 refresh）全部打断——启动后列表空白、侧栏显示 no library open，但按钮信号仍活。修法是 `range` 声明提前并注释原因。**`ui/src/WaveformDock.tsx` — 两层 canvas 只在尺寸变化时重设 width/height；六个月于画布的 token 读改为缓存表，主题 MutationObserver 清缓存；三处窗口级 pointer 手势补 `onCleanup` 兜底。`ui/vite.config.ts` — 新增 `trimIxChunks` 插件 + 默认关 sourcemap（`MIO_MAPS=1` 可开）。`docs/frontend-todo.md` 同步勾选。
+- 验证: `npm run build`（含 tsc）通过；产物 JS 1674KB→781KB（sourcemap 3.8MB 不再产出）；release exe（15.8MB）CDP 实测——`check-interactions`（含 22 分钟素材 seek 800s）、`check-themes`（七主题+对比度）、`check-volume`、`check-layout`、`check-tags`、`check-i18n`（en/ja/zh 156 键齐平）全过；搜索 kick 13,258 匹配、播放头 4Hz 空闲轮询确认。iX 裁剪踩坑已写进 vite.config 注释：dispatch switch 以 bundle id（`_N` 后缀）为键；被保留组件模板内嵌的 helper bundle（field-label_2/tooltip/typography/helper-text/dropdown_2）必须保留。
+- 遗留: 高-1 彻底改（后端 matching 编辑命令）、第 9 节无限列表数据层、低-1 事件代理未做；iX CSS 231KB 全量注入按 TODO 原意不动；`check-region.mjs` 需独占窗口（OLE 拖拽循环）本轮未跑，下次要单独跑再 kill-app。
+- 下一步: 高-1 第二步与第 9 节（后端配合）；`tools/build-app.sh` 在 PowerShell 下不可直接跑（bash 脚本），本机走 `wsl` 或手动两步（`npm run build` + `cargo build -p mio-app --release --features asio`，需设 `CPAL_ASIO_DIR`/`LIBCLANG_PATH`）。
+
 ## 2026-11-21 16:10 · opencode · 超长素材窗口 seek 与连续播放（TODO 2 收尾 + 8 最后一项）
 
 （`docs/backend-todo.md` 已于 2026-11-21 完成后删除；本条目及下文 14:22、00:43 条目中的该文件引用是当时的历史记录，文件内容不可再查。长素材窗口链的设计现记录在 `docs/architecture.md` 3.3。）

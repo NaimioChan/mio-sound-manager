@@ -45,7 +45,6 @@ export const en = {
   'status.noDevice': 'audio device unavailable',
   'status.enginePeriod': 'engine period {ms} ms',
   'status.selected': '{count} selected',
-  'status.loaded': '{loaded} of {matching} loaded',
   'status.waveform': 'waveform {ms} ms',
 
   // -------------------------------------------------------------- row menu
@@ -108,8 +107,6 @@ export const en = {
   'row.addFavorite': 'Add to favorites',
   'row.removeFavorite': 'Remove from favorites',
   'table.noMatch': 'No sounds match.',
-  'table.count': '{shown} of {total}',
-  'table.scrollForMore': 'scroll for more',
   'table.searching': 'searching…',
 
   // ----------------------------------------------------------------- sidebar
@@ -170,11 +167,9 @@ export const en = {
   'settings.reveal': 'Reveal',
   'settings.addLibrary': 'Add another library',
   'settings.openLibrary': 'Open library…',
-  'settings.rowsPerPage': 'Rows per page',
   'settings.showCategory': 'Show the category column',
   'settings.behaviour': 'Behaviour',
   'settings.autoPlay': 'Auto-play on select',
-  'settings.infiniteScroll': 'Infinite scroll',
   'settings.appearance': 'Appearance',
   'settings.zoom': 'Interface scale',
   'settings.language': 'Language',

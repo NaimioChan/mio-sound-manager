@@ -26,28 +26,21 @@ import { ZOOM_STEPS } from './zoom'
 export interface Settings {
   /** Audition a row as soon as it is clicked. */
   autoPlay: boolean
-  /** Ask the index for the next page when the list nears its end. */
-  infiniteScroll: boolean
   /** Show the category column; the value is still filterable from the rail. */
   showCategory: boolean
-  /** Rows per search request. */
-  pageSize: number
 }
 
 const STORAGE_KEY = 'mio:settings'
 
 const DEFAULTS: Settings = {
   autoPlay: true,
-  infiniteScroll: true,
-  showCategory: true,
-  pageSize: 500
+  showCategory: true
 }
 
 /**
  * Read the settings, one key at a time.
  *
- * Not one JSON blob: an older build that wrote `{autoPlay, pageSize}` must not
- * make a newer one fall back to every default because `theme` is missing. Per-key
+ * Not one JSON blob: an older build may have extra paging keys. Per-key
  * reads also mean a corrupt value costs one setting instead of all of them.
  */
 export function loadSettings(): Settings {
@@ -57,14 +50,8 @@ export function loadSettings(): Settings {
     const parsed = JSON.parse(raw) as Partial<Settings>
     return {
       autoPlay: typeof parsed.autoPlay === 'boolean' ? parsed.autoPlay : DEFAULTS.autoPlay,
-      infiniteScroll:
-        typeof parsed.infiniteScroll === 'boolean' ? parsed.infiniteScroll : DEFAULTS.infiniteScroll,
       showCategory:
-        typeof parsed.showCategory === 'boolean' ? parsed.showCategory : DEFAULTS.showCategory,
-      pageSize:
-        typeof parsed.pageSize === 'number' && parsed.pageSize > 0
-          ? Math.min(5000, parsed.pageSize)
-          : DEFAULTS.pageSize
+        typeof parsed.showCategory === 'boolean' ? parsed.showCategory : DEFAULTS.showCategory
     }
   } catch {
     return { ...DEFAULTS }
@@ -303,23 +290,6 @@ export function SettingsDialog(props: Props) {
             </div>
 
             <div class="setting">
-              <span class="setting-label">{t('settings.rowsPerPage')}</span>
-              <div style={{ width: '140px' }}>
-                <ix-select
-                  value={String(props.settings.pageSize)}
-                  on:valueChange={(e: CustomEvent<string | string[]>) =>
-                    props.onChange({ pageSize: Number(e.detail) })
-                  }
-                >
-                  <ix-select-item value="200" label="200" />
-                  <ix-select-item value="500" label="500" />
-                  <ix-select-item value="1000" label="1000" />
-                  <ix-select-item value="2000" label="2000" />
-                </ix-select>
-              </div>
-            </div>
-
-            <div class="setting">
               <span class="setting-label">{t('settings.showCategory')}</span>
               <ix-toggle
                 checked={props.settings.showCategory}
@@ -342,15 +312,6 @@ export function SettingsDialog(props: Props) {
               />
             </div>
 
-            <div class="setting">
-              <span class="setting-label">{t('settings.infiniteScroll')}</span>
-              <ix-toggle
-                checked={props.settings.infiniteScroll}
-                on:checkedChange={(e: CustomEvent<boolean>) =>
-                  props.onChange({ infiniteScroll: e.detail })
-                }
-              />
-            </div>
           </section>
 
           {/* ------------------------------------------------------ appearance */}

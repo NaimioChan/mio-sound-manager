@@ -133,14 +133,16 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `remove_library(root)` | `LibraryStatus[]` | 关掉一个库，活跃的自动落到下一个 |
 | `set_active_library(root)` | `LibraryStatus[]` | 切换显示哪个库 |
 | `reindex_library(root?, full?, onProgress)` | `LibraryStatus` | **阻塞**，同上；`root` 缺省是活跃库 |
-| `search(request)` | `SoundDto[]` | 同 `mio-index` 的过滤条件，上限 5000 行。`categories` / `subcategories` 是数组：分类之间 OR，分类与子分类之间 AND |
-| `count_matching(request)` | `u64` | 当前过滤命中总数，表尾的 "500 of 27,525" |
-| `list_matching_paths(request)` | `string[]` | 全选用的纯路径列表，不受 5000 行上限 |
+| `search(request)` | `SoundDto[]` | 同 `mio-index` 的过滤条件，支持任意 offset 的窗口查询，单次最多 5000 行。`categories` / `subcategories` 是数组：分类之间 OR，分类与子分类之间 AND |
+| `count_matching(request)` | `u64` | 当前过滤命中总数，决定虚拟列表总长度 |
 | `list_folders` | `FolderNodeDto` | 从索引构建的树，不读 `readdir` |
 | `get_sidebar` | `SidebarDto` | facet 计数 + 收藏数 + 总数，一次往返 |
 | `set_favorite(paths, favorite)` | `u64` | 一个事务，记入 undo |
 | `set_category(paths, category, sub?)` | `u64` | 置 `category_manual`，记入 undo |
 | `clear_category(paths)` | `u64` | 交还分类器，记入 undo |
+| `set_favorite_matching(request, favorite)` | `u64` | 按 filter 批量收藏/取消收藏，可附排除路径，记入 undo |
+| `set_category_matching(request, category, sub?)` | `u64` | 按 filter 批量设置分类，可附排除路径，记入 undo |
+| `clear_category_matching(request)` | `u64` | 按 filter 批量清除手动分类，可附排除路径，记入 undo |
 | `undo` / `redo` | `string?` | 返回被撤销/重做的编辑名 |
 | `get_history` | `HistoryState` | undo/redo 的标签，给按钮文案 |
 | `get_library` | `LibraryStatus?` | 活跃库的状态；无库时 `null`。`get_status` 里也带一份，这条给只关心库的调用方 |
@@ -149,13 +151,13 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 
 线上字段一律 camelCase（`#[serde(rename_all = "camelCase")]`），前端类型手写在 `ui/src/ipc.ts`，与 Rust 侧一一对应。
 
-`search` 与 `list_matching_paths` 分开是刻意的：前者返回完整行且限 5000（一页没有更大的理由），后者只回路径、不设上限。28 万库里 Ctrl+A 要选的是 28 万条路径，不是 5000 条——用 `search` 加个大 limit 会在 5000 处静默截断，而"全选"少选了比没有这个快捷键更糟。
+Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集表示选择；批量编辑命令在 Rust 侧解析目标。`search` 仍按有限窗口返回行，避免深列表遍历时累积整库 DTO。
 
 ## 前端交互
 
 **选择是锚点 + 集合。** 点击替换、Ctrl+点击切换、Shift+点击从锚点扩展。锚点存的是**路径**不是下标：列表在搜索和排序下会重排，下标会指向另一个声音。
 
-**列表按行窗口虚拟化。** 索引能返回上千行，固定行高让窗口计算是精确的——行高一旦量不准，滚动时就会跳。表头在滚动容器之外，所以它的列轨道要减去滚动条宽度；用 `width: calc(100% - Npx)` 而不是 padding，因为 `box-sizing: border-box` 下 padding 会让 `fr` 轨道按比例吸收差值，两个网格反而偏出两倍滚动条的距离。
+**列表按需窗口化。** 滚动高度始终按匹配总数计算；固定行高让任意 index 可直接定位。窗口以稀疏段缓存读取，最多保留 24 段；缺失段显示骨架并按需请求。表头在滚动容器之外，所以它的列轨道要减去滚动条宽度；用 `width: calc(100% - Npx)` 而不是 padding，因为 `box-sizing: border-box` 下 padding 会让 `fr` 轨道按比例吸收差值，两个网格反而偏出两倍滚动条的距离。
 
 **行必须 `left: 0; right: 0`。** 绝对定位的盒子默认收缩到内容宽度，不设左右边界时网格轨道是按文字宽度算的，列会和表头错开。
 

@@ -45,7 +45,6 @@ export const zh: Record<MessageKey, string> = {
   'status.noDevice': '音频设备不可用',
   'status.enginePeriod': '引擎周期 {ms} ms',
   'status.selected': '已选 {count} 项',
-  'status.loaded': '已加载 {loaded} / {matching}',
   'status.waveform': '波形 {ms} ms',
 
   'menu.play': '播放',
@@ -100,8 +99,6 @@ export const zh: Record<MessageKey, string> = {
   'row.addFavorite': '加入收藏',
   'row.removeFavorite': '取消收藏',
   'table.noMatch': '没有匹配的声音。',
-  'table.count': '{shown} / {total}',
-  'table.scrollForMore': '继续滚动加载',
   'table.searching': '搜索中…',
 
   'side.categories': '分类',
@@ -159,11 +156,9 @@ export const zh: Record<MessageKey, string> = {
   'settings.reveal': '显示',
   'settings.addLibrary': '添加另一个库',
   'settings.openLibrary': '打开库…',
-  'settings.rowsPerPage': '每页行数',
   'settings.showCategory': '显示分类列',
   'settings.behaviour': '行为',
   'settings.autoPlay': '选中即播放',
-  'settings.infiniteScroll': '无限滚动',
   'settings.appearance': '外观',
   'settings.zoom': '界面缩放',
   'settings.language': '语言',

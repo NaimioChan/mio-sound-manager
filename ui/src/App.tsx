@@ -11,7 +11,14 @@ import {
   type LibraryStatus,
   type SoundRow
 } from './ipc'
-import { SoundTable, DEFAULT_DIR, SORT_WIRE, type RowMenuRequest, type SortKey } from './SoundTable'
+import {
+  SoundTable,
+  DEFAULT_DIR,
+  SORT_WIRE,
+  type EditScope,
+  type RowMenuRequest,
+  type SortKey
+} from './SoundTable'
 import { WaveformDock, type Region } from './WaveformDock'
 import { Sidebar } from './Sidebar'
 import { ContextMenu, type MenuItem } from './ContextMenu'
@@ -40,11 +47,24 @@ function usePlayhead() {
   let frame = 0
   let inFlight = false
   let stopped = false
+  let lastPoll = 0
 
-  const tick = async () => {
+  /**
+   * The idle/paused poll interval. Nothing changes while nothing plays, so 60
+   * reads a second were 60 wasted IPC round trips; 4Hz is still fast enough
+   * that pressing play shows the head moving within one interval.
+   */
+  const IDLE_INTERVAL_MS = 250
+
+  const tick = async (ts: number) => {
     if (stopped) return
-    if (!inFlight) {
+    // Playing is drawn every frame. Paused and idle only need to notice the
+    // next state change, so they poll at 4Hz — and a hidden window paints
+    // nothing, so it does not poll at all.
+    const due = playing() || ts - lastPoll >= IDLE_INTERVAL_MS
+    if (!inFlight && due && !document.hidden) {
       inFlight = true
+      lastPoll = ts
       try {
         const p = await api.position()
         setPositionS(p.positionS)
@@ -63,6 +83,7 @@ function usePlayhead() {
   onMount(() => {
     frame = requestAnimationFrame(tick)
   })
+
   onCleanup(() => {
     stopped = true
     cancelAnimationFrame(frame)
@@ -127,8 +148,8 @@ export function App() {
   const [status, setStatus] = createSignal<AppStatus | null>(null)
   const [bootError, setBootError] = createSignal<string | null>(null)
   const [libraries, setLibraries] = createSignal<LibraryStatus[]>([])
-  const [rows, setRows] = createSignal<SoundRow[]>([])
   const [matching, setMatching] = createSignal(0)
+  const [dataEpoch, setDataEpoch] = createSignal(0)
   const [folders, setFolders] = createSignal<FolderNode | null>(null)
   const [facets, setFacets] = createSignal<Facet[]>([])
   const [favorites, setFavorites] = createSignal(0)
@@ -159,7 +180,19 @@ export function App() {
   const [sortKey, setSortKey] = createSignal<SortKey>('filename')
   const [sortAsc, setSortAsc] = createSignal(true)
 
-  const [selection, setSelection] = createSignal<string[]>([])
+  /**
+   * How many rows are selected, and nothing more.
+   *
+   * The paths themselves live in the table as one Set; keeping a copy here as
+   * well was the Ctrl+A memory spike — three live copies of every path on a
+   * 280k library. The app only ever read the length.
+   */
+  const [selectionCount, setSelectionCount] = createSignal(0)
+  const [selectionReset, setSelectionReset] = createSignal(0)
+  const clearSelection = () => {
+    setSelectionCount(0)
+    setSelectionReset((value) => value + 1)
+  }
   const [active, setActive] = createSignal<SoundRow | null>(null)
 
   const [menu, setMenu] = createSignal<RowMenuRequest | null>(null)
@@ -174,7 +207,11 @@ export function App() {
   )
   /** A folder row's right-click menu. Third target, same hand-drawn panel. */
   const [folderMenu, setFolderMenu] = createSignal<FolderMenuRequest | null>(null)
-  const [categoryDialog, setCategoryDialog] = createSignal<SoundRow[] | null>(null)
+  const [categoryDialog, setCategoryDialog] = createSignal<{
+    targets: SoundRow[]
+    scope: EditScope
+    count: number
+  } | null>(null)
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [history, setHistory] = createSignal<{ undo: EditKind | null; redo: EditKind | null }>({
     undo: null,
@@ -188,8 +225,6 @@ export function App() {
   const [indexing, setIndexing] = createSignal<{ label: string; progress: IndexProgress | null } | null>(
     null
   )
-  /** Guards against a second `onLoadMore` while one is in flight. */
-  const [loadingMore, setLoadingMore] = createSignal(false)
   /**
    * A first-page query is in flight.
    *
@@ -230,7 +265,7 @@ export function App() {
   const playhead = usePlayhead()
 
   const activeLibrary = createMemo(() => libraries().find((l) => l.active) ?? null)
-  const hasMore = createMemo(() => rows().length < matching())
+  let searchSequence = 0
 
   /**
    * The search request, derived once so the search call, "select all" and the
@@ -251,54 +286,32 @@ export function App() {
     sortDir: (sortAsc() ? 'asc' : 'desc') as 'asc' | 'desc'
   }))
 
-  /** Replace the list with the first page. */
+  /** Recount results and invalidate cached windows for the new query snapshot. */
   const runSearch = async () => {
+    const sequence = ++searchSequence
     if (libraries().length === 0) {
-      setRows([])
+      setDataEpoch((epoch) => epoch + 1)
       setMatching(0)
       setQuerying(false)
       return
     }
-    const req = { ...request(), limit: settings().pageSize, offset: 0 }
     setQuerying(true)
     try {
-      const [page, count] = await Promise.all([api.search(req), api.countMatching(request())])
-      setRows(page)
+      const count = await api.countMatching(request())
+      if (sequence !== searchSequence) return
+      setDataEpoch((epoch) => epoch + 1)
       setMatching(count)
     } catch (e) {
+      if (sequence !== searchSequence) return
+      setDataEpoch((epoch) => epoch + 1)
       setNotice(String(e))
     } finally {
-      setQuerying(false)
+      if (sequence === searchSequence) setQuerying(false)
     }
   }
 
-  /**
-   * Append the next page.
-   *
-   * Offset is the number of rows already loaded, which is correct because the
-   * request is sorted: the index returns a stable window for a given sort, so page
-   * two cannot overlap page one. A re-sort resets the list, so a stale offset
-   * cannot survive into a different ordering.
-   */
-  const loadMore = async () => {
-    if (loadingMore() || !hasMore()) return
-    setLoadingMore(true)
-    try {
-      const req = { ...request(), limit: settings().pageSize, offset: rows().length }
-      const page = await api.search(req)
-      if (page.length === 0) {
-        // Nothing came back: the count is ahead of the data (a pass finished
-        // between the two queries). Trusting the count would keep asking forever.
-        setMatching(rows().length)
-      } else {
-        setRows([...rows(), ...page])
-      }
-    } catch (e) {
-      setNotice(String(e))
-    } finally {
-      setLoadingMore(false)
-    }
-  }
+  const fetchWindow = (offset: number, limit: number) =>
+    api.search({ ...request(), offset, limit })
 
   // Coalesce keystrokes at ~80ms. The index answers a search in ~2ms, so the only
   // thing an unthrottled call buys is a table that flickers through intermediate
@@ -364,14 +377,6 @@ export function App() {
   const play = async (row: SoundRow, startAt?: number) => {
     setActive(row)
     setWaveMs(null)
-    const activeIndex = rows().findIndex((candidate) => candidate.path === row.path)
-    if (activeIndex >= 0) {
-      const neighbors = rows()
-        .slice(Math.max(0, activeIndex - 2), activeIndex + 3)
-        .filter((candidate) => candidate.path !== row.path)
-        .map((candidate) => candidate.path)
-      if (neighbors.length) void api.prefetchNeighbors(neighbors)
-    }
     // A selection belongs to the sound it was drawn on. Keeping it across a
     // different sound would either export the wrong region or loop a part of a
     // file the user never looked at.
@@ -531,6 +536,7 @@ export function App() {
       await api.addLibrary(target, (progress) => {
         setIndexing({ label: t('index.indexing'), progress })
       })
+      clearSelection()
       setSettingsOpen(false)
       await refresh()
     } catch (e) {
@@ -552,6 +558,7 @@ export function App() {
       await api.reindexLibrary(root, (progress) => {
         setIndexing({ label: full ? t('index.fullReindex') : t('index.reindexing'), progress })
       }, full)
+      clearSelection()
       await refresh()
     } catch (e) {
       setNotice(String(e))
@@ -570,7 +577,7 @@ export function App() {
       setSubcategories([])
       setFolder(null)
       setFavoritesOnly(false)
-      setSelection([])
+      clearSelection()
       setActive(null)
       await refresh()
     } catch (e) {
@@ -581,6 +588,7 @@ export function App() {
   const removeLibrary = async (root: string) => {
     try {
       setLibraries(await api.removeLibrary(root))
+      clearSelection()
       await refresh()
     } catch (e) {
       setNotice(String(e))
@@ -591,9 +599,6 @@ export function App() {
     const next = { ...settings(), ...patch }
     setSettings(next)
     saveSettings(next)
-    if (patch.pageSize !== undefined || patch.infiniteScroll !== undefined) {
-      void runSearch()
-    }
   }
 
   const changeTheme = (id: string) => {
@@ -624,9 +629,13 @@ export function App() {
     void runSearch()
   }
 
-  const changeSelection = (paths: string[], nextActive: SoundRow | null) => {
-    setSelection(paths)
+  const changeSelection = (count: number, nextActive: SoundRow | null) => {
+    setSelectionCount(count)
     if (nextActive) setActive(nextActive)
+  }
+
+  const onSelectAll = (count: number) => {
+    setNotice(t('notice.selected', { count: count.toLocaleString() }))
   }
 
   /**
@@ -721,28 +730,11 @@ export function App() {
     void runSearch()
   }
 
-  /**
-   * Select every path the filter matches.
-   *
-   * Deliberately a separate command from `search`: the page on screen is clamped,
-   * and "select all" in a filtered subset of a 280k library is not a page. The
-   * backend returns paths only, which is why this does not need full rows.
-   */
-  const selectAll = async () => {
-    try {
-      const paths = await api.matchingPaths(request())
-      setSelection(paths)
-      setNotice(t('notice.selected', { count: paths.length.toLocaleString() }))
-    } catch (e) {
-      setNotice(String(e))
-    }
-  }
-
   /** Apply a library edit, then refresh the counts, the rows and the undo labels. */
-  const editThenRefresh = async (paths: string[], apply: () => Promise<unknown>) => {
-    if (paths.length === 0) return
+  const editThenRefresh = async (apply: () => Promise<unknown>, resetSelection = false) => {
     try {
       await apply()
+      if (resetSelection) clearSelection()
       await Promise.all([loadSidebar(), runSearch(), loadHistory()])
     } catch (e) {
       setNotice(String(e))
@@ -772,16 +764,63 @@ export function App() {
   }
 
   const toggleFavorite = (row: SoundRow) => {
-    void editThenRefresh([row.path], () => api.setFavorite([row.path], !row.favorite))
+    void editThenRefresh(() => api.setFavorite([row.path], !row.favorite))
+  }
+
+  const applyFavoriteScope = (scope: EditScope, favorite: boolean) => {
+    if (scope.kind === 'paths') return api.setFavorite(scope.paths, favorite)
+    return api.setFavoriteMatching(
+      {
+        request: scope.request,
+        exclude: scope.exclude,
+        offset: scope.offset,
+        limit: scope.limit
+      },
+      favorite
+    )
+  }
+
+  const applyCategoryScope = (scope: EditScope, category: string, sub: string | null) => {
+    if (scope.kind === 'paths') return api.setCategory(scope.paths, category, sub)
+    return api.setCategoryMatching(
+      {
+        request: scope.request,
+        exclude: scope.exclude,
+        offset: scope.offset,
+        limit: scope.limit
+      },
+      category,
+      sub
+    )
+  }
+
+  const clearCategoryScope = (scope: EditScope) => {
+    if (scope.kind === 'paths') return api.clearCategory(scope.paths)
+    return api.clearCategoryMatching({
+      request: scope.request,
+      exclude: scope.exclude,
+      offset: scope.offset,
+      limit: scope.limit
+    })
   }
 
   const toggleFavoriteSelection = () => {
-    const targets = menu()?.targets ?? []
+    const current = menu()
+    const targets = current?.targets ?? []
     if (targets.length === 0) return
     const allStarred = targets.every((r) => r.favorite)
     void editThenRefresh(
-      targets.map((r) => r.path),
-      () => api.setFavorite(targets.map((r) => r.path), !allStarred)
+      () => applyFavoriteScope(current!.scope, !allStarred),
+      current!.scope.kind === 'matching'
+    )
+  }
+
+  const favoriteScope = (favorite: boolean) => {
+    const current = menu()
+    if (!current) return
+    void editThenRefresh(
+      () => applyFavoriteScope(current.scope, favorite),
+      current.scope.kind === 'matching'
     )
   }
 
@@ -802,9 +841,10 @@ export function App() {
     const current = menu()
     if (!current) return []
     const targets = current.targets
-    const one = targets.length === 1 ? targets[0] : null
-    const many = (label: string) => (one ? label : t('menu.withCount', { label, count: targets.length }))
-    const allStarred = targets.every((r) => r.favorite)
+    const one = current.count === 1 && targets.length === 1 ? targets[0] : null
+    const many = (label: string) =>
+      current.count === 1 ? label : t('menu.withCount', { label, count: current.count })
+    const allStarred = targets.length > 0 && targets.every((r) => r.favorite)
 
     return [
       {
@@ -815,24 +855,42 @@ export function App() {
         onSelect: () => one && void play(one)
       },
       { id: 'd1', label: '', divider: true },
-      {
-        id: 'favorite',
-        label: many(allStarred ? t('edit.unfavorite') : t('edit.favorite')),
-        onSelect: toggleFavoriteSelection
-      },
+      ...(current.scope.kind === 'matching' || current.count > targets.length
+        ? [
+            {
+              id: 'favorite',
+              label: many(t('edit.favorite')),
+              onSelect: () => favoriteScope(true)
+            },
+            {
+              id: 'unfavorite',
+              label: many(t('edit.unfavorite')),
+              onSelect: () => favoriteScope(false)
+            }
+          ]
+        : [
+            {
+              id: 'favorite',
+              label: many(allStarred ? t('edit.unfavorite') : t('edit.favorite')),
+              onSelect: toggleFavoriteSelection
+            }
+          ]),
       {
         id: 'category',
         label: many(t('menu.setCategory')),
-        onSelect: () => setCategoryDialog(targets)
+        onSelect: () => setCategoryDialog({ targets, scope: current.scope, count: current.count })
       },
       {
         id: 'clear-category',
         label: many(t('menu.clearCategory')),
-        disabled: targets.every((r) => r.category === UNCATEGORIZED && !r.categoryManual),
+        disabled:
+          current.scope.kind === 'paths' &&
+          current.count === targets.length &&
+          targets.every((r) => r.category === UNCATEGORIZED && !r.categoryManual),
         onSelect: () =>
           void editThenRefresh(
-            targets.map((r) => r.path),
-            () => api.clearCategory(targets.map((r) => r.path))
+            () => clearCategoryScope(current.scope),
+            current.scope.kind === 'matching'
           )
       },
       { id: 'd2', label: '', divider: true },
@@ -944,20 +1002,22 @@ export function App() {
   }
 
   const applyCategory = (name: string, sub: string | null) => {
-    const targets = categoryDialog() ?? []
+    const dialog = categoryDialog()
     setCategoryDialog(null)
+    if (!dialog) return
     void editThenRefresh(
-      targets.map((r) => r.path),
-      () => api.setCategory(targets.map((r) => r.path), name, sub)
+      () => applyCategoryScope(dialog.scope, name, sub),
+      dialog.scope.kind === 'matching'
     )
   }
 
   const clearCategory = () => {
-    const targets = categoryDialog() ?? []
+    const dialog = categoryDialog()
     setCategoryDialog(null)
+    if (!dialog) return
     void editThenRefresh(
-      targets.map((r) => r.path),
-      () => api.clearCategory(targets.map((r) => r.path))
+      () => clearCategoryScope(dialog.scope),
+      dialog.scope.kind === 'matching'
     )
   }
 
@@ -1279,22 +1339,22 @@ export function App() {
             }
           >
             <SoundTable
-              rows={rows()}
-              selection={selection()}
+              epoch={dataEpoch()}
+              selectionReset={selectionReset()}
+              request={request()}
+              fetchWindow={fetchWindow}
               active={active()}
               sortKey={sortKey()}
               sortAsc={sortAsc()}
               showCategory={settings().showCategory}
               matching={matching()}
-              hasMore={hasMore() && settings().infiniteScroll}
               querying={querying()}
               onSort={changeSort}
               onSelectionChange={changeSelection}
               onActivate={activate}
               onRowMenu={setMenu}
               onToggleFavorite={toggleFavorite}
-              onSelectAll={() => void selectAll()}
-              onLoadMore={() => void loadMore()}
+              onSelectAll={onSelectAll}
             />
           </Show>
 
@@ -1304,7 +1364,7 @@ export function App() {
             durationS={playhead.durationS()}
             playing={playhead.playing()}
             paused={playhead.paused()}
-            selectionCount={selection().length}
+            selectionCount={selectionCount()}
             autoPlay={settings().autoPlay}
             gain={gain()}
             region={region()}
@@ -1345,17 +1405,8 @@ export function App() {
 
         <div class="spacer" />
 
-        <Show when={selection().length > 1}>
-          <span class="dim">{t('status.selected', { count: selection().length.toLocaleString() })}</span>
-        </Show>
-
-        <Show when={libraries().length > 0}>
-          <span class="dim">
-            {t('status.loaded', {
-              loaded: rows().length.toLocaleString(),
-              matching: matching().toLocaleString()
-            })}
-          </span>
+        <Show when={selectionCount() > 1}>
+          <span class="dim">{t('status.selected', { count: selectionCount().toLocaleString() })}</span>
         </Show>
 
         <Show when={waveMs()}>
@@ -1397,9 +1448,9 @@ export function App() {
       </Show>
 
       <Show when={categoryDialog()}>
-        {(targets) => (
+        {(dialog) => (
           <CategoryDialog
-            count={targets().length}
+            count={dialog().count}
             facets={facets()}
             onSave={applyCategory}
             onClear={clearCategory}

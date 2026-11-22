@@ -27,6 +27,7 @@ use crate::library::Library;
 /// How many edits can be taken back. Deep enough for a working session, shallow
 /// enough that a 280k-row "select all, categorise" undo stack stays bounded.
 const MAX_DEPTH: usize = 50;
+const MAX_BYTES: usize = 128 * 1024 * 1024;
 
 /// What an edit was, so the UI can name it in the user's language.
 ///
@@ -68,6 +69,16 @@ impl FieldState {
             category_manual: sound.category_manual,
         }
     }
+
+    fn from_edit_state(state: mio_index::EditState) -> Self {
+        Self {
+            path: state.path,
+            favorite: state.favorite,
+            category: state.category,
+            subcategory: state.subcategory,
+            category_manual: state.category_manual,
+        }
+    }
 }
 
 /// A completed edit, stored in the form needed to invert it.
@@ -81,24 +92,48 @@ pub struct Edit {
     pub before: Vec<FieldState>,
 }
 
+impl Edit {
+    fn estimated_bytes(&self) -> usize {
+        self.before.iter().fold(
+            self.root.as_os_str().len() + self.before.len() * std::mem::size_of::<FieldState>(),
+            |bytes, state| {
+                bytes
+                    + state.path.capacity()
+                    + state.category.capacity()
+                    + state.subcategory.as_ref().map_or(0, String::capacity)
+            },
+        )
+    }
+}
+
 /// Undo and redo stacks, as one unit.
-#[derive(Default)]
 pub struct History {
     undo: VecDeque<Edit>,
     redo: Vec<Edit>,
+    bytes: usize,
 }
 
 impl History {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+            bytes: 0,
+        }
     }
 
     /// Record a completed edit. Any pending redo is dropped: the timeline forked.
     pub fn push(&mut self, edit: Edit) {
+        self.bytes = self
+            .bytes
+            .saturating_sub(self.redo.iter().map(Edit::estimated_bytes).sum::<usize>());
         self.redo.clear();
+        self.bytes += edit.estimated_bytes();
         self.undo.push_back(edit);
-        while self.undo.len() > MAX_DEPTH {
-            self.undo.pop_front();
+        while self.undo.len() > MAX_DEPTH || (self.bytes > MAX_BYTES && self.undo.len() > 1) {
+            if let Some(oldest) = self.undo.pop_front() {
+                self.bytes = self.bytes.saturating_sub(oldest.estimated_bytes());
+            }
         }
     }
 
@@ -117,18 +152,24 @@ impl History {
     }
 
     fn take_undo(&mut self) -> Option<Edit> {
-        self.undo.pop_back()
+        let edit = self.undo.pop_back()?;
+        self.bytes = self.bytes.saturating_sub(edit.estimated_bytes());
+        Some(edit)
     }
 
     fn take_redo(&mut self) -> Option<Edit> {
-        self.redo.pop()
+        let edit = self.redo.pop()?;
+        self.bytes = self.bytes.saturating_sub(edit.estimated_bytes());
+        Some(edit)
     }
 
     fn push_redo(&mut self, edit: Edit) {
+        self.bytes += edit.estimated_bytes();
         self.redo.push(edit);
     }
 
     fn push_undo_raw(&mut self, edit: Edit) {
+        self.bytes += edit.estimated_bytes();
         self.undo.push_back(edit);
     }
 }
@@ -209,6 +250,21 @@ where
         root: library.root().to_path_buf(),
         before,
     })
+}
+
+pub fn edit_from_snapshot(
+    library: &Library,
+    kind: EditKind,
+    before: Vec<mio_index::EditState>,
+) -> Edit {
+    Edit {
+        kind,
+        root: library.root().to_path_buf(),
+        before: before
+            .into_iter()
+            .map(FieldState::from_edit_state)
+            .collect(),
+    }
 }
 
 impl History {

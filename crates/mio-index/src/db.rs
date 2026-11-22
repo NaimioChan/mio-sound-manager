@@ -81,6 +81,16 @@ pub struct Sound {
     pub bpm: Option<f64>,
 }
 
+/// The fields the app's undo record needs, without decoding display-only data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditState {
+    pub path: String,
+    pub favorite: bool,
+    pub category: String,
+    pub subcategory: Option<String>,
+    pub category_manual: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
     Favorite,
@@ -498,7 +508,8 @@ impl IndexDb {
     }
 
     pub fn end_scan(&mut self) -> Result<()> {
-        self.conn.execute_batch("DROP TABLE IF EXISTS _scan_files;")?;
+        self.conn
+            .execute_batch("DROP TABLE IF EXISTS _scan_files;")?;
         self.conn.pragma_update(None, "temp_store", "MEMORY")?;
         Ok(())
     }
@@ -530,6 +541,8 @@ impl IndexDb {
             CREATE INDEX IF NOT EXISTS idx_category_subcategory ON sounds(category, subcategory);
             CREATE INDEX IF NOT EXISTS idx_confidence ON sounds(confidence);
             CREATE INDEX IF NOT EXISTS idx_favorite ON sounds(favorite);
+            CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);
 
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -587,6 +600,15 @@ impl IndexDb {
             .execute_batch("CREATE INDEX IF NOT EXISTS idx_mtime ON sounds(mtime_ns);")?;
         self.conn
             .execute_batch("CREATE INDEX IF NOT EXISTS idx_bpm ON sounds(bpm);")?;
+        // The paged list sorts by filename (NOCASE) by default and can sort by
+        // filesize; without these indexes each 500-row page re-sorted the whole
+        // table. Created on every open so libraries indexed before they existed
+        // still get them.
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);",
+        )?;
+        self.conn
+            .execute_batch("CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);")?;
 
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(())
@@ -868,8 +890,12 @@ impl IndexDb {
              CREATE INDEX IF NOT EXISTS idx_category_subcategory ON sounds(category, subcategory);
              CREATE INDEX IF NOT EXISTS idx_confidence ON sounds(confidence);
              CREATE INDEX IF NOT EXISTS idx_favorite ON sounds(favorite);
+             CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);
+             CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);
              CREATE INDEX IF NOT EXISTS idx_mtime ON sounds(mtime_ns);
-             CREATE INDEX IF NOT EXISTS idx_bpm ON sounds(bpm);",
+             CREATE INDEX IF NOT EXISTS idx_bpm ON sounds(bpm);
+             CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);
+             CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);",
         )?;
         self.create_fts()?;
         self.rebuild_fts()?;
@@ -1050,21 +1076,142 @@ impl IndexDb {
     }
 
     pub fn search(&self, params: &SearchParams) -> Result<Vec<Sound>> {
-        let (sql, args) = self.build_search_sql(params, false, false);
+        let (sql, args) = Self::build_search_sql(params, false, false);
         let mut out = self.read_sounds(&sql, &args)?;
         if out.is_empty() && !params.query.trim().is_empty() {
-            if trigram_query(&params.query).is_some()
-                && self.count_search_mode(params, false)? == 0
+            if trigram_query(&params.query).is_some() && self.count_search_mode(params, false)? == 0
             {
-                let (sql, args) = self.build_search_sql(params, false, true);
+                let (sql, args) = Self::build_search_sql(params, false, true);
                 out = self.read_sounds(&sql, &args)?;
             }
         }
         Ok(out)
     }
 
+    pub fn set_favorite_matching(
+        &mut self,
+        params: &SearchParams,
+        excluded: &[String],
+        favorite: bool,
+    ) -> Result<(Vec<EditState>, u64)> {
+        self.update_matching(
+            params,
+            excluded,
+            "favorite = ?",
+            vec![rusqlite::types::Value::Integer(favorite as i64)],
+            "s.favorite != ?",
+            vec![rusqlite::types::Value::Integer(favorite as i64)],
+        )
+    }
+
+    pub fn set_category_matching(
+        &mut self,
+        params: &SearchParams,
+        excluded: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+    ) -> Result<(Vec<EditState>, u64)> {
+        use rusqlite::types::Value;
+
+        self.update_matching(
+            params,
+            excluded,
+            "category = ?, subcategory = ?, confidence = 1, category_manual = 1",
+            vec![
+                Value::Text(category.to_string()),
+                subcategory
+                    .map(|value| Value::Text(value.to_string()))
+                    .unwrap_or(Value::Null),
+            ],
+            "s.category IS NOT ? OR s.subcategory IS NOT ? OR s.confidence != 1 OR s.category_manual != 1",
+            vec![
+                Value::Text(category.to_string()),
+                subcategory
+                    .map(|value| Value::Text(value.to_string()))
+                    .unwrap_or(Value::Null),
+            ],
+        )
+    }
+
+    pub fn clear_category_matching(
+        &mut self,
+        params: &SearchParams,
+        excluded: &[String],
+    ) -> Result<(Vec<EditState>, u64)> {
+        self.update_matching(
+            params,
+            excluded,
+            "category = 'Uncategorized', subcategory = NULL, confidence = 0, \
+             matched_terms = NULL, category_manual = 0",
+            Vec::new(),
+            "s.category IS NOT 'Uncategorized' OR s.subcategory IS NOT NULL OR s.confidence != 0 OR s.matched_terms IS NOT NULL OR s.category_manual != 0",
+            Vec::new(),
+        )
+    }
+
+    fn update_matching(
+        &mut self,
+        params: &SearchParams,
+        excluded: &[String],
+        assignment: &str,
+        mut assignment_args: Vec<rusqlite::types::Value>,
+        changed_where: &str,
+        changed_args: Vec<rusqlite::types::Value>,
+    ) -> Result<(Vec<EditState>, u64)> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (count_sql, count_args) =
+            Self::build_search_sql_for(params, "COUNT(*)", true, false, &[], None);
+        let count = tx.query_row(&count_sql, params_from_iter(count_args.iter()), |row| {
+            row.get::<_, i64>(0)
+        })?;
+        let substring =
+            count == 0 && !params.query.trim().is_empty() && trigram_query(&params.query).is_some();
+
+        let (snapshot_sql, snapshot_args) = Self::build_search_sql_for(
+            params,
+            "s.path, s.favorite, s.category, s.subcategory, s.category_manual",
+            false,
+            substring,
+            excluded,
+            Some((changed_where, &changed_args)),
+        );
+        let mut before = Vec::new();
+        {
+            let mut statement = tx.prepare(&snapshot_sql)?;
+            let mut rows = statement.query(params_from_iter(snapshot_args.iter()))?;
+            while let Some(row) = rows.next()? {
+                before.push(EditState {
+                    path: row.get(0)?,
+                    favorite: row.get::<_, i64>(1)? == 1,
+                    category: row.get(2)?,
+                    subcategory: row.get(3)?,
+                    category_manual: row.get::<_, i64>(4)? == 1,
+                });
+            }
+        }
+
+        let (subquery, query_args) = Self::build_search_sql_for(
+            params,
+            "s.id",
+            false,
+            substring,
+            excluded,
+            Some((changed_where, &changed_args)),
+        );
+        assignment_args.extend(query_args);
+        let sql = format!("UPDATE sounds SET {assignment} WHERE id IN ({subquery})");
+        let changed = tx.execute(&sql, params_from_iter(assignment_args.iter()))? as u64;
+        tx.commit()?;
+        Ok((before, changed))
+    }
+
     fn read_sounds(&self, sql: &str, args: &[rusqlite::types::Value]) -> Result<Vec<Sound>> {
-        let mut stmt = self.conn.prepare(sql)?;
+        // `prepare_cached`, not `prepare`: the paged query is the same string
+        // every scroll frame, and recompiling it per call showed up on the
+        // 280k-library page bench as a constant tax on every fetch.
+        let mut stmt = self.conn.prepare_cached(sql)?;
         let mut rows = stmt.query(params_from_iter(args.iter()))?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -1082,7 +1229,7 @@ impl IndexDb {
     }
 
     fn count_search_mode(&self, params: &SearchParams, substring: bool) -> Result<u64> {
-        let (sql, args) = self.build_search_sql(params, true, substring);
+        let (sql, args) = Self::build_search_sql(params, true, substring);
         Ok(self
             .conn
             .query_row(&sql, params_from_iter(args.iter()), |r| r.get::<_, i64>(0))?
@@ -1092,10 +1239,20 @@ impl IndexDb {
     /// `(sql, bound parameters)` for both the search and the count, so the two
     /// can never drift apart.
     fn build_search_sql(
-        &self,
         params: &SearchParams,
         counting: bool,
         substring: bool,
+    ) -> (String, Vec<rusqlite::types::Value>) {
+        Self::build_search_sql_for(params, SOUND_COLUMNS, counting, substring, &[], None)
+    }
+
+    fn build_search_sql_for(
+        params: &SearchParams,
+        projection: &str,
+        counting: bool,
+        substring: bool,
+        excluded: &[String],
+        extra: Option<(&str, &[rusqlite::types::Value])>,
     ) -> (String, Vec<rusqlite::types::Value>) {
         use rusqlite::types::Value;
 
@@ -1124,9 +1281,9 @@ impl IndexDb {
                 format!("SELECT COUNT(*) FROM {from}")
             }
         } else if match_expr.is_some() {
-            format!("SELECT {SOUND_COLUMNS} FROM {from} WHERE {fts_table} MATCH ?")
+            format!("SELECT {projection} FROM {from} WHERE {fts_table} MATCH ?")
         } else {
-            format!("SELECT {SOUND_COLUMNS} FROM {from}")
+            format!("SELECT {projection} FROM {from}")
         };
 
         if let Some(expr) = &match_expr {
@@ -1179,6 +1336,17 @@ impl IndexDb {
         if params.favorite_only {
             clauses.push("s.favorite = 1".to_string());
         }
+        if !excluded.is_empty() {
+            let holes = std::iter::repeat_n("?", excluded.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("s.path NOT IN ({holes})"));
+            args.extend(excluded.iter().cloned().map(Value::Text));
+        }
+        if let Some((clause, extra_args)) = extra {
+            clauses.push(format!("({clause})"));
+            args.extend_from_slice(extra_args);
+        }
 
         if !clauses.is_empty() {
             sql.push_str(if match_expr.is_some() {
@@ -1198,9 +1366,24 @@ impl IndexDb {
                 let col = sort.sql();
                 // NULLs last in both directions: an unset duration must not jump
                 // to the top just because the user sorted descending.
-                sql.push_str(&format!(
-                    " ORDER BY {col} IS NULL, {col} {dir}, s.filename COLLATE NOCASE ASC"
-                ));
+                //
+                // Written without the `{col} IS NULL` prefix term. That expression
+                // defeats every sort index — SQLite will not use an index whose
+                // first ORDER BY term is an arbitrary expression — so each paged
+                // query materialised and sorted the whole 280k table before
+                // applying OFFSET: the scroll freeze. `NULLS LAST` keeps the
+                // semantics and lets an index serve the sort.
+                //
+                // `s.filename COLLATE NOCASE` as the tiebreaker only when the
+                // sort column is not already filename: the duplicate term would
+                // force a TEMP B-TREE even with the index, because SQLite will
+                // not prove the second term ordered when the first equals it.
+                let tie = if matches!(sort, SortColumn::Filename) {
+                    ""
+                } else {
+                    ", s.filename COLLATE NOCASE ASC"
+                };
+                sql.push_str(&format!(" ORDER BY {col} {dir} NULLS LAST{tie}"));
             }
             sql.push_str(" LIMIT ? OFFSET ?");
             args.push(Value::Integer(
@@ -1242,11 +1425,9 @@ impl IndexDb {
         } else {
             "SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds"
         };
-        let (favorites, total) = self.conn.query_row(
-            sql,
-            [],
-            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
-        )?;
+        let (favorites, total) = self.conn.query_row(sql, [], |r| {
+            Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64))
+        })?;
         Ok((favorites, total))
     }
 
@@ -1516,7 +1697,8 @@ mod tests {
         let mut db = db();
         db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
         db.begin_scan().unwrap();
-        db.stage_scan_batch(&[("C:/lib/a.wav".into(), 101, 1)]).unwrap();
+        db.stage_scan_batch(&[("C:/lib/a.wav".into(), 101, 1)])
+            .unwrap();
         let batch = db.scan_batch(None, 10, true).unwrap();
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].filesize, 101);

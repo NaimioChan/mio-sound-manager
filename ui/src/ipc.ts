@@ -167,6 +167,15 @@ export interface SearchRequest {
   offset?: number
 }
 
+/** A bulk edit whose targets are resolved by the current filter in Rust. */
+export interface MatchingEditRequest {
+  request: SearchRequest
+  exclude?: string[]
+  /** Optional ordered window; omitted/zero limit means the complete match set. */
+  offset?: number
+  limit?: number
+}
+
 export const api = {
   status: () => invoke<AppStatus>('get_status'),
 
@@ -258,15 +267,6 @@ export const api = {
 
   search: (request: SearchRequest) => invoke<SoundRow[]>('search', { request }),
 
-  /**
-   * Every path the filter matches, for "select all".
-   *
-   * Separate from `search`: that one returns full rows and clamps at 5,000,
-   * because a table page has no reason to be bigger. Selecting everything in a
-   * filtered subset of a 280k library is not a page.
-   */
-  matchingPaths: (request: SearchRequest) => invoke<string[]>('list_matching_paths', { request }),
-
   /** Row count for the current filter, so "38 of 27,525" is never a guess. */
   countMatching: (request: SearchRequest) => invoke<number>('count_matching', { request }),
 
@@ -282,6 +282,18 @@ export const api = {
     invoke<number>('set_category', { paths, category, subcategory: subcategory ?? null }),
 
   clearCategory: (paths: string[]) => invoke<number>('clear_category', { paths }),
+
+  setFavoriteMatching: (request: MatchingEditRequest, favorite: boolean) =>
+    invoke<number>('set_favorite_matching', { request, favorite }),
+
+  setCategoryMatching: (
+    request: MatchingEditRequest,
+    category: string,
+    subcategory?: string | null
+  ) => invoke<number>('set_category_matching', { request, category, subcategory: subcategory ?? null }),
+
+  clearCategoryMatching: (request: MatchingEditRequest) =>
+    invoke<number>('clear_category_matching', { request }),
 
   undo: () => invoke<EditKind | null>('undo'),
   redo: () => invoke<EditKind | null>('redo'),

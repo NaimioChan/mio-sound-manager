@@ -507,6 +507,11 @@ button {
   gap: 0;
 }
 
+.row.skeleton {
+  background: var(--theme-color-2);
+  pointer-events: none;
+}
+
 /* The header is outside the scrolling body, so its tracks have to be told how
    much width the scrollbar took. Padding does not work: on a grid with
    `box-sizing: border-box` the padding shrinks the content box and the `fr`

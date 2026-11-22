@@ -48,7 +48,6 @@ export const ja: Record<MessageKey, string> = {
   'status.noDevice': 'オーディオデバイスを利用できません',
   'status.enginePeriod': 'エンジン周期 {ms} ms',
   'status.selected': '{count} 件選択',
-  'status.loaded': '{loaded} / {matching} 件読み込み済み',
   'status.waveform': '波形 {ms} ms',
 
   'menu.play': '再生',
@@ -103,8 +102,6 @@ export const ja: Record<MessageKey, string> = {
   'row.addFavorite': 'お気に入りに追加',
   'row.removeFavorite': 'お気に入りから削除',
   'table.noMatch': '一致するサウンドはありません。',
-  'table.count': '{shown} / {total}',
-  'table.scrollForMore': 'スクロールで続きを表示',
   'table.searching': '検索中…',
 
   'side.categories': 'カテゴリ',
@@ -162,11 +159,9 @@ export const ja: Record<MessageKey, string> = {
   'settings.reveal': '表示',
   'settings.addLibrary': '別のライブラリを追加',
   'settings.openLibrary': 'ライブラリを開く…',
-  'settings.rowsPerPage': '1 ページの行数',
   'settings.showCategory': 'カテゴリ列を表示',
   'settings.behaviour': '動作',
   'settings.autoPlay': '選択時に自動再生',
-  'settings.infiniteScroll': '無限スクロール',
   'settings.appearance': '外観',
   'settings.zoom': '表示倍率',
   'settings.language': '言語',

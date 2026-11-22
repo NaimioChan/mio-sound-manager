@@ -29,7 +29,9 @@ pub mod probe;
 pub mod wav_header;
 
 pub use classify::{Classification, Classifier};
-pub use db::{CategoryFacet, IndexDb, SearchParams, SortColumn, SortDir, Sound, SoundRow};
+pub use db::{
+    CategoryFacet, EditState, IndexDb, SearchParams, SortColumn, SortDir, Sound, SoundRow,
+};
 pub use error::{IndexError, Result};
 pub use folders::{FolderNode, build_folder_tree, folder_range, relative_folder};
 pub use indexer::{IndexOptions, IndexReport, StageTimings, index_folder};

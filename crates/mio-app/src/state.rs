@@ -30,8 +30,8 @@ use mio_engine::{
 
 use crate::audio_config::{AudioConfig, AudioStore};
 use crate::commands::{
-    AppStatus, AudioDeviceDto, FolderNodeDto, LibraryStatus, PlaybackPosition, SearchRequest,
-    SoundDto, WaveformDto,
+    AppStatus, AudioDeviceDto, FolderNodeDto, LibraryStatus, MatchingEditRequest, PlaybackPosition,
+    SearchRequest, SoundDto, WaveformDto,
 };
 use crate::error::{AppError, AppResult};
 use crate::history::{EditKind, History};
@@ -1019,8 +1019,7 @@ impl AppState {
         // Any decode already in flight belongs to a request this one supersedes.
         let epoch = self.bump_epoch();
         // A superseded decode-ahead may have parked a window in the engine.
-        self.with_engine(|engine| engine.clear_queued())
-            .ok();
+        self.with_engine(|engine| engine.clear_queued()).ok();
 
         let looping = self
             .loop_state
@@ -1043,7 +1042,9 @@ impl AppState {
                 self.remember_clip(path.to_string(), Arc::clone(&clip));
                 return Ok(());
             }
-            if !long_file || start < clip.window_start_frames as f64 / clip.format.sample_rate as f64 {
+            if !long_file
+                || start < clip.window_start_frames as f64 / clip.format.sample_rate as f64
+            {
                 let result = match start_at {
                     Some(at) if at > 0.0 => self.publish_at(Arc::clone(&clip), at),
                     _ => self.publish(Arc::clone(&clip), PublishSource::Initial),
@@ -1132,9 +1133,9 @@ impl AppState {
                 // The file's total in device frames: the clip reports it in
                 // source frames (`total_frames` is source-rate based), so the
                 // chain bound converts at the device rate.
-                let total_device_frames =
-                    (total_frames as f64 * engine_format.sample_rate as f64 / window_rate as f64)
-                        .ceil() as usize;
+                let total_device_frames = (total_frames as f64 * engine_format.sample_rate as f64
+                    / window_rate as f64)
+                    .ceil() as usize;
                 // Frames already covered by published or queued windows. The
                 // chain stops when that reaches the file's total; the render
                 // callback reports `finished` on its own for the last segment.
@@ -1432,23 +1433,11 @@ impl AppState {
             .collect())
     }
 
-    /// Every path the filter matches, for "select all".
-    ///
-    /// A separate query rather than `search` with a huge limit: `search` clamps at
-    /// 5,000 rows because a table page has no reason to be bigger, and selecting
-    /// everything is not a table page. Only paths come back, so a 280k selection
-    /// is a few megabytes of strings rather than tens of megabytes of row DTOs.
-    pub fn matching_paths(&self, request: SearchRequest) -> AppResult<Vec<String>> {
-        let library = self.library()?;
-        // `limit: 0` means "no limit" for this call specifically; the index's
-        // clamp is for pages, and this is not a page.
-        let mut params = request.into_params()?;
-        params.limit = u32::MAX;
-        Ok(library
-            .search(&params)?
-            .into_iter()
-            .map(|s| s.path)
-            .collect())
+    fn matching_edit_params(edit: &MatchingEditRequest) -> AppResult<mio_index::SearchParams> {
+        let mut params = edit.request.clone().into_params()?;
+        params.offset = edit.offset.unwrap_or(0);
+        params.limit = edit.limit.unwrap_or(u32::MAX);
+        Ok(params)
     }
 
     /// How many rows the filter matches, for the status bar's "38 of 27,525".
@@ -1519,6 +1508,57 @@ impl AppState {
         })?;
         self.record(edit);
         Ok(paths.len() as u64)
+    }
+
+    pub fn set_favorite_matching(
+        &self,
+        edit: MatchingEditRequest,
+        favorite: bool,
+    ) -> AppResult<u64> {
+        let library = self.library()?;
+        let params = Self::matching_edit_params(&edit)?;
+        let kind = if favorite {
+            EditKind::Favorite
+        } else {
+            EditKind::Unfavorite
+        };
+        let (before, changed) = library.set_favorite_matching(&params, &edit.exclude, favorite)?;
+        if changed == 0 {
+            return Ok(0);
+        }
+        let entry = crate::history::edit_from_snapshot(&library, kind, before);
+        self.record(entry);
+        Ok(changed)
+    }
+
+    pub fn set_category_matching(
+        &self,
+        edit: MatchingEditRequest,
+        category: &str,
+        subcategory: Option<&str>,
+    ) -> AppResult<u64> {
+        let library = self.library()?;
+        let params = Self::matching_edit_params(&edit)?;
+        let (before, changed) =
+            library.set_category_matching(&params, &edit.exclude, category, subcategory)?;
+        if changed == 0 {
+            return Ok(0);
+        }
+        let entry = crate::history::edit_from_snapshot(&library, EditKind::SetCategory, before);
+        self.record(entry);
+        Ok(changed)
+    }
+
+    pub fn clear_category_matching(&self, edit: MatchingEditRequest) -> AppResult<u64> {
+        let library = self.library()?;
+        let params = Self::matching_edit_params(&edit)?;
+        let (before, changed) = library.clear_category_matching(&params, &edit.exclude)?;
+        if changed == 0 {
+            return Ok(0);
+        }
+        let entry = crate::history::edit_from_snapshot(&library, EditKind::ClearCategory, before);
+        self.record(entry);
+        Ok(changed)
     }
 
     fn record(&self, edit: crate::history::Edit) {
@@ -1722,7 +1762,9 @@ impl PrefetchCache {
         if let Some((_, _, old_size)) = self.entries.remove(&path) {
             self.bytes = self.bytes.saturating_sub(old_size);
         }
-        while self.entries.len() >= Self::MAX_ENTRIES || self.bytes.saturating_add(size) > Self::MAX_BYTES {
+        while self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(size) > Self::MAX_BYTES
+        {
             let Some(oldest) = self
                 .entries
                 .iter()
@@ -1738,7 +1780,6 @@ impl PrefetchCache {
         self.bytes = self.bytes.saturating_add(size);
         self.entries.insert(path, (clip, Instant::now(), size));
     }
-
 }
 
 fn decode_fingerprint(path: &str) -> Option<(u64, u128)> {

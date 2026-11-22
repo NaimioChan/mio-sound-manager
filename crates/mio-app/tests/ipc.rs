@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use mio_app::AppState;
 use mio_app::EditKind;
+use mio_app::MatchingEditRequest;
 use mio_app::SearchRequest;
 
 /// Where test audio goes. `$TMPDIR` on this host points at Hermes' scratch dir.
@@ -1070,6 +1071,108 @@ fn undo_restores_the_previous_category_not_just_the_previous_flag() {
         .expect("row");
     assert_eq!(after.category, before);
     assert_eq!(after.category_manual, before_manual);
+
+    drop(root);
+}
+
+#[test]
+fn matching_edit_respects_filter_exclusions_window_and_undo() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "matching-edit");
+    let request = SearchRequest {
+        query: "gunshot".into(),
+        ..Default::default()
+    };
+    let rows = state.search(request.clone()).expect("matching rows");
+    assert_eq!(rows.len(), 2);
+
+    let changed = state
+        .set_favorite_matching(
+            MatchingEditRequest {
+                request: request.clone(),
+                exclude: vec![rows[0].path.clone()],
+                ..Default::default()
+            },
+            true,
+        )
+        .expect("favorite matching rows except one");
+    assert_eq!(changed, 1);
+    let after = state.search(request.clone()).expect("rows after edit");
+    assert_eq!(after.iter().filter(|row| row.favorite).count(), 1);
+    assert_eq!(state.history_state().0, Some(EditKind::Favorite));
+    state.undo().expect("undo matching favorite");
+    assert!(
+        state
+            .search(request.clone())
+            .expect("rows after undo")
+            .iter()
+            .all(|row| !row.favorite)
+    );
+
+    state
+        .set_category_matching(
+            MatchingEditRequest {
+                request: request.clone(),
+                offset: Some(1),
+                limit: Some(1),
+                ..Default::default()
+            },
+            "Matching Edit",
+            Some("Window"),
+        )
+        .expect("categorize one-row window");
+    let categorized = state
+        .search(request.clone())
+        .expect("rows after category edit");
+    assert_eq!(
+        categorized
+            .iter()
+            .filter(|row| row.category == "Matching Edit")
+            .count(),
+        1
+    );
+    state.undo().expect("undo matching category");
+    assert!(
+        state
+            .search(request)
+            .expect("rows after category undo")
+            .iter()
+            .all(|row| row.category != "Matching Edit")
+    );
+
+    let all = SearchRequest {
+        query: "gunshot".into(),
+        ..Default::default()
+    };
+    state
+        .set_category_matching(
+            MatchingEditRequest {
+                request: all.clone(),
+                ..Default::default()
+            },
+            "Matching Edit",
+            None,
+        )
+        .expect("categorize all matching rows");
+    let before_clear = state.search(all.clone()).expect("rows before clear");
+    state
+        .clear_category_matching(MatchingEditRequest {
+            request: all.clone(),
+            exclude: vec![before_clear[0].path.clone()],
+            ..Default::default()
+        })
+        .expect("clear category except one row");
+    let after_clear = state.search(all.clone()).expect("rows after clear");
+    assert_eq!(after_clear[0].category, "Matching Edit");
+    assert_eq!(after_clear[1].category, "Uncategorized");
+    state.undo().expect("undo matching category clear");
+    assert!(
+        state
+            .search(all)
+            .expect("rows after clear undo")
+            .iter()
+            .all(|row| row.category == "Matching Edit")
+    );
 
     drop(root);
 }

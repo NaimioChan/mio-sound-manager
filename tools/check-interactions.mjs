@@ -24,7 +24,7 @@ if (!page) {
 // Copy coverage is `check-i18n.mjs`'s job, not this script's.
 await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
 await page.reload()
-await page.waitForSelector('.row', { timeout: 60_000 })
+await page.waitForSelector('.row[data-path]', { timeout: 60_000 })
 await page.waitForTimeout(1000)
 
 const problems = []
@@ -42,29 +42,47 @@ const search = async (text) => {
     input.value = text
     input.dispatchEvent(new CustomEvent('valueChange', { detail: text, bubbles: true }))
   }, text)
-  await page.waitForTimeout(450)
+  await page.waitForFunction(
+    () => document.querySelector('.table')?.dataset.querying === 'false',
+    undefined,
+    { timeout: 20_000 }
+  )
+  await page.waitForFunction(() => document.querySelector('.table')?.dataset.epoch === document.querySelector('.table')?.dataset.segmentsEpoch, undefined, { timeout: 20_000 })
+  await page.waitForTimeout(80)
 }
 
-const rowCount = () => page.locator('.row').count()
+const rowCount = () => page.locator('.row[data-path]').count()
 const total = await rowCount()
 check(total > 0, 'the list has rows', `${total}`)
 
-const first = await page.locator('.row').first().getAttribute('data-path')
+const first = await page.locator('.row[data-path]').first().getAttribute('data-path')
 check(!!first, 'rows carry their path', first?.slice(-40))
 
+const matchingCount = await page.evaluate(() => {
+  const text = document.querySelector('.main-head .dim.small')?.textContent ?? ''
+  return Number(text.replace(/\D/g, ''))
+})
+const spacerHeight = await page.locator('.table-body > div').evaluate((el) => parseFloat(el.style.height))
+check(
+  Math.abs(spacerHeight / 28 - matchingCount) < 1,
+  'scroll height represents the full result set',
+  `${Math.round(spacerHeight / 28)} rows for ${matchingCount} matches`
+)
+check((await rowCount()) < 100, 'DOM rows stay bounded by the virtual window', `${await rowCount()} rows`)
+
 // --- clicking a row selects and activates it
-await page.locator('.row').first().click()
+await page.locator('.row[data-path]').first().click()
 await page.waitForTimeout(350)
-check((await page.locator('.row.active').count()) === 1, 'clicking a row makes it active')
-check((await page.locator('.row.selected').count()) === 1, 'clicking a row selects it')
+check((await page.locator('.row.active[data-path]').count()) === 1, 'clicking a row makes it active')
+check((await page.locator('.row.selected[data-path]').count()) === 1, 'clicking a row selects it')
 
 // --- Ctrl+click adds, Shift+click extends
-await page.locator('.row').nth(2).click({ modifiers: ['Control'] })
+await page.locator('.row[data-path]').nth(2).click({ modifiers: ['Control'] })
 await page.waitForTimeout(250)
-check((await page.locator('.row.selected').count()) === 2, 'Ctrl+click extends the selection')
-await page.locator('.row').nth(5).click({ modifiers: ['Shift'] })
+check((await page.locator('.row.selected[data-path]').count()) === 2, 'Ctrl+click extends the selection')
+await page.locator('.row[data-path]').nth(5).click({ modifiers: ['Shift'] })
 await page.waitForTimeout(250)
-const shiftCount = await page.locator('.row.selected').count()
+const shiftCount = await page.locator('.row.selected[data-path]').count()
 check(shiftCount >= 4, 'Shift+click selects a range', `${shiftCount} rows`)
 
 // --- the footer and status bar report the selection
@@ -74,14 +92,20 @@ check(/\d+ selected/.test(status), 'the status bar reports the selection', statu
 // --- sorting: click a header twice, expect the arrow to flip
 const sortBefore = await page.locator('.head-cell .sort-arrow').first().textContent()
 await page.locator('.head-cell[data-sort-key="durationS"]').click()
-await page.waitForTimeout(500)
+await page.waitForFunction(() => {
+  const table = document.querySelector('.table')
+  return table?.dataset.querying === 'false' && table.dataset.epoch === table.dataset.segmentsEpoch
+}, undefined, { timeout: 20_000 })
 const lengthArrow = await page
   .locator('.head-cell[data-sort-key="durationS"]')
   .locator('.sort-arrow')
   .textContent()
 check(!!lengthArrow, 'clicking Length sorts by it', lengthArrow)
 await page.locator('.head-cell[data-sort-key="durationS"]').click()
-await page.waitForTimeout(500)
+await page.waitForFunction(() => {
+  const table = document.querySelector('.table')
+  return table?.dataset.querying === 'false' && table.dataset.epoch === table.dataset.segmentsEpoch
+}, undefined, { timeout: 20_000 })
 const flipped = await page
   .locator('.head-cell[data-sort-key="durationS"]')
   .locator('.sort-arrow')
@@ -96,18 +120,84 @@ check(!!sortBefore, 'the default sort shows an arrow', sortBefore)
 // --- search filters the list, and clearing restores it
 await search('kick')
 const kickCount = await rowCount()
-const foot = (await page.locator('.table-foot').textContent()) ?? ''
 check(kickCount > 0, 'searching "kick" finds rows', `${kickCount}`)
-check(/of/.test(foot), 'the footer reports how much matched', foot.trim())
+const matchLabel = (await page.locator('.main-head .dim.small').textContent()) ?? ''
+check(/matches/.test(matchLabel), 'the header reports the full match count', matchLabel.trim())
 await search('zzzznotasoundzzz')
 check((await rowCount()) === 0, 'a query with no hits empties the list')
 check((await page.locator('.table-empty').count()) === 1, 'an empty result shows the empty state')
 await search('')
 await page.waitForTimeout(400)
-check((await rowCount()) === total, 'clearing the query restores the list')
+check((await rowCount()) > 0, 'clearing the query restores visible rows')
+const restoredMatchLabel = (await page.locator('.main-head .dim.small').textContent()) ?? ''
+check(/282,762/.test(restoredMatchLabel), 'clearing the query restores the full result count', restoredMatchLabel)
+
+// Scroll across sparse windows and verify each target window is populated while
+// the segment LRU keeps renderer heap growth bounded.
+const heapSession = await page.context().newCDPSession(page)
+const heapUsed = async () => {
+  await heapSession.send('HeapProfiler.collectGarbage')
+  const usage = await heapSession.send('Runtime.getHeapUsage')
+  return usage.usedSize
+}
+const heapBeforeScroll = await heapUsed()
+for (let step = 1; step <= 20; step++) {
+  const target = Math.floor((matchingCount - 1) * step / 20)
+  await page.evaluate((target) => {
+    const el = document.querySelector('.table-body')
+    el.scrollTop = target * 28
+    el.dispatchEvent(new Event('scroll'))
+  }, target)
+  await page.waitForFunction(
+    (target) => [...document.querySelectorAll('.row[data-path]')].some((row) => {
+      const index = Number(row.getAttribute('aria-posinset')) - 1
+      return index >= target - 40 && index <= target + 70
+    }),
+    target,
+    { timeout: 10_000 }
+  )
+}
+await page.evaluate(() => {
+  const el = document.querySelector('.table-body')
+  el.scrollTop = 0
+  el.dispatchEvent(new Event('scroll'))
+})
+const heapAfterScroll = await heapUsed()
+if (heapBeforeScroll !== null && heapAfterScroll !== null) {
+  const growth = heapAfterScroll - heapBeforeScroll
+  check(growth < 64 * 1024 * 1024, 'scrolling does not grow renderer heap without bound', `${Math.round(growth / 1024 / 1024)} MiB`)
+}
+await heapSession.detach()
+
+// Home/End navigate by absolute index, fetching an unloaded window when needed.
+await page.evaluate(() => document.activeElement?.blur())
+await page.keyboard.press('Home')
+await page.waitForFunction(
+  () => Number(document.querySelector('.row.active[data-path]')?.getAttribute('aria-posinset')) === 1,
+  undefined,
+  { timeout: 10_000 }
+)
+check(true, 'Home fetches and activates the first virtual row')
+await page.keyboard.press('End')
+await page.waitForFunction(
+  (count) => {
+    const row = document.querySelector('.row.active[data-path]')
+    return Number(row?.getAttribute('aria-posinset')) === count
+  },
+  matchingCount,
+  { timeout: 20_000 }
+)
+check(true, 'End fetches and activates the final virtual row', `${matchingCount}`)
+await page.keyboard.press('Control+a')
+await page.waitForFunction(
+  (count) => document.querySelector('.statusbar')?.textContent?.includes(`${count.toLocaleString()} selected`),
+  matchingCount,
+  { timeout: 5_000 }
+)
+check(true, 'Ctrl+A selects the filter without transferring paths', `${matchingCount}`)
 
 // --- the row context menu
-await page.locator('.row').first().click({ button: 'right' })
+await page.locator('.row[data-path]').first().click({ button: 'right' })
 await page.waitForTimeout(300)
 const menuItems = await page.locator('.menu-item').count()
 check(menuItems >= 6, 'right-click opens the row menu', `${menuItems} items`)
@@ -120,7 +210,7 @@ await page.waitForTimeout(200)
 check((await page.locator('.menu').count()) === 0, 'Escape closes the menu')
 
 // --- the category dialog is an iX modal
-await page.locator('.row').first().click({ button: 'right' })
+await page.locator('.row[data-path]').first().click({ button: 'right' })
 await page.locator('.menu-item[data-menu-id="category"]').click()
 await page.waitForTimeout(900)
 check((await page.locator('ix-modal').count()) === 1, 'Set Category opens an iX modal')
@@ -176,9 +266,7 @@ check(
   (await page.evaluate(() => localStorage.getItem('mio:settings'))) ===
     JSON.stringify({
       autoPlay: pressedAfter,
-      infiniteScroll: true,
-      showCategory: true,
-      pageSize: 500
+      showCategory: true
     }),
   'the toggle is persisted'
 )
@@ -199,14 +287,17 @@ const lengthArrowNow = await page
   .textContent()
 if (lengthArrowNow === '▲') {
   await page.locator('.head-cell[data-sort-key="durationS"]').click()
-  await page.waitForTimeout(700)
+  await page.waitForFunction(() => {
+    const table = document.querySelector('.table')
+    return table?.dataset.querying === 'false' && table.dataset.epoch === table.dataset.segmentsEpoch
+  }, undefined, { timeout: 20_000 })
 }
 const longestIndex = await page.evaluate(() => {
   const parse = (text) => {
     const m = /^(\d+):(\d+(?:\.\d+)?)$/.exec((text ?? '').trim())
     return m ? Number(m[1]) * 60 + Number(m[2]) : 0
   }
-  const rows = [...document.querySelectorAll('.row')]
+  const rows = [...document.querySelectorAll('.row[data-path]')]
   let best = 0
   let bestLen = -1
   rows.forEach((row, i) => {
@@ -222,7 +313,7 @@ const longestIndex = await page.evaluate(() => {
 })
 check(longestIndex.length > 3, 'the list holds a clip long enough to observe', `${longestIndex.length.toFixed(2)}s`)
 
-const longestRow = page.locator('.row').nth(longestIndex.index)
+const longestRow = page.locator('.row[data-path]').nth(longestIndex.index)
 const longestName = ((await longestRow.locator('.cell.name').textContent()) ?? '').trim()
 await longestRow.click()
 // Wait for the dock to actually be showing this clip. `.wave-time` appears for the

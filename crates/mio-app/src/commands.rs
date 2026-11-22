@@ -177,6 +177,17 @@ pub struct SearchRequest {
     pub offset: Option<u32>,
 }
 
+/// A filter-scoped edit. Paths stay in Rust; `exclude` contains only paths the
+/// user explicitly deselected after selecting the whole result set.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MatchingEditRequest {
+    pub request: SearchRequest,
+    pub exclude: Vec<String>,
+    pub offset: Option<u32>,
+    pub limit: Option<u32>,
+}
+
 impl SearchRequest {
     /// Validate and translate to the index's own parameter type.
     ///
@@ -562,42 +573,45 @@ pub fn get_library(state: State<'_, AppState>) -> AppResult<Option<LibraryStatus
 }
 
 #[tauri::command]
-pub fn search(state: State<'_, AppState>, request: SearchRequest) -> AppResult<Vec<SoundDto>> {
-    let library = state.library()?;
-    let params = request.into_params()?;
-    Ok(library
-        .search(&params)?
-        .into_iter()
-        .map(SoundDto::from)
-        .collect())
+pub async fn search(app: tauri::AppHandle, request: SearchRequest) -> AppResult<Vec<SoundDto>> {
+    // Async + blocking worker on purpose: a paged search against a 280k table is
+    // real work, and the sync form ran it on the main thread — the webview's own
+    // IPC then queued behind it and the window froze mid-scroll.
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let library = state.library()?;
+        let params = request.into_params()?;
+        Ok(library
+            .search(&params)?
+            .into_iter()
+            .map(SoundDto::from)
+            .collect())
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("search task failed: {e}")))?
+}
+
+/// How many rows the current filter matches. The status bar shows it next to the
+/// page count so "38 of 27,525" is never a guess.
+///
+/// Async + blocking worker, same reason as `search`: the count scans the whole
+/// filter, and a sync command would run that on the main thread.
+#[tauri::command]
+pub async fn count_matching(app: tauri::AppHandle, request: SearchRequest) -> AppResult<u64> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.count_matching(request)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("count task failed: {e}")))?
 }
 
 #[tauri::command]
 pub fn list_folders(state: State<'_, AppState>) -> AppResult<FolderNodeDto> {
     let library = state.library()?;
     Ok(library.folder_tree()?.into())
-}
-
-/// Every path the current filter matches, for "select all".
-///
-/// Separate from `search` on purpose: `search` returns full rows and clamps at
-/// 5,000, because a table page has no reason to be bigger. Selecting everything
-/// is a different question — the answer for a filtered subset of a 280k library
-/// is 280k paths — and materialising 280k row DTOs to keep a set of paths would
-/// be tens of megabytes of structs the caller throws away.
-#[tauri::command]
-pub fn list_matching_paths(
-    state: State<'_, AppState>,
-    request: SearchRequest,
-) -> AppResult<Vec<String>> {
-    state.matching_paths(request)
-}
-
-/// How many rows the current filter matches. The status bar shows it next to the
-/// page count so "38 of 27,525" is never a guess.
-#[tauri::command]
-pub fn count_matching(state: State<'_, AppState>, request: SearchRequest) -> AppResult<u64> {
-    state.count_matching(request)
 }
 
 /// Facet counts, favorites and total for the sidebar, in one round trip.
@@ -633,6 +647,33 @@ pub fn set_category(
 #[tauri::command]
 pub fn clear_category(state: State<'_, AppState>, paths: Vec<String>) -> AppResult<u64> {
     state.clear_category(&paths)
+}
+
+#[tauri::command]
+pub fn set_favorite_matching(
+    state: State<'_, AppState>,
+    request: MatchingEditRequest,
+    favorite: bool,
+) -> AppResult<u64> {
+    state.set_favorite_matching(request, favorite)
+}
+
+#[tauri::command]
+pub fn set_category_matching(
+    state: State<'_, AppState>,
+    request: MatchingEditRequest,
+    category: String,
+    subcategory: Option<String>,
+) -> AppResult<u64> {
+    state.set_category_matching(request, &category, subcategory.as_deref())
+}
+
+#[tauri::command]
+pub fn clear_category_matching(
+    state: State<'_, AppState>,
+    request: MatchingEditRequest,
+) -> AppResult<u64> {
+    state.clear_category_matching(request)
 }
 
 /// Native folder picker. Returns `None` when the user cancels.

@@ -61,9 +61,7 @@ pub fn from_filename(name: &str) -> Option<f64> {
         if chars[i] == 'b' && chars[i + 1] == 'p' && chars[i + 2] == 'm' {
             // A letter glued to `bpm` is a word, not a marker (`bpms`, `abpm`).
             let glued_before = i > 0 && chars[i - 1].is_ascii_alphabetic();
-            let glued_after = chars
-                .get(i + 3)
-                .is_some_and(|c| c.is_ascii_alphabetic());
+            let glued_after = chars.get(i + 3).is_some_and(|c| c.is_ascii_alphabetic());
 
             if !glued_before && !glued_after {
                 // `128bpm`: the number precedes the marker.
@@ -182,7 +180,10 @@ mod tests {
         // One pack writes 126.5 as `126-5`. The value reported is the whole part:
         // 126.5 sorts identically to 126 in any practical comparison, and the
         // alternative is an empty cell next to a name that clearly states a tempo.
-        assert_eq!(from_filename("VEC3 Special Sounds 12 Root E 126-5 BPM.wav"), Some(126.5));
+        assert_eq!(
+            from_filename("VEC3 Special Sounds 12 Root E 126-5 BPM.wav"),
+            Some(126.5)
+        );
     }
 
     #[test]

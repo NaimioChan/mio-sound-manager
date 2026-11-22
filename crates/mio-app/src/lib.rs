@@ -26,7 +26,7 @@ mod state;
 
 pub use commands::{
     AppStatus, AudioDeviceDto, FacetDto, FolderNodeDto, HistoryState, IndexProgress, LibraryStatus,
-    PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
+    MatchingEditRequest, PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
 };
 pub use error::AppError;
 pub use history::EditKind;
@@ -94,12 +94,14 @@ pub fn run() {
             commands::search,
             commands::get_library,
             commands::list_folders,
-            commands::list_matching_paths,
             commands::count_matching,
             commands::get_sidebar,
             commands::set_favorite,
             commands::set_category,
             commands::clear_category,
+            commands::set_favorite_matching,
+            commands::set_category_matching,
+            commands::clear_category_matching,
             commands::undo,
             commands::redo,
             commands::get_history,
