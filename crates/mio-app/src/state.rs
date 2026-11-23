@@ -629,7 +629,17 @@ impl AppState {
     /// Publish starting `start_at` seconds in. A seek is a starting offset on an
     /// immutable buffer, so it costs the same atomic store a normal start does.
     pub fn publish_at(&self, clip: Arc<DecodedAudio>, start_at: f64) -> AppResult<u64> {
-        let offset = (start_at.max(0.0) * self.output_format().sample_rate as f64) as u64;
+        let format = self.output_format();
+        let window_start_s = clip
+            .window_start_frames
+            .saturating_sub(clip.trimmed_leading_frames) as f64
+            / clip.source_rate as f64;
+        let relative_s = if clip.complete {
+            start_at.max(0.0)
+        } else {
+            (start_at - window_start_s).max(0.0)
+        };
+        let offset = (relative_s * format.sample_rate as f64).round() as u64;
         self.with_engine(|engine| engine.publish_from(clip, offset))
     }
 
@@ -1042,9 +1052,12 @@ impl AppState {
                 self.remember_clip(path.to_string(), Arc::clone(&clip));
                 return Ok(());
             }
-            if !long_file
-                || start < clip.window_start_frames as f64 / clip.format.sample_rate as f64
-            {
+            let window_start_s = clip
+                .window_start_frames
+                .saturating_sub(clip.trimmed_leading_frames) as f64
+                / clip.source_rate as f64;
+            let window_end_s = window_start_s + clip.frames as f64 / clip.format.sample_rate as f64;
+            if !long_file || (start >= window_start_s && start < window_end_s) {
                 let result = match start_at {
                     Some(at) if at > 0.0 => self.publish_at(Arc::clone(&clip), at),
                     _ => self.publish(Arc::clone(&clip), PublishSource::Initial),
@@ -1121,8 +1134,13 @@ impl AppState {
         let play_epoch = Arc::clone(&self.play_epoch);
         let decoder = self.decoder();
         let total_frames = first.total_frames;
-        let window_rate = first.format.sample_rate;
-        let start_frame = first.window_start_frames + first.frames;
+        let first_window_start = (first
+            .window_start_frames
+            .saturating_sub(first.trimmed_leading_frames) as f64
+            * engine_format.sample_rate as f64
+            / first.source_rate as f64)
+            .round() as usize;
+        let start_frame = first_window_start + first.frames;
         std::thread::Builder::new()
             .name("mio-decode-ahead".into())
             .spawn(move || {
@@ -1130,18 +1148,14 @@ impl AppState {
                     play_epoch.load(Ordering::Acquire) == epoch
                         && prefetch_generation.load(Ordering::Acquire) == requested_generation
                 };
-                // The file's total in device frames: the clip reports it in
-                // source frames (`total_frames` is source-rate based), so the
-                // chain bound converts at the device rate.
-                let total_device_frames = (total_frames as f64 * engine_format.sample_rate as f64
-                    / window_rate as f64)
-                    .ceil() as usize;
+                // `total_frames` and the chain cursor are both in device frames.
+                let total_device_frames = total_frames;
                 // Frames already covered by published or queued windows. The
                 // chain stops when that reaches the file's total; the render
                 // callback reports `finished` on its own for the last segment.
                 let mut covered = start_frame;
                 while alive(epoch) && covered < total_device_frames {
-                    let window_start_s = covered as f64 / window_rate as f64;
+                    let window_start_s = covered as f64 / engine_format.sample_rate as f64;
                     let window = mio_engine::DecodeWindow::at(window_start_s, WINDOW_SECONDS);
                     let decoded = decoder.with_window(window).decode_with_source(&path);
                     let clip = match decoded {

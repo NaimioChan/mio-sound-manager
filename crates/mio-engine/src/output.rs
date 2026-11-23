@@ -215,6 +215,15 @@ pub(crate) struct Mixer {
     seen_seq: u64,
 }
 
+/// Convert a decoded window's source-frame origin to the device timeline used
+/// by the render callback and playback monitor.
+fn window_start_device_frames(clip: &DecodedAudio, device_rate: u32) -> u64 {
+    let audible_source_frames = clip
+        .window_start_frames
+        .saturating_sub(clip.trimmed_leading_frames);
+    (audible_source_frames as f64 * device_rate as f64 / clip.source_rate as f64).round() as u64
+}
+
 impl Mixer {
     pub(crate) fn new(max_frames: usize, frame_bytes: usize) -> Self {
         Self {
@@ -377,7 +386,10 @@ impl Mixer {
                                 .store(next_frames as u64, Ordering::Release);
                             shared
                                 .active_window_start
-                                .store(next_clip.window_start_frames as u64, Ordering::Release);
+                                .store(
+                                    window_start_device_frames(&next_clip, clip.format.sample_rate),
+                                    Ordering::Release,
+                                );
                             // `active_frames` (the total duration the UI shows)
                             // stays untouched: both segments report the whole
                             // file's length.
@@ -753,9 +765,8 @@ impl Engine {
     /// every supported format is seekable from the header, so this never needs a
     /// decode from the top).
     ///
-    /// `offset_frames` is relative to the clip's buffer: for a full decode it is
-    /// the same coordinate the playhead shows, and for a window decode the
-    /// caller computes it against `window_start_frames` (`seek_from` does this).
+    /// `offset_frames` is relative to the clip's buffer. The window origin is
+    /// stored separately so the monitor can add it exactly once.
     /// Positions beyond the buffer are clamped to its end, which a zero-length
     /// window decode (a seek past EOF) degrades to instead of an error.
     pub fn publish_from(&self, clip: Arc<DecodedAudio>, offset_frames: u64) -> u64 {
@@ -765,7 +776,11 @@ impl Engine {
         let buffer_frames = clip.frames as u64;
         let total_frames = clip.total_frames.max(clip.frames) as u64;
         let offset = offset_frames.min(buffer_frames);
-        let window_start = (clip.window_start_frames + offset as usize) as u64;
+        // `pos_frames` already stores the relative offset inside the buffer.
+        // Keeping the origin separate prevents a seek from being counted twice
+        // in the playhead snapshot.
+        let window_start = window_start_device_frames(&clip, self.format.sample_rate)
+            .min(total_frames.saturating_sub(offset));
 
         self.shared.slots[next].store(Some(clip));
         self.shared.pos_frames.store(offset, Ordering::Release);

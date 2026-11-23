@@ -468,6 +468,45 @@ fn long_file_seek_to_an_undecoded_position_plays_from_there() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(advanced, "playhead should advance past the seek target");
+
+    // Replaying inside the cached first window used to add the absolute seek
+    // target to the window origin a second time, putting the playhead far ahead
+    // of the click. Seeking backwards outside that window must decode a new one.
+    let cached_target = 42.0;
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), Some(cached_target)))
+        .expect("cached-window seek");
+    let cached_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut cached = state.playback_position();
+    while (!cached.playing || cached.position_s < cached_target - 1.0)
+        && std::time::Instant::now() < cached_deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cached = state.playback_position();
+    }
+    assert!(
+        cached.position_s >= cached_target - 1.0
+            && cached.position_s < cached_target + 1.5,
+        "cached-window seek should start near the target, got {}",
+        cached.position_s
+    );
+
+    let before_window = 20.0;
+    tauri::async_runtime::block_on(state.play(&audio.to_string_lossy(), Some(before_window)))
+        .expect("backward window seek");
+    let backward_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut backward = state.playback_position();
+    while (!backward.playing || backward.position_s < before_window - 1.0)
+        && std::time::Instant::now() < backward_deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        backward = state.playback_position();
+    }
+    assert!(
+        backward.position_s >= before_window - 1.0
+            && backward.position_s < before_window + 1.5,
+        "backward seek should start near the target, got {}",
+        backward.position_s
+    );
     state.stop_playback().expect("stop seek playback");
 }
 

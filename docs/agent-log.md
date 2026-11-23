@@ -2,6 +2,13 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-23 16:00 · opencode · 波形 seek 坐标 hotfix，替换 0.2.0 安装包
+
+- 改：`crates/mio-engine/src/{decode,output}.rs` 统一窗口起点、播放头和 seek offset 的设备帧坐标，修复窗口起点与相对 offset 重复计入导致的定位严重偏差/越界；`crates/mio-app/src/state.rs` 修正缓存窗口复用、回退 seek 和不同源/设备采样率换算；`crates/mio-app/tests/ipc.rs` 增加缓存窗口与回退窗口回归；`tools/check-interactions.mjs` 增加 seek 不越界且接近点击位置断言。
+- 验证：`npm run build`（在 `ui/`，通过）；`cargo test --release --workspace`（20 app + 29 IPC + 24 engine + 103 index，通过）；目标 IPC 回归通过；安装版 `check-shipped.mjs 9227` 14/14 通过；安装版 `check-interactions.mjs 9227` 全部通过，22 分钟素材点击 70% 后 `947.71s / 1352.90s`，继续顺播。
+- 发版：`Mio Sound Manager_0.2.0_x64-setup.exe` 重打包，带 ASIO；同名连字符副本已用 `gh release upload --clobber` 替换 GitHub `v0.2.0` 附件，远端与本地 SHA-256 均为 `f5d7cc8a…`。
+- 遗留：`cargo fmt --check` 仍受仓库既有 `asio.rs`、`bpm.rs`、`db.rs` 及生成文件格式差异影响；本轮未格式化无关文件。
+
 ## 2026-11-23 · opencode · 品牌 logo 进顶栏与 exe 图标，发 0.2.0
 
 - 改：`logo/`（设计源 `.figcraft`、导出 `.png` 1000×830 带透明、`.svg`）；`tools/make-app-icon.py` 把非正方形源图居中放进 1024×1024 透明画布（占 86%，与 Windows 自家图标留白相当），`tauri icon` 据此重生成 `crates/mio-app/icons/` 全套（生成后删掉 `android/` `ios/` 两棵目录，本项目只做 Windows）；`ui/src/assets/brand.svg` + `App.tsx` 顶栏 `<img class="brand-mark" alt="" aria-hidden>`，`styles.css` 高 26px 宽自适应、`flex: none`，品牌蓝不跟主题换色；版本 0.1.2 → 0.2.0（`Cargo.toml` 与 `tauri.conf.json` 两处）；`tools/check-shipped.mjs` 版本断言改 0.2.0 并新增三项 logo 断言；`docs/app.md`、`AGENTS.md` 补说明。

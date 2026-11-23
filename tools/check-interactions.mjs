@@ -421,6 +421,16 @@ if (box) {
     'clicking the waveform seeks past the halfway point',
     `${seeked.toFixed(2)}s of ${duration.toFixed(2)}s`
   )
+  check(
+    seeked < duration,
+    'waveform seek never moves the playhead beyond the clip',
+    `${seeked.toFixed(2)}s of ${duration.toFixed(2)}s`
+  )
+  check(
+    Math.abs(seeked - duration * 0.7) < duration * 0.15,
+    'waveform seek lands near the clicked position',
+    `${seeked.toFixed(2)}s of ${duration.toFixed(2)}s`
+  )
   // The seek target is ~70% of the file, far beyond any window decoded so
   // far. With the window chain the playhead must land there and keep going:
   // one second later it reads at or beyond the target, which only holds if

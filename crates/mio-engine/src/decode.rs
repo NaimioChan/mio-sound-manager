@@ -273,20 +273,23 @@ impl Decoder {
         };
         let audible_start = window_start_frames.saturating_sub(trimmed);
 
-        let total_frames = if complete {
-            audible_start + frames
+        let decoded_source_frames = source.samples.len() / src_channels.max(1);
+        let total_source_frames = if complete {
+            audible_start.saturating_add(decoded_source_frames)
         } else {
             declared_frames
-                .map(|total| {
-                    // The container's total is in raw trimmed-timeline source
-                    // frames; the audible-stream length subtracts the trim. For
-                    // a window decode the total is the whole file, not the
-                    // window, so it is independent of `audible_start`.
-                    total.saturating_sub(trimmed)
-                })
-                .unwrap_or(audible_start + frames)
-                .max(audible_start + frames)
+                .map(|total| total.saturating_sub(trimmed))
+                .unwrap_or(audible_start.saturating_add(decoded_source_frames))
         };
+        let total_device_frames = (total_source_frames as f64
+            * self.format.sample_rate as f64
+            / src_rate as f64)
+            .round() as usize;
+        let audible_start_device_frames =
+            (audible_start as f64 * self.format.sample_rate as f64 / src_rate as f64).round()
+                as usize;
+        let total_frames =
+            total_device_frames.max(audible_start_device_frames.saturating_add(frames));
 
         Ok((
             DecodedAudio {
