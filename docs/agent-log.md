@@ -6,7 +6,8 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 - 改：`logo/`（设计源 `.figcraft`、导出 `.png` 1000×830 带透明、`.svg`）；`tools/make-app-icon.py` 把非正方形源图居中放进 1024×1024 透明画布（占 86%，与 Windows 自家图标留白相当），`tauri icon` 据此重生成 `crates/mio-app/icons/` 全套（生成后删掉 `android/` `ios/` 两棵目录，本项目只做 Windows）；`ui/src/assets/brand.svg` + `App.tsx` 顶栏 `<img class="brand-mark" alt="" aria-hidden>`，`styles.css` 高 26px 宽自适应、`flex: none`，品牌蓝不跟主题换色；版本 0.1.2 → 0.2.0（`Cargo.toml` 与 `tauri.conf.json` 两处）；`tools/check-shipped.mjs` 版本断言改 0.2.0 并新增三项 logo 断言；`docs/app.md`、`AGENTS.md` 补说明。
 - 验证：`npm run build`、`cargo test --release --workspace`（app 20 / IPC 29 / engine 24 / index 103）全过；release exe（WASAPI+ASIO）CDP 实测 `check-layout` / `check-themes`（七套对比度不变）/ `check-interactions` / `check-volume` / `check-tags` / `check-region` / `check-scroll-deep` / `check-i18n`（三语 150 键）全过；`check-shipped` 14/14 通过（含版本 0.2.0、ASIO、logo 三项）；`ExtractAssociatedIcon` 取出的 32×32 与源图一致，确认图标嵌进了 exe。
-- 遗留：`cargo test --release` 会覆盖 `target/release/mio-sound-manager.exe` 成不带 ASIO 的版本，之后必须重跑 `cargo build -p mio-app --release --features asio` 再验产物——本轮踩到一次，`check-shipped` 的 ASIO 断言抓出来的。
+- 发版：`tauri build --features asio --bundles nsis` → 4331340 字节；NSIS `/S` 装到 `%LOCALAPPDATA%\Mio Sound Manager`，版本资源 0.2.0，单起装好的 exe（CDP 9227）跑 `check-shipped` 14/14；release v0.2.0 三个附件全 `uploaded`，安装包 digest `829258f3…` 与本地 SHA-256 一致，`curl` 下载回来重算仍是同一个值。
+- 遗留：`cargo test --release` 会覆盖 `target/release/mio-sound-manager.exe` 成不带 ASIO 的版本，之后必须重跑 `cargo build -p mio-app --release --features asio` 再验产物——本轮踩到一次，`check-shipped` 的 ASIO 断言抓出来的。GitHub 会把安装包文件名里的空格换成点（`Mio.Sound.Manager_…`），所以上传用的是改名后的 `Mio-Sound-Manager_0.2.0_x64-setup.exe`；两条都写进了 `tools/README.md`。
 
 ## 2026-11-22 · opencode · BPM 提取放宽到名字与路径
 

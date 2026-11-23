@@ -143,8 +143,15 @@ build`。**跑它之前必须关掉正在运行的应用**：Windows 不允许�
 `crates/mio-app/`，Tauri 会自己往上找。
 
 版本号只有一个来源：`Cargo.toml` 的 `[workspace.package] version`。`crates/mio-app/tauri.conf.json`
-的 `version` 是第二处，必须手动同步——Tauri 用它命名安装包，忘了改就会出现「exe 是 0.1.2、
-安装包叫 0.1.1」这种情况。
+的 `version` 是第二处，必须手动同步——Tauri 用它命名安装包，忘了改就会出现「exe 是 0.2.0、
+安装包叫 0.1.1」这种情况。`tools/check-shipped.mjs` 里还写着第三处（版本断言的字面量），
+升版本时一起改，否则验产物会在这里失败——那正是它存在的意义。
+
+**安装包上传到 GitHub 时文件名会变。** `tauri build` 产出的名字带空格
+（`Mio Sound Manager_0.2.0_x64-setup.exe`），`gh release create` 会把空格换成点，得到
+`Mio.Sound.Manager_…`，与 `docs/app.md` 里记的 `Mio-Sound-Manager_<ver>_x64-setup.exe` 不一致。
+上传前先把文件复制成连字符版（`Mio-Sound-Manager_0.2.0_x64-setup.exe`）再传，或用
+`gh release upload` 单独传那个副本。
 
 `tools/package-portable.sh` 还在仓库里，是给 0.1.1 及更早版本的构建用的，正常发版不跑它。
 
@@ -156,5 +163,10 @@ node tools/check-shipped.mjs 9227
 ```
 
 `check-shipped.mjs` 断言的是「只有正确代码发出去才会成立的事实」：窗口标题、`asio_compiled`
-为真、引擎开到了设备、`#transport-loop` / `#volume-mute` / `.dock-hints` 存在、`get_loop` 有
-应答。对着开发目录跑它会漏掉打包环节的问题（缺文件、版本号没同步）。
+为真、引擎开到了设备、`#transport-loop` / `#volume-mute` / `.dock-hints` 存在、顶栏
+`.brand-mark` 存在且指向打包进去的 `brand-*.svg`、`get_loop` 有应答、版本号。
+对着开发目录跑它会漏掉打包环节的问题（缺文件、版本号没同步）。
+
+**`cargo test --release` 会把 `target/release/mio-sound-manager.exe` 覆盖成不带 ASIO 的版本。**
+测试跑完要重跑 `cargo build -p mio-app --release --features asio` 再验产物，否则
+`check-shipped` 的 `asio_compiled` 会失败，看起来像构建出了问题。

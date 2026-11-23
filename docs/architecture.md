@@ -1,6 +1,6 @@
 # Mio Sound Manager 架构设计
 
-状态：**定稿并已实现发版（当前 0.1.2，见 `docs/agent-log.md`）**。本文回答「后端怎么做、栈怎么选」，不描述功能（功能与 UI/UX 沿用 Slip Sound，行为基准见 `C:\Users\Naimio\projects\slip-sound` 的 `AGENTS.md` 与 `src/renderer/src/components/WAVEFORM-PLAYBACK.md`）。延迟数字取自本文第 2、3、8.1 节的实测，索引数字来自第 5 节与 `docs/index.md`，均为本机实测；原始测量笔记已随调研阶段结束移除，需要复测时用 `probes/` 重跑。
+状态：**定稿并已实现发版（当前 0.2.0，见 `docs/agent-log.md`）**。本文回答「后端怎么做、栈怎么选」，不描述功能（功能与 UI/UX 沿用 Slip Sound，行为基准见 `C:\Users\Naimio\projects\slip-sound` 的 `AGENTS.md` 与 `src/renderer/src/components/WAVEFORM-PLAYBACK.md`）。延迟数字取自本文第 2、3、8.1 节的实测，索引数字来自第 5 节与 `docs/index.md`，均为本机实测；原始测量笔记已随调研阶段结束移除，需要复测时用 `probes/` 重跑。
 
 ## 1. 结论先行
 
