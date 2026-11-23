@@ -2,6 +2,12 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 2026-11-23 · opencode · 品牌 logo 进顶栏与 exe 图标，发 0.2.0
+
+- 改：`logo/`（设计源 `.figcraft`、导出 `.png` 1000×830 带透明、`.svg`）；`tools/make-app-icon.py` 把非正方形源图居中放进 1024×1024 透明画布（占 86%，与 Windows 自家图标留白相当），`tauri icon` 据此重生成 `crates/mio-app/icons/` 全套（生成后删掉 `android/` `ios/` 两棵目录，本项目只做 Windows）；`ui/src/assets/brand.svg` + `App.tsx` 顶栏 `<img class="brand-mark" alt="" aria-hidden>`，`styles.css` 高 26px 宽自适应、`flex: none`，品牌蓝不跟主题换色；版本 0.1.2 → 0.2.0（`Cargo.toml` 与 `tauri.conf.json` 两处）；`tools/check-shipped.mjs` 版本断言改 0.2.0 并新增三项 logo 断言；`docs/app.md`、`AGENTS.md` 补说明。
+- 验证：`npm run build`、`cargo test --release --workspace`（app 20 / IPC 29 / engine 24 / index 103）全过；release exe（WASAPI+ASIO）CDP 实测 `check-layout` / `check-themes`（七套对比度不变）/ `check-interactions` / `check-volume` / `check-tags` / `check-region` / `check-scroll-deep` / `check-i18n`（三语 150 键）全过；`check-shipped` 14/14 通过（含版本 0.2.0、ASIO、logo 三项）；`ExtractAssociatedIcon` 取出的 32×32 与源图一致，确认图标嵌进了 exe。
+- 遗留：`cargo test --release` 会覆盖 `target/release/mio-sound-manager.exe` 成不带 ASIO 的版本，之后必须重跑 `cargo build -p mio-app --release --features asio` 再验产物——本轮踩到一次，`check-shipped` 的 ASIO 断言抓出来的。
+
 ## 2026-11-22 · opencode · BPM 提取放宽到名字与路径
 
 - 完成：`crates/mio-index/src/bpm.rs` 从「只认显式 `bpm` 标记」改成四层提取，先命中先赢：① 文件名标记（新增 `BPM_138.4` 一位小数、`before_first` 规则——标记后面的数字是 take 编号，`DubstepRiddim_..._140bpm_23` 是 140 不是 23）② 文件名 Splice 约定 `(90, Em)`（括号内必须 tempo + 调名，`(95, Atonal)` / `(95, C to Fm)` 不算）③ 祖先文件夹标记，就近取，区间段（`83-98 BPM`）跳过 ④ 循环类文件名里的裸数字。裸数字区间 60–200，且时长须整小节（25ms 绝对容差）。文件夹层只在名字自称循环时才用时长否决（一次性采样长度不承载音乐信息）。`db.rs` 的 `row_from_parts` 与 `backfill_bpm` 改为传 `folder` + `duration`，`meta.bpm_rule = "2"` 让旧库重填。

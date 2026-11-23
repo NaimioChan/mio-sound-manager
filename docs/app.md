@@ -173,6 +173,8 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 **搜索框在列表列顶部，不在窗口顶部。** 它过滤的是列表，所以它属于列表。窗口顶部留给「我在哪个库」、undo/redo 和设置（图标）。播放的三个控件在波形 dock 的右端聚成一组：`AUTO PLAY` 是文字按钮，暂停/继续与停止是图标——前者的状态是「点一行会不会响」这条策略，12px 的图标说不出来。
 
+**顶栏左侧是产品标记加产品名。** 标记是 `ui/src/assets/brand.svg`，`App.tsx` 用 `import brandLogo from './assets/brand.svg'` 交给 Vite——它会带上 hash 进 `dist/assets/`，被 CSP 的 `img-src 'self'` 覆盖，也不会在组件里再抄一份路径。用 `<img alt="" aria-hidden="true">`：产品名就在旁边，读屏再念一遍标记是噪音。高度 26px、宽度自适应（原图 1000×829），`flex: none` 让名字在窄窗口下压不到它。**标记不跟着主题换色**：那两组蓝是品牌色，不是界面色，`--theme-*` 换成 Tokyo Night 的紫时 logo 保持原样才对。
+
 **库条目在视觉上高于它下面的树。** 库头部是 650 字重、带底色块、顶部一条分隔线，活跃库另有左侧强调条；树行是 400 字重、无底色。这不是装饰：库条目带自己的右键菜单，看起来像树的一行会让人想不到那里能右键。
 
 **设置页四节：Audio / Library / Behaviour / Appearance。** Audio 是输出设备选择（WASAPI 端点与 ASIO 驱动合成一个下拉）加一行当前格式与周期。Library 是当前库、显示索引、添加库、每页行数、分类列。Behaviour 是选中即播放与无限滚动。Appearance 是主题卡片、界面缩放与语言。库的管理动作（切库、重建索引、关闭）不在这里——见「多库」。
@@ -318,7 +320,16 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 没有 DLL：`tauri` 静态链 WebView2Loader，webview 资源经 `custom-protocol` 编进 exe。
 
-**版本号有两处，必须同步。** `Cargo.toml` 的 `[workspace.package] version` 决定 crate 版本与窗口标题里的版本，`crates/mio-app/tauri.conf.json` 的 `version` 决定安装包文件名。只改前者会得到「exe 是 0.1.2、安装包叫 0.1.1」。
+**版本号有两处，必须同步。** `Cargo.toml` 的 `[workspace.package] version` 决定 crate 版本与窗口标题里的版本，`crates/mio-app/tauri.conf.json` 的 `version` 决定安装包文件名。只改前者会得到「exe 是 0.2.0、安装包叫 0.1.1」。
+
+**应用图标来自 `logo/mio-sound-manager.png`，由 `tauri icon` 生成。** 源图是 1000×830 带透明背景，不是正方形，`tauri icon` 会直接拒绝。`tools/make-app-icon.py` 把它居中放进 1024×1024 的透明画布（占画布 86%，与 Windows 自家图标的留白相当），然后：
+
+```bash
+python tools/make-app-icon.py
+node ui/node_modules/@tauri-apps/cli/tauri.js icon logo/app-icon-1024.png -o crates/mio-app/icons
+```
+
+它会顺手产出 `android/` 与 `ios/` 两棵目录，本项目只做 Windows，生成后删掉即可（它们不进 `tauri.conf.json` 的 `icon` 列表，留着只是仓库噪音）。`bundle.icon` 只列 32/128/128@2x/icns/ico 五项；Windows 任务栏、开始菜单和资源管理器读的是 exe 里嵌入的 `icon.ico`，安装包图标同理。
 
 **构建前必须关掉正在运行的应用。** Windows 不允许替换已映射的 exe，报的是 `failed to remove file … (os error 5)`——看起来像权限问题，实际是文件锁。`tools/kill-app.sh` 同时结束 `mio-sound-manager`（cargo 产物与安装版）与 `Mio Sound Manager`（0.1.1 及更早的便携版 exe）两个进程名。
 

@@ -18,6 +18,11 @@ __pycache__/
 *.db-wal
 *.db-shm
 
+# Generated from `logo/mio-sound-manager.png` by `tools/make-app-icon.py`; the
+# source mark and the generated Tauri icon set in `crates/mio-app/icons/` are
+# what the repo keeps.
+/logo/app-icon-1024.png
+
 # Reference material, not managed by git: the UCS release folder is downloaded
 # by hand and read by `tools/import-ucs.py`, which writes the committed
 # `tools/ucs_keywords.py`. The release itself is never redistributed.

@@ -130,10 +130,21 @@ button {
 
 .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding-right: 4px;
   white-space: nowrap;
+}
+
+/* The mark is 1000×829, so a height sets both axes; `flex: none` keeps the
+   name from squeezing it when the row gets tight. It carries its own brand
+   colours (#005A9C / #60C1E5) and is deliberately not tokenised: a logo is an
+   identity, not a surface, and repainting it per theme would change the brand. */
+.brand-mark {
+  flex: none;
+  height: 26px;
+  width: auto;
+  display: block;
 }
 
 .brand-name {

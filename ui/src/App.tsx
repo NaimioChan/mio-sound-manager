@@ -28,6 +28,10 @@ import { SettingsDialog, loadSettings, saveSettings, type Settings } from './Set
 import { IndexOverlay } from './IndexOverlay'
 import { UNCATEGORIZED, categoryName, editKindName, t } from './i18n'
 import { ICON } from './icons'
+// The product mark, next to the name in the top bar. A file rather than inline
+// SVG: Vite hashes and emits it, so the CSP's `img-src 'self'` covers it and the
+// logo stays one asset instead of a second copy of the paths.
+import brandLogo from './assets/brand.svg'
 import { applyTheme, loadThemeId } from './theme'
 import { applyZoom, loadZoom } from './zoom'
 
@@ -1209,6 +1213,7 @@ export function App() {
     <div class="app">
       <header class="topbar">
         <div class="brand">
+          <img class="brand-mark" src={brandLogo} alt="" aria-hidden="true" />
           <span class="brand-name">Mio Sound Manager</span>
         </div>
 

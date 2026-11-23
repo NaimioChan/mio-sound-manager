@@ -101,6 +101,7 @@ The seven window-driving `check-*.mjs` assert on English copy and pin `mio:local
 | 配色主题系统（八色调色板 → iX token 推导） | `ui/src/theme.ts` |
 | 多语言（语言信号 + `t()`，三语字典） | `ui/src/i18n.ts`、`ui/src/locales/` |
 | 图标资源（从 `@siemens/ix-icons` 复制，离线可用） | `ui/src/assets/icons/` |
+| 品牌标记（顶栏 `<img>`）与应用图标源（`logo/` → `crates/mio-app/icons/`） | `ui/src/assets/brand.svg`、`logo/`、`tools/make-app-icon.py` |
 | 命令行验收工具（P1 / P2 的验收产物） | `crates/mio-cli/` |
 | 架构决策（后端选型、线程模型、技术栈、实施顺序） | `docs/architecture.md` |
 | 引擎模块细节 | `docs/engine.md` |

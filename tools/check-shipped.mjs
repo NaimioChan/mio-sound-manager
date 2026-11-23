@@ -55,6 +55,17 @@ const hints = await page.evaluate(
 )
 check(hints >= 5, 'the mouse legend shipped', `${hints} entries`)
 
+// The product mark next to the name. A build from before this release has the
+// name alone, so the element existing is a fact about the shipped code.
+const brandMark = await page.evaluate(() => {
+  const img = document.querySelector('.brand .brand-mark')
+  if (!img) return null
+  return { src: img.getAttribute('src') ?? '', w: Math.round(img.getBoundingClientRect().width) }
+})
+check(brandMark !== null, 'the top bar shows the product mark')
+check(brandMark?.src.includes('brand'), 'the mark is the bundled brand asset', brandMark?.src ?? '')
+check((brandMark?.w ?? 0) >= 16, 'the mark is drawn, not a collapsed box', `${brandMark?.w ?? 0}px`)
+
 // The loop command exists and round-trips.
 const loop = await invoke('get_loop')
 check(
@@ -67,7 +78,7 @@ check(
 // returns the string compiled in from `tauri.conf.json`, so a build made before the
 // version bump fails here instead of shipping under the wrong number.
 const version = await invoke('plugin:app|version')
-check(version === '0.1.2', 'the shipped binary reports 0.1.2', String(version))
+check(version === '0.2.0', 'the shipped binary reports 0.2.0', String(version))
 
 // The colour scheme, which is what this release changed. Asserting the applied
 // default rather than the picker's contents: a build with the old `classic-*`
