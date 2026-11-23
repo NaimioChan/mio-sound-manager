@@ -329,6 +329,8 @@ python tools/make-app-icon.py
 node ui/node_modules/@tauri-apps/cli/tauri.js icon logo/app-icon-1024.png -o crates/mio-app/icons
 ```
 
+**`logo/` 不进仓库**（`.gitignore` 里）。构建链一个字节都不读它：`tauri build` 只认已提交的 `crates/mio-app/icons/`，顶栏标记是已提交的 `ui/src/assets/brand.svg`。所以干净克隆照样能编译、能出安装包，只是**跑不了上面这两条命令**——换品牌图重新生成图标要先自己把源图放回 `logo/`。这是有意的取舍：设计源（`.figcraft`）丢了无法从 png 反推，但它属于本机素材，不是仓库内容。
+
 它会顺手产出 `android/` 与 `ios/` 两棵目录，本项目只做 Windows，生成后删掉即可（它们不进 `tauri.conf.json` 的 `icon` 列表，留着只是仓库噪音）。`bundle.icon` 只列 32/128/128@2x/icns/ico 五项；Windows 任务栏、开始菜单和资源管理器读的是 exe 里嵌入的 `icon.ico`，安装包图标同理。
 
 **构建前必须关掉正在运行的应用。** Windows 不允许替换已映射的 exe，报的是 `failed to remove file … (os error 5)`——看起来像权限问题，实际是文件锁。`tools/kill-app.sh` 同时结束 `mio-sound-manager`（cargo 产物与安装版）与 `Mio Sound Manager`（0.1.1 及更早的便携版 exe）两个进程名。

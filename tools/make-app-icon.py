@@ -13,6 +13,10 @@ centred: that is roughly the padding Windows' own icons carry, and it keeps the
 two lobes of the M off the icon border at 16px.
 
 Pillow is the only dependency (`pip install pillow`).
+
+`logo/` is gitignored: this script is the only reader of the source mark, and the
+outputs it feeds (`crates/mio-app/icons/`, `ui/src/assets/brand.svg`) are
+committed. On a fresh clone the source mark has to be put back by hand first.
 """
 
 from pathlib import Path

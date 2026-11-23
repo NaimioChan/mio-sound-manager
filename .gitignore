@@ -34,5 +34,9 @@ probes/**/src-tauri/gen/
 # Testlist
 /docs/test-list.md
 
-# Logo files
+# Logo files. The design source and its exports stay on this machine: the icon
+# set they produced is committed in `crates/mio-app/icons/` and the top-bar mark
+# in `ui/src/assets/brand.svg`, and neither build step reads this directory. A
+# fresh clone therefore cannot re-run `tools/make-app-icon.py` — that is the
+# intended trade, not an oversight.
 logo/
