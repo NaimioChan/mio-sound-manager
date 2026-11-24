@@ -169,7 +169,7 @@ def ucs_entries(module):
 
 
 def emit_cat_ids(module):
-    out = ["\n/// UCS CatID → target. A filename that opens with one of these has declared\n"
+    out = ["\n/// UCS CatID → projected target. A filename that opens with one of these has declared\n"
            "/// its category; matched case-sensitively, because UCS writes CatIDs in\n"
            "/// CamelCase and a lowercase match would let the ordinary word `rain` claim\n"
            "/// `RAIN`.\n",
@@ -178,6 +178,13 @@ def emit_cat_ids(module):
         cat, sub = module.CAT_IDS[cid]
         sub_expr = "None" if sub is None else f"Some({rust_string(sub)})"
         out.append(f"    ({rust_string(cid)}, {rust_string(cat)}, {sub_expr}),\n")
+    out.append("];\n\n")
+    out.append("/// UCS CatID → native UCS category and subcategory, for A-lite storage.\n")
+    out.append("pub static UCS_CAT_ID_NATIVE: &[(&str, &str, Option<&str>)] = &[\n")
+    for cid in sorted(module.CAT_IDS_NATIVE):
+        category, subcategory = module.CAT_IDS_NATIVE[cid]
+        sub_expr = "None" if subcategory is None else f"Some({rust_string(subcategory)})"
+        out.append(f"    ({rust_string(cid)}, {rust_string(category)}, {sub_expr}),\n")
     out.append("];\n\n")
     out.append(f"/// The UCS release this vocabulary was derived from.\n"
                f"pub const UCS_VERSION: &str = {rust_string(module.UCS_VERSION)};\n")

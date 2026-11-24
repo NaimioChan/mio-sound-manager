@@ -11,6 +11,7 @@
 //! three stages separately.
 
 use std::fs::{File, Metadata};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -20,6 +21,8 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+
+const MAX_DESCRIPTION_BYTES: usize = 4 * 1024 * 1024;
 
 /// Extensions the indexer treats as audio. Lowercase, no dot.
 ///
@@ -47,23 +50,29 @@ pub struct AudioMeta {
     /// True when the file had to be opened with a decoder to fill in a field the
     /// header omitted (currently only M4A channels). Diagnostic only.
     pub decoded_head: bool,
+    /// The first useful textual description found in the file's metadata.
+    /// Embedded artwork and binary tags are deliberately excluded.
+    pub description: Option<String>,
 }
 
 /// Is this extension one the indexer keeps?
 pub fn is_audio_path(path: &Path) -> bool {
-    // macOS leaves `._name.wav` resource forks next to copied files. They are a
-    // few hundred bytes of AppleDouble metadata carrying an audio extension, so
-    // they pass every extension test and then fail to probe. A real library
-    // copied from a Mac held 9,455 of them.
+    // macOS leaves `._name.wav` resource forks next to copied files. Office and
+    // export tools likewise leave `~$name.wav` and `*.wav.partial` placeholders.
+    // They carry an audio extension but are not user audio; a real library copied
+    // from a Mac held 9,455 AppleDouble files.
     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-        if name.starts_with("._") {
+        if name.starts_with("._") || name.starts_with("~$") {
             return false;
         }
     }
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(extension) if matches!(extension.to_ascii_lowercase().as_str(), "tmp" | "partial") => {
+            false
+        }
+        Some(extension) => AUDIO_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()),
+        None => false,
+    }
 }
 
 fn mtime_ns(meta: &Metadata) -> i64 {
@@ -89,6 +98,20 @@ pub struct FileEntry {
     pub mtime_ns: i64,
 }
 
+/// A directory the walk could not enumerate. Its subtree is unknown, not gone,
+/// so a full index pass must preserve existing rows below this path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedDir {
+    pub path: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Default)]
+pub struct WalkReport {
+    pub files: usize,
+    pub skipped_dirs: Vec<SkippedDir>,
+}
+
 /// Probe one file. Never fails: an unreadable or unrecognised file yields
 /// metadata with everything but size/mtime empty, which the UI renders as "—".
 pub fn probe_file(path: &Path) -> AudioMeta {
@@ -106,6 +129,11 @@ pub fn probe_with_meta(path: &Path, filesize: u64, mtime_ns: i64) -> AudioMeta {
         mtime_ns,
         ..Default::default()
     };
+
+    // Metadata is independent of the audio demuxer's duration/channel probe.
+    // Read it before opening Symphonia so WAV chunks after `data` and MP3 ID3
+    // headers are still visible even when the demuxer stops early.
+    meta.description = read_description(path);
 
     let Ok(file) = File::open(path) else {
         return meta;
@@ -224,6 +252,218 @@ fn apply_wav_fallback(path: &Path, meta: &mut AudioMeta) {
     meta.decoded_head = true;
 }
 
+fn read_description(path: &Path) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "wav" | "wave" => read_wav_description(path),
+        "mp3" => read_mp3_description(path),
+        _ => None,
+    }
+}
+
+fn read_wav_description(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header).ok()?;
+    if &header[..4] != b"RIFF" || &header[8..12] != b"WAVE" {
+        return None;
+    }
+
+    let mut descriptions = Vec::new();
+    loop {
+        let mut chunk = [0u8; 8];
+        if file.read_exact(&mut chunk).is_err() {
+            break;
+        }
+        let size = u32::from_le_bytes(chunk[4..8].try_into().ok()?) as u64;
+        let interesting = matches!(&chunk[..4], b"bext" | b"iXML" | b"LIST" | b"ID3 " | b"_PMX");
+        let body = if interesting {
+            let read_size = size.min(MAX_DESCRIPTION_BYTES as u64) as usize;
+            let mut body = vec![0u8; read_size];
+            if file.read_exact(&mut body).is_err() {
+                break;
+            }
+            if size > read_size as u64 {
+                file.seek(SeekFrom::Current((size - read_size as u64) as i64))
+                    .ok()?;
+            }
+            body
+        } else {
+            file.seek(SeekFrom::Current(size as i64)).ok()?;
+            Vec::new()
+        };
+        if size & 1 == 1 {
+            file.seek(SeekFrom::Current(1)).ok()?;
+        }
+
+        match &chunk[..4] {
+            b"bext" => {
+                if let Some(value) = trim_metadata_text(&body[..body.len().min(256)]) {
+                    descriptions.push(value);
+                }
+            }
+            b"iXML" => {
+                if let Some(value) = xml_description(&body) {
+                    descriptions.push(value);
+                }
+            }
+            b"LIST" => descriptions.extend(riff_info_descriptions(&body)),
+            b"ID3 " => descriptions.extend(id3_descriptions(&body)),
+            b"_PMX" => {
+                if let Some(value) = ascii_description(&body) {
+                    descriptions.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    choose_description(descriptions)
+}
+
+fn read_mp3_description(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut header = [0u8; 10];
+    file.read_exact(&mut header).ok()?;
+    if &header[..3] != b"ID3" {
+        return None;
+    }
+    let size = header[6..10].iter().fold(0usize, |value, byte| {
+        (value << 7) | usize::from(byte & 0x7f)
+    });
+    let total = (10 + size).min(MAX_DESCRIPTION_BYTES);
+    let mut bytes = vec![0u8; total];
+    bytes[..10].copy_from_slice(&header);
+    file.read_exact(&mut bytes[10..]).ok()?;
+    choose_description(id3_descriptions(&bytes))
+}
+
+fn riff_info_descriptions(body: &[u8]) -> Vec<String> {
+    if body.len() < 4 || &body[..4] != b"INFO" {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut at = 4usize;
+    while at + 8 <= body.len() {
+        let id = &body[at..at + 4];
+        let size = u32::from_le_bytes(body[at + 4..at + 8].try_into().unwrap()) as usize;
+        at += 8;
+        let end = at.saturating_add(size).min(body.len());
+        if matches!(id, b"ICMT" | b"INAM" | b"IART" | b"IPRD" | b"ISRF") {
+            if let Some(value) = trim_metadata_text(&body[at..end]) {
+                out.push(value);
+            }
+        }
+        at = end.saturating_add(size & 1);
+    }
+    out
+}
+
+fn id3_descriptions(body: &[u8]) -> Vec<String> {
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::{MetadataBuilder, MetadataRevision, StandardTagKey, Value};
+    use symphonia_metadata::id3v2::read_id3v2;
+
+    let mut stream = MediaSourceStream::new(
+        Box::new(std::io::Cursor::new(body.to_vec())),
+        Default::default(),
+    );
+    let mut builder = MetadataBuilder::new();
+    // Keep this helper local to the parser; ID3 is an optional enhancement and
+    // malformed tags must never make a valid audio file disappear from the index.
+    if read_id3v2(&mut stream, &mut builder).is_err() {
+        return Vec::new();
+    }
+    let revision: MetadataRevision = builder.metadata();
+    revision
+        .tags()
+        .iter()
+        .filter(|tag| {
+            matches!(
+                tag.std_key,
+                Some(StandardTagKey::Comment | StandardTagKey::Description)
+            )
+        })
+        .filter_map(|tag| match &tag.value {
+            Value::String(value) => trim_metadata_text(value.as_bytes()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn xml_description(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let lower = text.to_ascii_lowercase();
+    let start = lower.find("<description")?;
+    let value_start = text[start..].find('>')? + start + 1;
+    let value_end = lower[value_start..].find("</description>")? + value_start;
+    trim_metadata_text(text[value_start..value_end].as_bytes())
+}
+
+fn ascii_description(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let mut words = Vec::new();
+    for part in text.split(|c: char| !c.is_ascii_graphic() && c != ' ') {
+        if let Some(value) = trim_metadata_text(part.as_bytes()) {
+            words.push(value);
+        }
+    }
+    choose_description(words)
+}
+
+fn trim_metadata_text(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(bytes)
+        .trim_matches('\0')
+        .trim()
+        .to_string();
+    if text.len() < 3 || printable_ratio(&text) < 0.95 {
+        return None;
+    }
+    Some(text)
+}
+
+fn printable_ratio(text: &str) -> f64 {
+    let total = text.chars().count();
+    if total == 0 {
+        return 0.0;
+    }
+    text.chars()
+        .filter(|c| {
+            *c != '\u{fffd}' && (c.is_ascii_graphic() || c.is_ascii_whitespace() || !c.is_control())
+        })
+        .count() as f64
+        / total as f64
+}
+
+fn choose_description(values: Vec<String>) -> Option<String> {
+    let mut unique = Vec::new();
+    for value in values {
+        if !unique
+            .iter()
+            .any(|existing: &String| metadata_equivalent(existing, &value))
+        {
+            unique.push(value);
+        }
+    }
+    unique.into_iter().next()
+}
+
+fn metadata_equivalent(left: &str, right: &str) -> bool {
+    normalise_metadata(left) == normalise_metadata(right)
+}
+
+fn normalise_metadata(value: &str) -> String {
+    value
+        .split(|c: char| matches!(c, '\u{1a}' | ',' | '-'))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
 /// Only MP4-family containers need the decode-the-first-packet fallback. Gating
 /// on the extension keeps a genuinely channel-less file in another format from
 /// paying for a decode that would not help.
@@ -303,7 +543,17 @@ pub fn try_walk_audio_entries(root: &Path) -> crate::error::Result<Vec<FileEntry
     walk_audio_entries(root)
 }
 
-pub fn walk_audio_entries_into<F>(root: &Path, mut visit: F) -> crate::error::Result<usize>
+pub fn walk_audio_entries_into<F>(root: &Path, visit: F) -> crate::error::Result<usize>
+where
+    F: FnMut(FileEntry) -> crate::error::Result<()>,
+{
+    Ok(walk_audio_entries_with_report(root, visit)?.files)
+}
+
+pub fn walk_audio_entries_with_report<F>(
+    root: &Path,
+    mut visit: F,
+) -> crate::error::Result<WalkReport>
 where
     F: FnMut(FileEntry) -> crate::error::Result<()>,
 {
@@ -313,12 +563,25 @@ where
     })?;
     drop(root_handle);
 
-    let mut count = 0;
+    let mut report = WalkReport::default();
     for result in walkdir::WalkDir::new(root).follow_links(false) {
-        let entry = result.map_err(|e| crate::error::IndexError::Walk {
-            path: e.path().unwrap_or(root).display().to_string(),
-            detail: e.to_string(),
-        })?;
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) => {
+                let path = error.path().unwrap_or(root);
+                if path == root {
+                    return Err(crate::error::IndexError::Walk {
+                        path: path.display().to_string(),
+                        detail: error.to_string(),
+                    });
+                }
+                report.skipped_dirs.push(SkippedDir {
+                    path: crate::folders::store_path(path),
+                    detail: error.to_string(),
+                });
+                continue;
+            }
+        };
         if !entry.file_type().is_file() || !is_audio_path(entry.path()) {
             continue;
         }
@@ -331,9 +594,11 @@ where
             filesize: meta.as_ref().map(|m| m.len()).unwrap_or(0),
             mtime_ns: meta.as_ref().map(mtime_ns).unwrap_or(0),
         })?;
-        count += 1;
+        report.files += 1;
     }
-    Ok(count)
+    report.skipped_dirs.sort_by(|a, b| a.path.cmp(&b.path));
+    report.skipped_dirs.dedup_by(|a, b| a.path == b.path);
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -433,7 +698,35 @@ mod tests {
     fn extension_filter_is_case_insensitive_and_excludes_non_audio() {
         assert!(is_audio_path(Path::new("a/B.WAV")));
         assert!(is_audio_path(Path::new("b.flac")));
+        assert!(is_audio_path(Path::new(".hidden.wav")));
         assert!(!is_audio_path(Path::new("c.txt")));
         assert!(!is_audio_path(Path::new("noextension")));
+        assert!(!is_audio_path(Path::new("scratch.tmp")));
+        assert!(!is_audio_path(Path::new("render.wav.partial")));
+        assert!(!is_audio_path(Path::new("~$draft.wav")));
+        assert!(!is_audio_path(Path::new("._real.wav")));
+    }
+
+    #[test]
+    fn reads_a_description_from_a_chunk_after_data() {
+        let mut bytes = wav_bytes(10);
+        bytes.extend_from_slice(b"bext");
+        bytes.extend_from_slice(&256u32.to_le_bytes());
+        let mut description = [0u8; 256];
+        description[..18].copy_from_slice(b"Metal, Impact, Hit");
+        bytes.extend_from_slice(&description);
+        let path = write_temp("description-after-data.wav", &bytes);
+        let meta = probe_file(&path);
+        assert_eq!(meta.description.as_deref(), Some("Metal, Impact, Hit"));
+    }
+
+    #[test]
+    fn rejects_binary_bext_garbage() {
+        let mut bytes = wav_bytes(10);
+        bytes.extend_from_slice(b"bext");
+        bytes.extend_from_slice(&256u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xff; 256]);
+        let path = write_temp("description-garbage.wav", &bytes);
+        assert_eq!(probe_file(&path).description, None);
     }
 }

@@ -26,7 +26,8 @@ mod state;
 
 pub use commands::{
     AppStatus, AudioDeviceDto, FacetDto, FolderNodeDto, HistoryState, IndexProgress, LibraryStatus,
-    MatchingEditRequest, PlaybackPosition, SearchRequest, SidebarDto, SoundDto, WaveformDto,
+    MatchingEditRequest, PlaybackErrorDto, PlaybackPosition, SearchRequest, SidebarDto, SoundDto,
+    UcsFacetDto, WaveformDto,
 };
 pub use error::AppError;
 pub use history::EditKind;
@@ -84,6 +85,7 @@ pub fn run() {
             commands::get_loop,
             commands::export_region,
             commands::get_playback_position,
+            commands::take_playback_error,
             commands::get_waveform,
             commands::prefetch_neighbors,
             commands::add_library,

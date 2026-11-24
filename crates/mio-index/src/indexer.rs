@@ -20,7 +20,9 @@ use rayon::prelude::*;
 use crate::classify::Classifier;
 use crate::db::{IndexDb, SoundRow, row_from_parts};
 use crate::error::Result;
-use crate::probe::{AudioMeta, FileEntry, probe_with_meta, walk_audio_entries_into};
+use crate::probe::{
+    AudioMeta, FileEntry, SkippedDir, WalkReport, probe_with_meta, walk_audio_entries_with_report,
+};
 
 /// How the indexer should behave on this pass.
 #[derive(Debug, Clone)]
@@ -91,6 +93,10 @@ pub struct IndexReport {
     pub rows_written: usize,
     /// Rows deleted because the file is gone.
     pub rows_pruned: u64,
+    /// Directories that could not be enumerated. Their existing rows are kept
+    /// during a full prune because absence under an unknown subtree is not proof
+    /// that the files were deleted.
+    pub skipped_dirs: Vec<SkippedDir>,
     pub threads: usize,
     pub timings: StageTimings,
 }
@@ -126,7 +132,7 @@ where
         |root, db| {
             let mut pending = Vec::with_capacity(options.batch_size.max(1));
             let mut count = 0usize;
-            walk_audio_entries_into(root, |entry| {
+            let walked = walk_audio_entries_with_report(root, |entry| {
                 pending.push((
                     crate::folders::store_path(&entry.path),
                     entry.filesize,
@@ -138,12 +144,14 @@ where
                     pending.clear();
                 }
                 Ok(())
-            })
-            .and_then(|walked| {
-                if !pending.is_empty() {
-                    db.stage_scan_batch(&pending)?;
-                }
-                Ok(walked.max(count))
+            })?;
+            if !pending.is_empty() {
+                db.stage_scan_batch(&pending)?;
+            }
+            db.stage_skipped_dirs(&walked.skipped_dirs)?;
+            Ok(WalkReport {
+                files: walked.files.max(count),
+                skipped_dirs: walked.skipped_dirs,
             })
         },
         on_progress,
@@ -158,7 +166,7 @@ fn index_folder_with_walk<F, W>(
 ) -> Result<IndexReport>
 where
     F: FnMut(usize, usize),
-    W: FnOnce(&Path, &mut IndexDb) -> Result<usize>,
+    W: FnOnce(&Path, &mut IndexDb) -> Result<WalkReport>,
 {
     let root = root.to_path_buf();
     let mut report = IndexReport {
@@ -178,9 +186,10 @@ where
     // Stage entries as they are walked. No live index rows are changed until the
     // full directory traversal succeeds, and paths stay in SQLite rather than RAM.
     let t = Instant::now();
-    let file_count = walk(&root, &mut db)?;
+    let walk_report = walk(&root, &mut db)?;
     report.timings.walk_ms = ms(t);
-    report.files_seen = file_count;
+    report.files_seen = walk_report.files;
+    report.skipped_dirs = walk_report.skipped_dirs;
     let classifier = Arc::new(Classifier::new());
     let unchanged = if options.incremental {
         db.unchanged_scan_count()?
@@ -238,7 +247,10 @@ where
                         // them in is what keeps the probe to one file open.
                         let meta = probe_with_meta(&entry.path, entry.filesize, entry.mtime_ns);
                         let cstart = Instant::now();
-                        let classification = classifier.classify(&entry.path.to_string_lossy());
+                        let classification = classifier.classify_with_description(
+                            &entry.path.to_string_lossy(),
+                            meta.description.as_deref(),
+                        );
                         let _ = classify_started
                             .fetch_add(cstart.elapsed().as_nanos() as u64, Ordering::Relaxed);
                         (meta, classification, entry.path.clone())
@@ -259,7 +271,10 @@ where
 
         rows_written += rows.len();
         report.files_probed += rows.len();
-        on_progress((rows_written + unchanged).min(file_count), file_count);
+        on_progress(
+            (rows_written + unchanged).min(report.files_seen),
+            report.files_seen,
+        );
     }
     report.timings.probe_ms =
         ms(probe_started) - report.timings.write_ms - classify_ns as f64 / 1e6;
@@ -267,7 +282,7 @@ where
 
     report.files_skipped = unchanged;
     report.rows_written = rows_written;
-    on_progress(file_count, file_count);
+    on_progress(report.files_seen, report.files_seen);
 
     // 4. Prune. Only meaningful on a full pass: a partial scan has not seen the
     //    rest of the library, so absence proves nothing.
@@ -437,6 +452,61 @@ mod tests {
     }
 
     #[test]
+    fn a_full_pass_keeps_rows_below_a_skipped_directory() {
+        let root = temp_lib("prune-skipped");
+        write_wav(&root.join(r"protected").join("old.wav"), 100);
+        write_wav(&root.join("kept.wav"), 100);
+        index_folder(
+            &root,
+            &IndexOptions {
+                incremental: false,
+                ..Default::default()
+            },
+            |_, _| {},
+        )
+        .unwrap();
+
+        std::fs::remove_file(root.join("kept.wav")).unwrap();
+        let skipped = root.join("protected");
+        let report = index_folder_with_walk(
+            &root,
+            &IndexOptions {
+                incremental: false,
+                ..Default::default()
+            },
+            |_, db| {
+                db.stage_skipped_dirs(&[SkippedDir {
+                    path: crate::folders::store_path(&skipped),
+                    detail: "access denied".into(),
+                }])?;
+                Ok(WalkReport {
+                    files: 0,
+                    skipped_dirs: vec![SkippedDir {
+                        path: crate::folders::store_path(&skipped),
+                        detail: "access denied".into(),
+                    }],
+                })
+            },
+            |_, _| {},
+        )
+        .unwrap();
+
+        assert_eq!(report.rows_pruned, 1);
+        assert_eq!(report.skipped_dirs.len(), 1);
+        let db = IndexDb::open(&root).unwrap();
+        assert!(
+            db.get_by_path(&root.join(r"protected").join("old.wav").to_string_lossy())
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db.get_by_path(&root.join("kept.wav").to_string_lossy())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_missing_root_fails_without_creating_an_empty_library() {
         let root = temp_lib("missing-root");
         std::fs::remove_dir_all(&root).unwrap();
@@ -496,6 +566,39 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_read_only_directory_is_still_indexable() {
+        let root = temp_lib("read-only-dir");
+        let protected = root.join("read-only");
+        let audio = protected.join("sample.wav");
+        write_wav(&audio, 100);
+
+        let original = std::fs::metadata(&protected).unwrap().permissions();
+        let mut read_only = original.clone();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(&protected, read_only).unwrap();
+
+        let result = index_folder(
+            &root,
+            &IndexOptions {
+                incremental: false,
+                ..Default::default()
+            },
+            |_, _| {},
+        );
+
+        // A read-only directory is not an enumeration failure: it is a valid
+        // library subtree whose files can still be read. Restore it before the
+        // temporary fixture is removed, especially on Windows.
+        let _ = std::fs::set_permissions(&protected, original);
+        let report = result.unwrap();
+        assert_eq!(report.skipped_dirs, Vec::new());
+        assert_eq!(report.files_seen, 1);
+        assert_eq!(report.rows_written, 1);
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

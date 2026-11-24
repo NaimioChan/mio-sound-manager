@@ -45,7 +45,8 @@ await page.waitForTimeout(500)
 // being checked for is a lit *second* half with no left border, which is what a
 // shared seam with `border-left: none` produces.
 const seam = await page.evaluate(() => {
-  const [cats, folders] = document.querySelectorAll('.side-mode')
+  const cats = document.querySelector('[data-sidebar-mode="categories"]')
+  const folders = document.querySelector('[data-sidebar-mode="folders"]')
   const lit = (el) => el.classList.contains('on')
   const borders = (el) => {
     const s = getComputedStyle(el)
@@ -63,10 +64,10 @@ const seam = await page.evaluate(() => {
 check(seam.catLit && !seam.folderLit, 'Categories starts lit in categories mode', JSON.stringify(seam))
 
 // Switch to Folders: the second half lights, and it must have a left border.
-await page.locator('.side-mode').nth(1).click()
+await page.locator('[data-sidebar-mode="folders"]').click()
 await page.waitForTimeout(300)
 const folded = await page.evaluate(() => {
-  const el = document.querySelectorAll('.side-mode')[1]
+  const el = document.querySelector('[data-sidebar-mode="folders"]')
   const s = getComputedStyle(el)
   return {
     lit: el.classList.contains('on'),
@@ -80,7 +81,7 @@ check(folded.left !== '0px', 'the lit second half keeps its left border', folded
 check(folded.right !== '0px', 'and its right border', folded.right)
 // Light is the accent colour, so a missing edge is visible as a break in the box.
 const accentBorder = await page.evaluate(() => {
-  const el = document.querySelectorAll('.side-mode')[1]
+  const el = document.querySelector('[data-sidebar-mode="folders"]')
   return getComputedStyle(el).borderTopColor
 })
 check(

@@ -169,6 +169,11 @@ pub(crate) struct Shared {
     /// `looping` is already true, and a half-written range is clamped to the clip
     /// anyway, so the worst case is one callback of the old region.
     looping: AtomicBool,
+    /// A long-file window chain owns the boundary instead of wrapping inside
+    /// the active buffer. This lets the chain queue the next window, including
+    /// a return to the first window for a loop, without the callback restarting
+    /// the current window prematurely.
+    streaming_loop: AtomicBool,
     /// First frame of the looped region. `end == 0` means the whole clip.
     loop_start: AtomicU64,
     /// One past the last frame of the looped region.
@@ -291,7 +296,8 @@ impl Mixer {
             } else if clip_frame_bytes == frame_bytes
                 && pos < shared.active_buffer_frames.load(Ordering::Acquire) as usize
             {
-                let looping = shared.looping.load(Ordering::Acquire);
+                let looping = shared.looping.load(Ordering::Acquire)
+                    && !shared.streaming_loop.load(Ordering::Acquire);
                 // Clamp the region to the clip. An empty or inverted region — a
                 // selection left over from a longer file — falls back to the whole
                 // clip rather than playing silence nobody asked for.
@@ -335,11 +341,7 @@ impl Mixer {
                     shared.active_buffer_frames.load(Ordering::Acquire) as usize
                 };
                 while written < want_frames {
-                    let segment_end = if looping {
-                        loop_to
-                    } else {
-                        buffer_end
-                    };
+                    let segment_end = if looping { loop_to } else { buffer_end };
                     let n = (segment_end - cursor).min(want_frames - written);
                     if n == 0 {
                         break;
@@ -376,7 +378,8 @@ impl Mixer {
                 // the original publish is still the one to measure.
                 let mut handed_off = false;
                 let mut queued_clip: Option<Arc<DecodedAudio>> = None;
-                if !looping && written < want_frames && cursor >= buffer_end {
+                let streaming_loop = shared.streaming_loop.load(Ordering::Acquire);
+                if (!looping || streaming_loop) && written < want_frames && cursor >= buffer_end {
                     if let Some(next_clip) = shared.take_queued() {
                         if next_clip.format == clip.format {
                             let next_frames = next_clip.frames;
@@ -384,12 +387,10 @@ impl Mixer {
                             shared
                                 .active_buffer_frames
                                 .store(next_frames as u64, Ordering::Release);
-                            shared
-                                .active_window_start
-                                .store(
-                                    window_start_device_frames(&next_clip, clip.format.sample_rate),
-                                    Ordering::Release,
-                                );
+                            shared.active_window_start.store(
+                                window_start_device_frames(&next_clip, clip.format.sample_rate),
+                                Ordering::Release,
+                            );
                             // `active_frames` (the total duration the UI shows)
                             // stays untouched: both segments report the whole
                             // file's length.
@@ -477,7 +478,7 @@ impl Mixer {
                 // either — the decode-ahead thread will queue its successor; the
                 // `!clip.complete` guard inside the handoff block has already
                 // cleared a stale `finished` in that case.
-                if !looping && cursor >= buffer_end && !handed_off {
+                if !looping && !streaming_loop && cursor >= buffer_end && !handed_off {
                     shared.finished.store(true, Ordering::Release);
                 }
             }
@@ -668,6 +669,7 @@ impl Engine {
             paused: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             looping: AtomicBool::new(false),
+            streaming_loop: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
             running: AtomicBool::new(true),
@@ -770,6 +772,7 @@ impl Engine {
     /// Positions beyond the buffer are clamped to its end, which a zero-length
     /// window decode (a seek past EOF) degrades to instead of an error.
     pub fn publish_from(&self, clip: Arc<DecodedAudio>, offset_frames: u64) -> u64 {
+        self.shared.streaming_loop.store(false, Ordering::Release);
         let current = self.shared.active.load(Ordering::Acquire);
         let next = 1 - current;
 
@@ -839,6 +842,13 @@ impl Engine {
     /// the caller owns the clip afterwards.
     pub fn take_queued(&self) -> Option<Arc<DecodedAudio>> {
         self.shared.take_queued()
+    }
+
+    /// Whether a segment is still waiting for the render callback to take it.
+    /// Control threads use this to wait for a handoff without guessing from the
+    /// playhead coordinate (which wraps to zero for a loop).
+    pub fn has_queued(&self) -> bool {
+        self.shared.next.load_full().is_some()
     }
 
     /// Stop playback now: clear both slots and park `finished`.
@@ -929,6 +939,15 @@ impl Engine {
         // listened to. `fill` then moves a playhead outside the region to the
         // region's start, which is why nothing is seeked here.
         if enabled && self.shared.active_frames.load(Ordering::Acquire) > 0 {
+            self.shared.finished.store(false, Ordering::Release);
+        }
+    }
+
+    /// Let a long-file decode chain own segment boundaries while preserving the
+    /// user's loop setting in `looping` for status reads.
+    pub fn set_streaming_loop(&self, enabled: bool) {
+        self.shared.streaming_loop.store(enabled, Ordering::Release);
+        if enabled {
             self.shared.finished.store(false, Ordering::Release);
         }
     }

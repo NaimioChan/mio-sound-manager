@@ -689,6 +689,12 @@ button {
   color: var(--theme-color-soft-text);
 }
 
+.description-count {
+  margin-left: 6px;
+  color: var(--theme-color-weak-text);
+  font-size: var(--mio-ms--2);
+}
+
 .sub {
   color: var(--theme-color-weak-text);
 }

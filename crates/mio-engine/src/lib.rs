@@ -28,7 +28,7 @@ pub mod asio;
 mod error;
 
 pub use decode::{
-    DecodedAudio, DecodeWindow, Decoder, DeviceSample, OutputFormat, SourceAudio,
+    DecodedAudio, DecodeWindow, Decoder, DeviceSample, OutputFormat, SourceAudio, MAX_PCM_BYTES,
 };
 pub use error::{EngineError, Result};
 pub use output::{

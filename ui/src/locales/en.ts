@@ -76,6 +76,8 @@ export const en = {
   'notice.redid': 'Redid {label}',
   'notice.selected': '{count} selected',
   'notice.regionExported': 'wrote {name} — drop it where you need it',
+  'notice.indexSkippedDirs': 'Skipped {count} directories: {paths}',
+  'notice.playbackInterrupted': 'Could not continue {name} from {time}',
 
   // What an undoable edit was. Title case: these appear as tooltips and after
   // "Undid"/"Redid", where the sentence form is lowercased by `editKindName`.
@@ -96,6 +98,7 @@ export const en = {
   // ------------------------------------------------------------ table header
   'col.name': 'Name',
   'col.category': 'Category',
+  'col.ucsCategory': 'UCS',
   'col.length': 'Length',
   'col.bpm': 'BPM',
   'col.channels': 'Ch',
@@ -110,6 +113,9 @@ export const en = {
 
   // ----------------------------------------------------------------- sidebar
   'side.categories': 'Categories',
+  'side.ucs': 'UCS',
+  'side.ucsPrefix': 'UCS / {name}',
+  'side.ucsSubPrefix': 'UCS / {category} / {subcategory}',
   'side.folders': 'Folders',
   'side.noLibrary': 'no library open',
   'side.favoritesOnly': 'Show favorites only',

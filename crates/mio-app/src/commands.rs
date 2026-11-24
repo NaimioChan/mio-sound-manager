@@ -77,6 +77,14 @@ pub struct LibraryStatus {
     pub total: usize,
     /// Whether the window is currently showing this library.
     pub active: bool,
+    pub skipped_dirs: Vec<SkippedDirDto>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedDirDto {
+    pub path: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -89,6 +97,16 @@ pub struct PlaybackPosition {
     /// must stay put while this is true.
     pub paused: bool,
     pub finished: bool,
+    /// Monotonic token for a decode-ahead failure. The renderer only asks for the
+    /// detail when this changes, so the hot playhead path stays atomic-only.
+    pub error_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackErrorDto {
+    pub path: String,
+    pub position_s: f64,
 }
 
 /// One `(category, subcategory, count)` row of the sidebar.
@@ -100,11 +118,20 @@ pub struct FacetDto {
     pub count: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UcsFacetDto {
+    pub category: String,
+    pub subcategory: Option<String>,
+    pub count: u64,
+}
+
 /// Everything the sidebar draws, in one round trip.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SidebarDto {
     pub facets: Vec<FacetDto>,
+    pub ucs_facets: Vec<UcsFacetDto>,
     pub favorites: u64,
     pub total: u64,
 }
@@ -140,6 +167,11 @@ pub struct SoundDto {
     pub subcategory: Option<String>,
     pub confidence: f64,
     pub matched_terms: Vec<String>,
+    pub description: Option<String>,
+    pub description_count: Option<u32>,
+    pub ucs_category: Option<String>,
+    pub ucs_subcategory: Option<String>,
+    pub ucs_cat_id: Option<String>,
     pub favorite: bool,
     pub category_manual: bool,
     pub folder: Option<String>,
@@ -168,6 +200,8 @@ pub struct SearchRequest {
     /// Several categories are OR-ed. Empty means "any category".
     pub categories: Vec<String>,
     pub subcategories: Vec<String>,
+    pub ucs_categories: Vec<String>,
+    pub ucs_subcategories: Vec<String>,
     pub folder: Option<String>,
     pub min_confidence: Option<f64>,
     pub favorite_only: bool,
@@ -207,6 +241,8 @@ impl SearchRequest {
             channels: self.channels,
             categories: self.categories,
             subcategories: self.subcategories,
+            ucs_categories: self.ucs_categories,
+            ucs_subcategories: self.ucs_subcategories,
             folder: self.folder,
             min_confidence: self.min_confidence,
             favorite_only: self.favorite_only,
@@ -232,6 +268,11 @@ impl From<Sound> for SoundDto {
             subcategory: s.subcategory,
             confidence: s.confidence,
             matched_terms: s.matched_terms,
+            description: s.description,
+            description_count: s.description_count,
+            ucs_category: s.ucs_category,
+            ucs_subcategory: s.ucs_subcategory,
+            ucs_cat_id: s.ucs_cat_id,
             favorite: s.favorite,
             category_manual: s.category_manual,
             folder: s.folder,
@@ -290,6 +331,14 @@ pub fn library_status(library: &Library) -> AppResult<LibraryStatus> {
         indexed: progress.done,
         total: progress.total,
         active: false,
+        skipped_dirs: library
+            .skipped_dirs()
+            .into_iter()
+            .map(|dir| SkippedDirDto {
+                path: dir.path,
+                detail: dir.detail,
+            })
+            .collect(),
     })
 }
 
@@ -428,6 +477,12 @@ pub async fn export_region(
 #[tauri::command]
 pub fn get_playback_position(state: State<'_, AppState>) -> PlaybackPosition {
     state.playback_position()
+}
+
+/// Take the most recent long-file decode failure, if one has not been shown yet.
+#[tauri::command]
+pub fn take_playback_error(state: State<'_, AppState>) -> Option<PlaybackErrorDto> {
+    state.take_playback_error()
 }
 
 /// Peak envelope for the waveform panel.
@@ -760,6 +815,20 @@ mod tests {
         assert_eq!(params.sort_by, Some(mio_index::SortColumn::Duration));
         assert_eq!(params.sort_dir, Some(mio_index::SortDir::Desc));
         assert_eq!(params.limit, 5_000, "limit is clamped");
+    }
+
+    #[test]
+    fn native_ucs_filters_and_sort_are_forwarded() {
+        let request = SearchRequest {
+            ucs_categories: vec!["GORE".into()],
+            ucs_subcategories: vec!["SOURCE".into()],
+            sort_by: Some("ucs_category".into()),
+            ..Default::default()
+        };
+        let params = request.into_params().unwrap();
+        assert_eq!(params.ucs_categories, vec!["GORE"]);
+        assert_eq!(params.ucs_subcategories, vec!["SOURCE"]);
+        assert_eq!(params.sort_by, Some(mio_index::SortColumn::UcsCategory));
     }
 
     #[test]

@@ -38,6 +38,8 @@ import collections
 import json
 import os
 import sys
+import zipfile
+import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -73,12 +75,46 @@ CATID_HITS_CUT = 5       # the same rule for CatID mappings
 CATID_PRECISION_CUT = 0.6
 
 
-def read_entries(path):
-    import openpyxl
+def xlsx_rows(path):
+    """Read the first worksheet with stdlib when openpyxl is unavailable."""
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path) as archive:
+        shared = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            for item in root.findall("m:si", ns):
+                shared.append("".join(text.text or "" for text in item.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t")))
+        root = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        rows = []
+        for row in root.findall(".//m:row", ns):
+            cells = {}
+            for cell in row.findall("m:c", ns):
+                ref = cell.attrib.get("r", "A1")
+                column = 0
+                for char in ref:
+                    if char.isalpha():
+                        column = column * 26 + ord(char.upper()) - ord("A") + 1
+                    else:
+                        break
+                value = cell.find("m:v", ns)
+                text = "" if value is None else value.text or ""
+                if cell.attrib.get("t") == "s" and text:
+                    text = shared[int(text)]
+                cells[column - 1] = text
+            width = max(cells, default=-1) + 1
+            rows.append([cells.get(i, "") for i in range(width)])
+        return rows
 
-    wb = openpyxl.load_workbook(path, data_only=True)
-    ws = wb.worksheets[0]
-    rows = [[None if c is None else str(c) for c in row] for row in ws.iter_rows(values_only=True)]
+
+def read_entries(path):
+    try:
+        import openpyxl
+    except ModuleNotFoundError:
+        rows = xlsx_rows(path)
+    else:
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb.worksheets[0]
+        rows = [[None if c is None else str(c) for c in row] for row in ws.iter_rows(values_only=True)]
     header_at = next(i for i, r in enumerate(rows) if r and r[0] == "Category")
     entries = []
     for r in rows[header_at + 1:]:
@@ -96,11 +132,14 @@ def read_entries(path):
 
 
 def read_top_explanations(path):
-    import openpyxl
-
-    wb = openpyxl.load_workbook(path, data_only=True)
-    ws = wb.worksheets[0]
-    rows = [[None if c is None else str(c) for c in row] for row in ws.iter_rows(values_only=True)]
+    try:
+        import openpyxl
+    except ModuleNotFoundError:
+        rows = xlsx_rows(path)
+    else:
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb.worksheets[0]
+        rows = [[None if c is None else str(c) for c in row] for row in ws.iter_rows(values_only=True)]
     return {r[0]: (r[1] or "") for r in rows[2:] if r and r[0]}
 
 
@@ -223,6 +262,11 @@ def build(entries, top_explanations, evidence, catid_evidence):
 
     # CatIDs: declared categories, resolved through the same mapping.
     cat_ids = {}
+    native_cat_ids = {
+        entry["cat_id"]: (entry["category"], entry["subcategory"] or None)
+        for entry in entries
+        if entry["cat_id"] and entry["cat_id"].isascii()
+    }
     for entry in entries:
         target = target_for(entry)
         if target is None:
@@ -247,6 +291,7 @@ def build(entries, top_explanations, evidence, catid_evidence):
         "keywords": keywords,
         "phrases": phrases,
         "cat_ids": cat_ids,
+        "native_cat_ids": native_cat_ids,
         "excluded": excluded,
         "examples": examples,
         "top_cats": top_cats,
@@ -320,6 +365,13 @@ def render(result, measured):
     out.append("CAT_IDS = {")
     for cid in sorted(result["cat_ids"]):
         cat, sub = result["cat_ids"][cid]
+        out.append(f"    {cid!r}: ({cat!r}, {sub!r}),")
+    out.append("}")
+    out.append("")
+    out.append("# UCS CatID -> the native UCS two-level label, retained for A-lite schema storage.")
+    out.append("CAT_IDS_NATIVE = {")
+    for cid in sorted(result["native_cat_ids"]):
+        cat, sub = result["native_cat_ids"][cid]
         out.append(f"    {cid!r}: ({cat!r}, {sub!r}),")
     out.append("}")
     out.append("")

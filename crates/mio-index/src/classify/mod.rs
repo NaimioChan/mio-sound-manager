@@ -78,7 +78,7 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use std::collections::HashMap;
 
 pub use dictionary::CATEGORY_DICTIONARY;
-pub use ucs::{UCS_CAT_IDS, UCS_DICTIONARY, UCS_VERSION};
+pub use ucs::{UCS_CAT_ID_NATIVE, UCS_CAT_IDS, UCS_DICTIONARY, UCS_VERSION};
 
 /// One row of the dictionary: a category, an optional subcategory, and the words
 /// that point at it. `subcategory == None` is the category-level entry (the words
@@ -101,6 +101,10 @@ pub struct Classification {
     pub raw_score: u32,
     /// The dictionary words and phrases that fired, deduplicated.
     pub matched_terms: Vec<String>,
+    /// Native UCS fields, populated only when the filename declares a CatID.
+    pub ucs_category: Option<String>,
+    pub ucs_subcategory: Option<String>,
+    pub ucs_cat_id: Option<String>,
 }
 
 impl Classification {
@@ -112,6 +116,9 @@ impl Classification {
             confidence: 0.0,
             raw_score: 0,
             matched_terms: Vec::new(),
+            ucs_category: None,
+            ucs_subcategory: None,
+            ucs_cat_id: None,
         }
     }
 }
@@ -162,6 +169,7 @@ struct TokenSpan {
     end: usize,
     raw_start: usize,
     directory: bool,
+    description: bool,
 }
 
 /// Built once per process (or once per indexing run) and then shared across
@@ -227,10 +235,19 @@ impl Classifier {
     }
 
     pub fn classify(&self, full_path: &str) -> Classification {
-        let (haystack, mut tokens, filename_start) = tokenize_path_spans(full_path);
+        self.classify_with_description(full_path, None)
+    }
+
+    pub fn classify_with_description(
+        &self,
+        full_path: &str,
+        description: Option<&str>,
+    ) -> Classification {
+        let (haystack, mut tokens, filename_start) = tokenize_path_spans(full_path, description);
         let filename = &full_path[filename_start..];
+        let native_ucs = native_ucs_for_filename(filename);
         for token in &mut tokens {
-            token.directory = token.raw_start < filename_start;
+            token.directory = token.raw_start < filename_start && !token.description;
         }
         let matches = find_pattern_matches(
             &haystack,
@@ -315,7 +332,13 @@ impl Classifier {
                 continue;
             }
             file_voted.push(target);
-            add(&mut scores, &mut matched, target, 3, &token.text);
+            add(
+                &mut scores,
+                &mut matched,
+                target,
+                if token.description { 2 } else { 3 },
+                &token.text,
+            );
         }
 
         // 4. Nothing above fired. Now — and only now — the UCS layers get a look:
@@ -324,10 +347,10 @@ impl Classifier {
         //    makes "UCS never overrides the curated answer" true by construction
         //    instead of by weight arithmetic.
         if scores.is_empty() {
-            return self.classify_fallback(filename, &tokens, &matches);
+            return self.classify_fallback(filename, &tokens, &matches, native_ucs);
         }
 
-        finish(scores, matched)
+        finish(scores, matched, native_ucs)
     }
 
     /// The UCS pass: a declared CatID, then UCS words and phrases.
@@ -345,6 +368,7 @@ impl Classifier {
         filename: &str,
         tokens: &[TokenSpan],
         matches: &KeywordMatches,
+        native_ucs: Option<(String, Option<String>, String)>,
     ) -> Classification {
         let mut scores: Vec<(Target, u32)> = Vec::new();
         let mut matched: Vec<String> = Vec::new();
@@ -401,10 +425,16 @@ impl Classifier {
                 continue;
             }
             voted.push(target);
-            add(&mut scores, &mut matched, target, 2, &token.text);
+            add(
+                &mut scores,
+                &mut matched,
+                target,
+                if token.description { 1 } else { 2 },
+                &token.text,
+            );
         }
 
-        finish(scores, matched)
+        finish(scores, matched, native_ucs)
     }
 }
 
@@ -412,7 +442,11 @@ impl Classifier {
 ///
 /// A subcategory-level match beats a bare-category match on a tie, so
 /// `Weapons::Firearms` wins over `Weapons`.
-fn finish(scores: Vec<(Target, u32)>, mut matched: Vec<String>) -> Classification {
+fn finish(
+    scores: Vec<(Target, u32)>,
+    mut matched: Vec<String>,
+    native_ucs: Option<(String, Option<String>, String)>,
+) -> Classification {
     let mut best: Option<(Target, u32)> = None;
     for (target, score) in &scores {
         let more_specific = target.subcategory.is_some();
@@ -433,10 +467,14 @@ fn finish(scores: Vec<(Target, u32)>, mut matched: Vec<String>) -> Classificatio
     }
 
     let Some((target, raw_score)) = best else {
-        return Classification::uncategorized();
+        let mut classification = Classification::uncategorized();
+        apply_native_ucs(&mut classification, native_ucs);
+        return classification;
     };
     if raw_score < 1 {
-        return Classification::uncategorized();
+        let mut classification = Classification::uncategorized();
+        apply_native_ucs(&mut classification, native_ucs);
+        return classification;
     }
 
     // Saturation at 8: one filename word reads as weak, a phrase plus a filename
@@ -452,7 +490,34 @@ fn finish(scores: Vec<(Target, u32)>, mut matched: Vec<String>) -> Classificatio
         confidence,
         raw_score,
         matched_terms: matched,
+        ucs_category: native_ucs.as_ref().map(|(category, _, _)| category.clone()),
+        ucs_subcategory: native_ucs
+            .as_ref()
+            .and_then(|(_, subcategory, _)| subcategory.clone()),
+        ucs_cat_id: native_ucs.map(|(_, _, cat_id)| cat_id),
     }
+}
+
+fn native_ucs_for_filename(filename: &str) -> Option<(String, Option<String>, String)> {
+    let cat_id = cat_id_prefix(filename)?;
+    let (category, subcategory) = UCS_CAT_ID_NATIVE
+        .iter()
+        .find(|(known, _, _)| *known == cat_id)
+        .map(|(_, category, subcategory)| {
+            ((*category).to_string(), subcategory.map(str::to_string))
+        })?;
+    Some((category, subcategory, cat_id.to_string()))
+}
+
+fn apply_native_ucs(
+    classification: &mut Classification,
+    native_ucs: Option<(String, Option<String>, String)>,
+) {
+    classification.ucs_category = native_ucs.as_ref().map(|(category, _, _)| category.clone());
+    classification.ucs_subcategory = native_ucs
+        .as_ref()
+        .and_then(|(_, subcategory, _)| subcategory.clone());
+    classification.ucs_cat_id = native_ucs.map(|(_, _, cat_id)| cat_id);
 }
 
 /// Accumulate a vote for `target`, merging into its existing score if it has one.
@@ -585,7 +650,7 @@ fn pattern_priority(pattern: &KeywordPattern) -> (u8, u8) {
     }
 }
 
-fn tokenize_path_spans(path: &str) -> (String, Vec<TokenSpan>, usize) {
+fn tokenize_path_spans(path: &str, description: Option<&str>) -> (String, Vec<TokenSpan>, usize) {
     let mut haystack = String::with_capacity(path.len());
     let mut tokens = Vec::new();
     let mut word = String::new();
@@ -611,6 +676,7 @@ fn tokenize_path_spans(path: &str) -> (String, Vec<TokenSpan>, usize) {
             word_raw_start,
             haystack.len(),
             &mut tokens,
+            false,
         );
         if character == '\\' || character == '/' {
             last_separator = Some(raw_offset);
@@ -627,9 +693,55 @@ fn tokenize_path_spans(path: &str) -> (String, Vec<TokenSpan>, usize) {
         word_raw_start,
         haystack.len(),
         &mut tokens,
+        false,
     );
     let filename_start = last_separator.map(|offset| offset + 1).unwrap_or(0);
+    if let Some(description) = description {
+        let base = path.len() + 1;
+        haystack.push(' ');
+        append_text_tokens(description, base, &mut haystack, &mut tokens);
+    }
     (haystack, tokens, filename_start)
+}
+
+fn append_text_tokens(
+    text: &str,
+    raw_offset: usize,
+    haystack: &mut String,
+    tokens: &mut Vec<TokenSpan>,
+) {
+    let mut word = String::new();
+    let mut word_start = haystack.len();
+    let mut word_raw_start = raw_offset;
+    for (offset, character) in text.char_indices() {
+        if character.is_ascii_alphanumeric() {
+            if word.is_empty() {
+                word_start = haystack.len();
+                word_raw_start = raw_offset + offset;
+            }
+            let lower = character.to_ascii_lowercase();
+            word.push(lower);
+            haystack.push(lower);
+        } else {
+            push_token(
+                &mut word,
+                word_start,
+                word_raw_start,
+                haystack.len(),
+                tokens,
+                true,
+            );
+            haystack.push(' ');
+        }
+    }
+    push_token(
+        &mut word,
+        word_start,
+        word_raw_start,
+        haystack.len(),
+        tokens,
+        true,
+    );
 }
 
 fn push_token(
@@ -638,6 +750,7 @@ fn push_token(
     raw_start: usize,
     end: usize,
     tokens: &mut Vec<TokenSpan>,
+    description: bool,
 ) {
     if word.len() >= MIN_TOKEN_LEN && !STOP_WORDS.contains(&word.as_str()) {
         tokens.push(TokenSpan {
@@ -646,6 +759,7 @@ fn push_token(
             end,
             raw_start,
             directory: false,
+            description,
         });
     } else {
         word.clear();
@@ -937,7 +1051,7 @@ mod tests {
         let curated = HashMap::from([("dog", root), ("dogs", exact)]);
         let ucs = HashMap::new();
         let (matcher, patterns) = build_pattern_matcher(&curated, &[], &ucs, &[]);
-        let (_, tokens, _) = tokenize_path_spans("dogs.wav");
+        let (_, tokens, _) = tokenize_path_spans("dogs.wav", None);
         let matches = find_pattern_matches("dogs wav", &tokens, &matcher, &patterns);
         let target = &patterns[matches.curated[0].expect("exact match")].target;
         assert_eq!(target.category, "Weapons");
@@ -961,7 +1075,7 @@ mod tests {
         ];
         let empty = HashMap::new();
         let (matcher, patterns) = build_pattern_matcher(&empty, &phrases, &empty, &[]);
-        let (haystack, tokens, _) = tokenize_path_spans("ha-ha-ha.wav");
+        let (haystack, tokens, _) = tokenize_path_spans("ha-ha-ha.wav", None);
         let found = find_pattern_matches(&haystack, &tokens, &matcher, &patterns);
         assert!(found.phrases.contains(&(Vocabulary::Curated, 0)));
         assert!(found.phrases.contains(&(Vocabulary::Curated, 1)));
@@ -1012,6 +1126,23 @@ mod tests {
         assert_eq!(c.category, "Uncategorized");
         assert_eq!(c.confidence, 0.0);
         assert!(c.matched_terms.is_empty());
+    }
+
+    #[test]
+    fn metadata_description_can_supply_a_curated_signal() {
+        let classifier = Classifier::new();
+        let result = classifier
+            .classify_with_description(r"C:\lib\unknown_001.wav", Some("Metal, Impact, Hit"));
+        assert_eq!(result.category, "Impacts");
+        assert!(result.matched_terms.iter().any(|term| term == "metal"));
+    }
+
+    #[test]
+    fn native_ucs_fields_keep_the_official_cat_id_label() {
+        let result = classify(r"C:\lib\GORESrce_source_01.wav");
+        assert_eq!(result.ucs_cat_id.as_deref(), Some("GORESrce"));
+        assert_eq!(result.ucs_category.as_deref(), Some("GORE"));
+        assert_eq!(result.ucs_subcategory.as_deref(), Some("SOURCE"));
     }
 
     #[test]

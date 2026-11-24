@@ -21,7 +21,7 @@ use std::thread::JoinHandle;
 
 use mio_index::{
     CategoryFacet, EditState, FolderNode, IndexDb, IndexOptions, IndexReport, SearchParams,
-    SortColumn, SortDir, Sound, index_folder,
+    SkippedDir, SortColumn, SortDir, Sound, index_folder,
 };
 
 use crate::error::{AppError, AppResult};
@@ -65,6 +65,7 @@ pub struct Library {
     progress: Arc<Progress>,
     worker: Mutex<Option<JoinHandle<()>>>,
     folder_tree_cache: Mutex<Option<(i64, FolderNode)>>,
+    last_skipped_dirs: Arc<Mutex<Vec<SkippedDir>>>,
 }
 
 impl Library {
@@ -74,13 +75,14 @@ impl Library {
     /// It does not scan the folder.
     pub fn open(root: impl AsRef<Path>) -> AppResult<Self> {
         let root = root.as_ref().to_path_buf();
-        let db = IndexDb::open(&root)?;
+        let db = IndexDb::open_fast(&root)?;
         Ok(Self {
             root,
             db: Arc::new(Mutex::new(db)),
             progress: Arc::new(Progress::default()),
             worker: Mutex::new(None),
             folder_tree_cache: Mutex::new(None),
+            last_skipped_dirs: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -117,6 +119,7 @@ impl Library {
         self.progress.reset();
 
         let root = self.root.clone();
+        let skipped_dirs = Arc::clone(&self.last_skipped_dirs);
         let progress = Arc::clone(&self.progress);
         let handle = std::thread::Builder::new()
             .name("mio-indexer".into())
@@ -130,14 +133,20 @@ impl Library {
                     progress.done.store(done as u64, Ordering::Relaxed);
                     progress.total.store(total as u64, Ordering::Relaxed);
                 }) {
-                    Ok(report) => log::info!(
-                        "index pass: {} seen, {} probed, {} written, {} pruned in {:.0}ms",
-                        report.files_seen,
-                        report.files_probed,
-                        report.rows_written,
-                        report.rows_pruned,
-                        report.timings.total_ms()
-                    ),
+                    Ok(report) => {
+                        if let Ok(mut skipped) = skipped_dirs.lock() {
+                            *skipped = report.skipped_dirs.clone();
+                        }
+                        log::info!(
+                            "index pass: {} seen, {} probed, {} written, {} pruned, {} skipped dirs in {:.0}ms",
+                            report.files_seen,
+                            report.files_probed,
+                            report.rows_written,
+                            report.rows_pruned,
+                            report.skipped_dirs.len(),
+                            report.timings.total_ms()
+                        );
+                    }
                     Err(e) => log::warn!("index pass failed: {e}"),
                 }
                 progress.running.store(false, Ordering::Release);
@@ -170,7 +179,18 @@ impl Library {
             prune: full,
             ..Default::default()
         };
-        Ok(index_folder(&self.root, &options, progress)?)
+        let report = index_folder(&self.root, &options, progress)?;
+        if let Ok(mut skipped) = self.last_skipped_dirs.lock() {
+            *skipped = report.skipped_dirs.clone();
+        }
+        Ok(report)
+    }
+
+    pub fn skipped_dirs(&self) -> Vec<SkippedDir> {
+        self.last_skipped_dirs
+            .lock()
+            .map(|skipped| skipped.clone())
+            .unwrap_or_default()
     }
 
     /// Run a pass synchronously and return its report, without progress.
@@ -224,6 +244,10 @@ impl Library {
 
     pub fn facets(&self) -> AppResult<Vec<CategoryFacet>> {
         Ok(self.db()?.facets()?)
+    }
+
+    pub fn ucs_facets(&self) -> AppResult<Vec<mio_index::UcsFacet>> {
+        Ok(self.db()?.ucs_facets()?)
     }
 
     /// Favorite count and total, for the sidebar's two summary rows.
@@ -316,6 +340,7 @@ pub fn sort_column(name: &str) -> Option<SortColumn> {
         "channels" => SortColumn::Channels,
         "sample_rate" => SortColumn::SampleRate,
         "filesize" => SortColumn::Filesize,
+        "ucs_category" => SortColumn::UcsCategory,
         _ => return None,
     })
 }

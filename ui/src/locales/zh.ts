@@ -72,6 +72,8 @@ export const zh: Record<MessageKey, string> = {
   'notice.redid': '已重做{label}',
   'notice.selected': '已选 {count} 项',
   'notice.regionExported': '已写出 {name}，拖到需要的地方即可',
+  'notice.indexSkippedDirs': '有 {count} 个目录无法读取，已跳过：{paths}',
+  'notice.playbackInterrupted': '无法从 {time} 继续播放 {name}',
 
   'edit.favorite': '加入收藏',
   'edit.unfavorite': '取消收藏',
@@ -88,6 +90,7 @@ export const zh: Record<MessageKey, string> = {
 
   'col.name': '名称',
   'col.category': '分类',
+  'col.ucsCategory': 'UCS',
   'col.length': '时长',
   'col.bpm': 'BPM',
   'col.channels': '声道',
@@ -101,6 +104,9 @@ export const zh: Record<MessageKey, string> = {
   'table.searching': '搜索中…',
 
   'side.categories': '分类',
+  'side.ucs': 'UCS',
+  'side.ucsPrefix': 'UCS / {name}',
+  'side.ucsSubPrefix': 'UCS / {category} / {subcategory}',
   'side.folders': '文件夹',
   'side.noLibrary': '未打开任何库',
   'side.favoritesOnly': '只显示收藏',

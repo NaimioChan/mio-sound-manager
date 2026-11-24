@@ -75,6 +75,8 @@ export const ja: Record<MessageKey, string> = {
   'notice.redid': '{label}をやり直しました',
   'notice.selected': '{count} 件選択',
   'notice.regionExported': '{name} を書き出しました — 必要な場所へドロップしてください',
+  'notice.indexSkippedDirs': '{count} 個のディレクトリを読み取れずスキップしました: {paths}',
+  'notice.playbackInterrupted': '{name} を {time} から続けて再生できません',
 
   'edit.favorite': 'お気に入りに追加',
   'edit.unfavorite': 'お気に入りから削除',
@@ -91,6 +93,7 @@ export const ja: Record<MessageKey, string> = {
 
   'col.name': '名前',
   'col.category': 'カテゴリ',
+  'col.ucsCategory': 'UCS',
   'col.length': '長さ',
   'col.bpm': 'BPM',
   'col.channels': 'ch',
@@ -104,6 +107,9 @@ export const ja: Record<MessageKey, string> = {
   'table.searching': '検索中…',
 
   'side.categories': 'カテゴリ',
+  'side.ucs': 'UCS',
+  'side.ucsPrefix': 'UCS / {name}',
+  'side.ucsSubPrefix': 'UCS / {category} / {subcategory}',
   'side.folders': 'フォルダ',
   'side.noLibrary': 'ライブラリが開かれていません',
   'side.favoritesOnly': 'お気に入りのみ表示',

@@ -93,7 +93,7 @@ src/
 `mio-cli classify-diff` 仍然保留，但它是「旧库与当前词表有多少行不同」的对比工具，
 不是一致性验收：词表不同，结果本就不该一致。
 
-## classify：UCS 兜底
+## classify：UCS 兜底与 A-lite 字段
 
 第二套词表来自 [Universal Category System](https://www.universalcategorysystem.com/)
 8.2.1（82 个大类、753 个 Category/SubCategory、约一万条同义词）。UCS 是音效馆员的索引，
@@ -145,6 +145,15 @@ RAIN。
 `tools/import-ucs.py`、`tools/gen-category-dict.py`。改 `tools/ucs_mapping.py` 的映射也走
 同一条链，否则新映射没有证据支撑。
 
+当前采用 A-lite 过渡：显式 CatID 还会同时写入 `ucs_category`、`ucs_subcategory`、
+`ucs_cat_id` 三个原生字段；旧的 `category/subcategory` 仍保存 22 类投影，侧栏、筛选和
+排序暂不切换。没有显式 CatID 的文件不会把投影结果冒充成 UCS 原生标签。这样可以先
+完成数据契约与回填，再单独推进 UI 的两级分类切换。
+
+WAV 的 `bext`、`iXML`、尾部 `LIST/INFO`、内嵌 `ID3 ` 与 MP3 ID3v2 的文本描述会进入
+`description`，并加入 FTS5。解析只收可打印文本，APIC 图片丢弃；旧库首次打开时按
+`metadata_rule` 一次性回填。描述以较低权重参与分类，文件名仍优先。
+
 **`tools/classify-mirror.py` 是测量的脚手架，必须与产品对等。** 每个候选规则都在这个
 Python 镜像上跑，因为改一次 Rust 重编太慢。但它会漂移——本轮开发中它就漂过一次（
 `UCS_FILE_WEIGHT` 写 1 而 Rust 是 2，`lookup` 让 UCS 词进了 curated 阶段），两次都是
@@ -160,7 +169,8 @@ cargo run --release -p mio-cli -- classify-check expect.json
 
 **库文件叫 `mio-sm.db`，不再是 `slip-sound.db`。** 列名保持与参考实现一致是有目的的（旧库能直接打开、原地迁移、逐行比对），但文件名是我们自己的东西。`IndexDb::open` 会先做一次改名：`slip-sound.db` 存在而 `mio-sm.db` 不存在时，把主文件连同 `-wal` / `-shm` 一起改过来。**journal 必须跟着改**——SQLite 按名字找 WAL，主文件改名而日志留在旧名下，等于让引擎认为上次是干净关闭的，最后一个已提交事务就丢了。两个名字都在时（迁移中途被打断）保留新文件、不动旧文件，因为猜哪个是当前版本比留一个陈旧文件更糟。
 
-表结构与参考实现一致（`sounds` + `sounds_fts` + 三个触发器），新增 `mtime_ns`、`indexed_at`、`bpm` 三列和一个 `meta` 表。
+表结构与参考实现一致（`sounds` + `sounds_fts` + 三个触发器），新增 `mtime_ns`、`indexed_at`、
+`bpm`、`description`、`ucs_category`、`ucs_subcategory`、`ucs_cat_id` 七列和一个 `meta` 表。
 
 三条容易破坏且难查的不变式：
 

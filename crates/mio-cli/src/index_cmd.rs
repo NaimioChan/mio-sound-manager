@@ -77,6 +77,10 @@ pub fn run_index(args: &IndexArgs) -> Result<()> {
     println!("files skipped        {}", report.files_skipped);
     println!("rows written         {}", report.rows_written);
     println!("rows pruned          {}", report.rows_pruned);
+    println!("directories skipped  {}", report.skipped_dirs.len());
+    for skipped in &report.skipped_dirs {
+        println!("  skipped {}: {}", skipped.path, skipped.detail);
+    }
     println!();
     println!("stage timings");
     println!("  walk               {:>9.1} ms", t.walk_ms);
@@ -113,6 +117,39 @@ pub fn run_index_stats(args: &IndexArgs) -> Result<()> {
     let db = IndexDb::open(&args.folder)?;
     println!("database  {}", db.path().display());
     println!("rows      {}", db.count()?);
+
+    let (described, shared, native_ucs) = db.connection().query_row(
+        "SELECT
+             COALESCE(SUM(description IS NOT NULL), 0),
+             COALESCE((SELECT SUM(sample_count) FROM (
+                 SELECT COUNT(*) AS sample_count
+                 FROM sounds
+                 WHERE description IS NOT NULL
+                 GROUP BY description
+                 HAVING COUNT(*) > 1
+             )), 0),
+             COALESCE(SUM(ucs_cat_id IS NOT NULL), 0)
+         FROM sounds",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )?;
+    let rows = db.count()? as f64;
+    println!(
+        "metadata description {} / {} ({:.2}%), shared-description rows {}, native UCS {} / {} ({:.2}%)",
+        described,
+        rows as u64,
+        if rows > 0.0 { described as f64 * 100.0 / rows } else { 0.0 },
+        shared,
+        native_ucs,
+        rows as u64,
+        if rows > 0.0 { native_ucs as f64 * 100.0 / rows } else { 0.0 },
+    );
 
     let facets = db.facets()?;
     println!("facets    {} (category, subcategory) pairs", facets.len());

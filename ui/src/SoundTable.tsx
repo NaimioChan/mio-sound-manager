@@ -22,6 +22,7 @@ export type SortKey =
   | 'favorite'
   | 'filename'
   | 'category'
+  | 'ucsCategory'
   | 'durationS'
   | 'bpm'
   | 'channels'
@@ -44,6 +45,7 @@ export const SORT_WIRE: Record<SortKey, string> = {
   favorite: 'favorite',
   filename: 'filename',
   category: 'category',
+  ucsCategory: 'ucs_category',
   durationS: 'duration',
   bpm: 'bpm',
   channels: 'channels',
@@ -63,6 +65,7 @@ const COLUMNS: Column[] = [
   { key: 'favorite', label: () => '★', width: '32px' },
   { key: 'filename', label: () => t('col.name'), width: 'minmax(180px, 2fr)' },
   { key: 'category', label: () => t('col.category'), width: 'minmax(140px, 1fr)' },
+  { key: 'ucsCategory', label: () => t('col.ucsCategory'), width: 'minmax(160px, 1fr)' },
   { key: 'durationS', label: () => t('col.length'), width: '84px', numeric: true },
   { key: 'bpm', label: () => t('col.bpm'), width: '56px', numeric: true },
   { key: 'channels', label: () => t('col.channels'), width: '64px' },
@@ -78,6 +81,7 @@ export const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   favorite: 'desc',
   filename: 'asc',
   category: 'asc',
+  ucsCategory: 'asc',
   durationS: 'desc',
   bpm: 'desc',
   channels: 'desc',
@@ -173,8 +177,16 @@ function cellNode(col: SortKey, row: SoundRow) {
       )
     case 'filename':
       return (
-        <span class="cell name" title={row.path}>
+        <span
+          class="cell name"
+          title={row.description ? `${row.path}\n${row.description}` : row.path}
+        >
           {row.filename}
+          <Show when={row.descriptionCount && row.descriptionCount > 1}>
+            <span class="description-count" title={row.description ?? undefined}>
+              ×{row.descriptionCount}
+            </span>
+          </Show>
         </span>
       )
     case 'category':
@@ -183,6 +195,15 @@ function cellNode(col: SortKey, row: SoundRow) {
           {categoryName(row.category)}
           <Show when={row.subcategory}>
             <span class="sub"> / {row.subcategory}</span>
+          </Show>
+        </span>
+      )
+    case 'ucsCategory':
+      return (
+        <span class="cell dim" title={row.ucsCatId ?? undefined}>
+          {row.ucsCategory ?? '—'}
+          <Show when={row.ucsSubcategory}>
+            <span class="sub"> / {row.ucsSubcategory}</span>
           </Show>
         </span>
       )

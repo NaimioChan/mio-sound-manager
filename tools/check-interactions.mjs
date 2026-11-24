@@ -313,11 +313,13 @@ const longestIndex = await page.evaluate(() => {
     return m ? Number(m[1]) * 60 + Number(m[2]) : 0
   }
   const rows = [...document.querySelectorAll('.row[data-path]')]
+  const durationColumn = [...document.querySelectorAll('.head-cell')].findIndex(
+    (el) => el.dataset.sortKey === 'durationS'
+  )
   let best = 0
   let bestLen = -1
   rows.forEach((row, i) => {
-    // Columns: ★ · Name · Category · Length · Ch · Rate · Size
-    const cell = row.children[3]
+    const cell = row.querySelectorAll('.cell')[durationColumn]
     const len = parse(cell?.textContent)
     if (len > bestLen) {
       bestLen = len

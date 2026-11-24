@@ -1,4 +1,4 @@
-import { Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { getVersion } from '@tauri-apps/api/app'
 import {
   api,
@@ -10,7 +10,9 @@ import {
   type FolderNode,
   type IndexProgress,
   type LibraryStatus,
-  type SoundRow
+  type PlaybackError,
+  type SoundRow,
+  type UcsFacet
 } from './ipc'
 import {
   SoundTable,
@@ -48,6 +50,8 @@ function usePlayhead() {
   const [durationS, setDurationS] = createSignal(0)
   const [playing, setPlaying] = createSignal(false)
   const [paused, setPaused] = createSignal(false)
+  const [playbackError, setPlaybackError] = createSignal<PlaybackError | null>(null)
+  let lastErrorSeq = 0
 
   let frame = 0
   let inFlight = false
@@ -76,6 +80,11 @@ function usePlayhead() {
         setDurationS(p.durationS)
         setPlaying(p.playing)
         setPaused(p.paused)
+        if (p.errorSeq !== lastErrorSeq) {
+          const error = await api.takePlaybackError()
+          lastErrorSeq = p.errorSeq
+          if (error) setPlaybackError(error)
+        }
       } catch {
         // A dropped poll is not fatal; the next frame asks again.
       } finally {
@@ -94,7 +103,7 @@ function usePlayhead() {
     cancelAnimationFrame(frame)
   })
 
-  return { positionS, durationS, playing, paused }
+  return { positionS, durationS, playing, paused, playbackError, clearPlaybackError: () => setPlaybackError(null) }
 }
 
 /** Sidebar width, remembered per machine. Clamped to what the layout can take. */
@@ -163,6 +172,7 @@ export function App() {
   const [dataEpoch, setDataEpoch] = createSignal(0)
   const [folders, setFolders] = createSignal<FolderNode | null>(null)
   const [facets, setFacets] = createSignal<Facet[]>([])
+  const [ucsFacets, setUcsFacets] = createSignal<UcsFacet[]>([])
   const [favorites, setFavorites] = createSignal(0)
   const [total, setTotal] = createSignal(0)
 
@@ -186,8 +196,13 @@ export function App() {
    * goes empty for no visible reason.
    */
   const [subcategories, setSubcategories] = createSignal<{ category: string; sub: string }[]>([])
+  const [ucsCategories, setUcsCategories] = createSignal<string[]>([])
+  const [ucsSubcategories, setUcsSubcategories] = createSignal<{ category: string; sub: string }[]>([])
   const [folder, setFolder] = createSignal<string | null>(null)
   const [favoritesOnly, setFavoritesOnly] = createSignal(false)
+  const [facetMode, setFacetMode] = createSignal<'mio' | 'ucs'>(
+    localStorage.getItem('mio:facet-mode') === 'ucs' ? 'ucs' : 'mio'
+  )
 
   const [sortKey, setSortKey] = createSignal<SortKey>('filename')
   const [sortAsc, setSortAsc] = createSignal(true)
@@ -276,6 +291,21 @@ export function App() {
 
   const playhead = usePlayhead()
 
+  createEffect(() => {
+    const error = playhead.playbackError()
+    if (!error) return
+    const seconds = Math.max(0, error.positionS)
+    const minutes = Math.floor(seconds / 60)
+    const rest = Math.floor(seconds % 60).toString().padStart(2, '0')
+    setNotice(
+      t('notice.playbackInterrupted', {
+        name: error.path.split(/[\\/]/).pop() ?? error.path,
+        time: `${minutes}:${rest}`
+      })
+    )
+    playhead.clearPlaybackError()
+  })
+
   const activeLibrary = createMemo(() => libraries().find((l) => l.active) ?? null)
   let searchSequence = 0
 
@@ -292,6 +322,9 @@ export function App() {
     categories: categories().length > 0 ? categories() : undefined,
     subcategories:
       subcategories().length > 0 ? subcategories().map((entry) => entry.sub) : undefined,
+    ucsCategories: ucsCategories().length > 0 ? ucsCategories() : undefined,
+    ucsSubcategories:
+      ucsSubcategories().length > 0 ? ucsSubcategories().map((entry) => entry.sub) : undefined,
     folder: folder() ?? undefined,
     favoriteOnly: favoritesOnly() ? true : undefined,
     sortBy: SORT_WIRE[sortKey()],
@@ -349,6 +382,12 @@ export function App() {
       setFolders(await api.folders())
     } catch {
       setFolders(null)
+      // A remembered old library may still be running its deferred metadata
+      // migration. Retry on the next status tick instead of leaving Folders
+      // permanently empty after the first SQLite busy/read snapshot.
+      if (activeLibrary()) {
+        window.setTimeout(() => void loadTree(), 1000)
+      }
     }
   }
 
@@ -361,10 +400,12 @@ export function App() {
     try {
       const sidebar = await api.sidebar()
       setFacets(sidebar.facets)
+      setUcsFacets(sidebar.ucsFacets)
       setFavorites(sidebar.favorites)
       setTotal(sidebar.total)
     } catch {
       setFacets([])
+      setUcsFacets([])
     }
   }
 
@@ -399,6 +440,7 @@ export function App() {
     // different sound would either export the wrong region or loop a part of a
     // file the user never looked at.
     setRegion(null)
+    playhead.clearPlaybackError()
     try {
       await api.play(row.path, startAt)
     } catch (e) {
@@ -551,9 +593,17 @@ export function App() {
 
     setIndexing({ label: t('index.indexing'), progress: null })
     try {
-      await api.addLibrary(target, (progress) => {
+      const result = await api.addLibrary(target, (progress) => {
         setIndexing({ label: t('index.indexing'), progress })
       })
+      if (result.skippedDirs.length > 0) {
+        setNotice(
+          t('notice.indexSkippedDirs', {
+            count: result.skippedDirs.length,
+            paths: result.skippedDirs.map((dir) => dir.path).join(', ')
+          })
+        )
+      }
       clearSelection()
       setSettingsOpen(false)
       await refresh()
@@ -573,9 +623,17 @@ export function App() {
   const reindexLibrary = async (root: string, full: boolean) => {
     setIndexing({ label: full ? t('index.fullReindex') : t('index.reindexing'), progress: null })
     try {
-      await api.reindexLibrary(root, (progress) => {
+      const result = await api.reindexLibrary(root, (progress) => {
         setIndexing({ label: full ? t('index.fullReindex') : t('index.reindexing'), progress })
       }, full)
+      if (result.skippedDirs.length > 0) {
+        setNotice(
+          t('notice.indexSkippedDirs', {
+            count: result.skippedDirs.length,
+            paths: result.skippedDirs.map((dir) => dir.path).join(', ')
+          })
+        )
+      }
       clearSelection()
       await refresh()
     } catch (e) {
@@ -593,6 +651,8 @@ export function App() {
       // folder tree, the undo stack and the rows.
       setCategories([])
       setSubcategories([])
+      setUcsCategories([])
+      setUcsSubcategories([])
       setFolder(null)
       setFavoritesOnly(false)
       clearSelection()
@@ -679,6 +739,8 @@ export function App() {
       // The "All sounds" row: one click clears every category row.
       setCategories([])
       setSubcategories([])
+      setUcsCategories([])
+      setUcsSubcategories([])
       setFolder(null)
       setFavoritesOnly(false)
       void runSearch()
@@ -696,6 +758,30 @@ export function App() {
       setSubcategories(subcategories().filter((entry) => entry.category !== name))
     } else {
       setCategories([...categories(), name])
+    }
+    setFolder(null)
+    setFavoritesOnly(false)
+    void runSearch()
+  }
+
+  const toggleUcsCategory = (name: string | null, additive: boolean) => {
+    if (name === null) {
+      setUcsCategories([])
+      setUcsSubcategories([])
+      setFolder(null)
+      setFavoritesOnly(false)
+      void runSearch()
+      return
+    }
+    if (!additive) {
+      const sole = ucsCategories().length === 1 && ucsCategories()[0] === name
+      setUcsCategories(sole ? [] : [name])
+      setUcsSubcategories([])
+    } else if (ucsCategories().includes(name)) {
+      setUcsCategories(ucsCategories().filter((category) => category !== name))
+      setUcsSubcategories(ucsSubcategories().filter((entry) => entry.category !== name))
+    } else {
+      setUcsCategories([...ucsCategories(), name])
     }
     setFolder(null)
     setFavoritesOnly(false)
@@ -740,10 +826,46 @@ export function App() {
     void runSearch()
   }
 
+  const toggleUcsSubcategory = (category: string, sub: string, additive: boolean) => {
+    const same = (entry: { category: string; sub: string }) =>
+      entry.category === category && entry.sub === sub
+    const lit = ucsSubcategories().some(same)
+    let next: { category: string; sub: string }[]
+    if (additive) {
+      next = lit
+        ? ucsSubcategories().filter((entry) => !same(entry))
+        : [...ucsSubcategories(), { category, sub }]
+    } else if (lit && ucsSubcategories().length === 1) {
+      next = []
+    } else {
+      next = [{ category, sub }]
+    }
+    setUcsSubcategories(next)
+    const parents = new Set(next.map((entry) => entry.category))
+    setUcsCategories(additive
+      ? [...new Set([...ucsCategories().filter((value) => value !== category || parents.has(value)), ...parents])]
+      : [...parents])
+    setFolder(null)
+    setFavoritesOnly(false)
+    void runSearch()
+  }
+
+  const changeFacetMode = (mode: 'mio' | 'ucs') => {
+    setFacetMode(mode)
+    localStorage.setItem('mio:facet-mode', mode)
+    setCategories([])
+    setSubcategories([])
+    setUcsCategories([])
+    setUcsSubcategories([])
+    void runSearch()
+  }
+
   const setFolderFilter = (path: string | null) => {
     setFolder(path)
     setCategories([])
     setSubcategories([])
+    setUcsCategories([])
+    setUcsSubcategories([])
     setFavoritesOnly(false)
     void runSearch()
   }
@@ -1191,6 +1313,21 @@ export function App() {
         clear: () => toggleSubcategory(entry.category, entry.sub, true)
       })
     }
+    for (const name of ucsCategories()) {
+      chips.push({
+        label: t('side.ucsPrefix', { name }),
+        clear: () => toggleUcsCategory(name, true)
+      })
+    }
+    for (const entry of ucsSubcategories()) {
+      chips.push({
+        label: t('side.ucsSubPrefix', {
+          category: entry.category,
+          subcategory: entry.sub
+        }),
+        clear: () => toggleUcsSubcategory(entry.category, entry.sub, true)
+      })
+    }
     if (folder()) {
       chips.push({
         label: folder()!.split(/[\\/]/).pop() ?? folder()!,
@@ -1261,7 +1398,7 @@ export function App() {
         </Show>
 
         <Show when={notice()}>
-          <button class="notice" onClick={() => setNotice(null)} title={t('common.dismiss')}>
+          <button class="notice" onClick={() => setNotice(null)} title={notice() ?? t('common.dismiss')}>
             {notice()}
           </button>
         </Show>
@@ -1287,16 +1424,23 @@ export function App() {
           <Sidebar
             libraries={libraries()}
             facets={facets()}
+            ucsFacets={ucsFacets()}
             favorites={favorites()}
             total={total()}
             folders={folders()}
             categories={categories()}
             subcategories={subcategories()}
+            ucsCategories={ucsCategories()}
+            ucsSubcategories={ucsSubcategories()}
+            facetMode={facetMode()}
             folder={folder()}
             favoritesOnly={favoritesOnly()}
             onActivate={(root) => void switchLibrary(root)}
             onCategory={toggleCategory}
             onSubcategory={toggleSubcategory}
+            onUcsCategory={toggleUcsCategory}
+            onUcsSubcategory={toggleUcsSubcategory}
+            onFacetMode={changeFacetMode}
             onFolder={setFolderFilter}
             onFolderMenu={(request) => setFolderMenu(request)}
             onToggleFavorites={() => {

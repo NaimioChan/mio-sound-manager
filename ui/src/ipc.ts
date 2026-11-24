@@ -21,6 +21,12 @@ export interface LibraryStatus {
   total: number
   /** Whether the window is showing this library. */
   active: boolean
+  skippedDirs: SkippedDir[]
+}
+
+export interface SkippedDir {
+  path: string
+  detail: string
 }
 
 export interface AppStatus {
@@ -58,6 +64,7 @@ export interface PlaybackPosition {
   /** Loaded but frozen: the playhead holds still and Space resumes it. */
   paused: boolean
   finished: boolean
+  errorSeq: number
   /** Whether the render thread is looping the loaded clip. */
   looping: boolean
   /** The looped region in seconds, or `null` when it is the whole clip. */
@@ -101,6 +108,11 @@ export interface SoundRow {
   subcategory: string | null
   confidence: number
   matchedTerms: string[]
+  description: string | null
+  descriptionCount: number | null
+  ucsCategory: string | null
+  ucsSubcategory: string | null
+  ucsCatId: string | null
   favorite: boolean
   categoryManual: boolean
   folder: string | null
@@ -130,8 +142,15 @@ export interface Facet {
   count: number
 }
 
+export interface UcsFacet {
+  category: string
+  subcategory: string | null
+  count: number
+}
+
 export interface Sidebar {
   facets: Facet[]
+  ucsFacets: UcsFacet[]
   favorites: number
   total: number
 }
@@ -158,6 +177,8 @@ export interface SearchRequest {
   categories?: string[]
   /** Intersects with `categories`, which is what the rail's lit rows mean. */
   subcategories?: string[]
+  ucsCategories?: string[]
+  ucsSubcategories?: string[]
   folder?: string
   minConfidence?: number
   favoriteOnly?: boolean
@@ -165,6 +186,11 @@ export interface SearchRequest {
   sortDir?: 'asc' | 'desc'
   limit?: number
   offset?: number
+}
+
+export interface PlaybackError {
+  path: string
+  positionS: number
 }
 
 /** A bulk edit whose targets are resolved by the current filter in Rust. */
@@ -216,6 +242,7 @@ export const api = {
   resume: () => invoke<void>('resume'),
 
   position: () => invoke<PlaybackPosition>('get_playback_position'),
+  takePlaybackError: () => invoke<PlaybackError | null>('take_playback_error'),
 
   /**
    * Output gain. `1.0` is unity, `0.0` silence; the engine clamps to `0..4`.

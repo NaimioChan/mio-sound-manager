@@ -30,6 +30,9 @@ use symphonia::core::units::Time;
 
 use crate::error::{EngineError, Result};
 
+/// Maximum retained PCM for one decoded clip or window path.
+pub const MAX_PCM_BYTES: usize = 256 * 1024 * 1024;
+
 /// How the device wants its samples. Only the two formats shared-mode devices
 /// actually hand out are supported; anything else is reported instead of guessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,10 +234,12 @@ impl Decoder {
         );
 
         let source_bytes = source.samples.len() * std::mem::size_of::<f32>();
-        if source_bytes > 256 * 1024 * 1024 {
+        if source_bytes > MAX_PCM_BYTES {
             return Err(EngineError::Decode {
                 path: display,
-                detail: "decoded PCM exceeds the 256MiB per-clip memory budget".into(),
+                detail: format!(
+                    "decoded PCM is {source_bytes} bytes, over the {MAX_PCM_BYTES} byte per-clip memory budget"
+                ),
             });
         }
 
@@ -249,10 +254,14 @@ impl Decoder {
         let interleaved = remap_channels(&interleaved, src_channels, self.format.channels);
         let bytes = to_device_bytes(&interleaved, self.format.sample);
         let frames = bytes.len() / self.format.frame_bytes();
-        if source_bytes.saturating_add(bytes.len()) > 256 * 1024 * 1024 {
+        if source_bytes.saturating_add(bytes.len()) > MAX_PCM_BYTES {
             return Err(EngineError::Decode {
                 path: display,
-                detail: "source and device PCM together exceed the 256MiB per-clip memory budget".into(),
+                detail: format!(
+                    "source PCM {source_bytes} + device PCM {} = {} bytes, over the {MAX_PCM_BYTES} byte per-clip memory budget",
+                    bytes.len(),
+                    source_bytes.saturating_add(bytes.len())
+                ),
             });
         }
         let source_cache = Some(Arc::clone(&source));
@@ -549,14 +558,19 @@ impl Decoder {
                 }
             };
 
-            const MAX_PCM_BYTES: usize = 256 * 1024 * 1024;
             let packet_bytes = decoded.capacity().saturating_mul(
                 decoded.spec().channels.count().max(1) * std::mem::size_of::<f32>(),
             );
-            if packet_bytes > MAX_PCM_BYTES || out.len().saturating_add(packet_bytes / 4) > MAX_PCM_BYTES / 4 {
+            let estimated_out_bytes = out
+                .len()
+                .saturating_add(packet_bytes / 4)
+                .saturating_mul(std::mem::size_of::<f32>());
+            if packet_bytes > MAX_PCM_BYTES || estimated_out_bytes > MAX_PCM_BYTES {
                 return Err(EngineError::Decode {
                     path: display.clone(),
-                    detail: "decoded PCM exceeds the 256MiB per-clip memory budget".into(),
+                    detail: format!(
+                        "decoded packet {packet_bytes} bytes, accumulated PCM {estimated_out_bytes} bytes, budget {MAX_PCM_BYTES} bytes"
+                    ),
                 });
             }
 
@@ -882,14 +896,6 @@ mod tests {
         );
         assert_eq!(window.total_frames, full.total_frames, "total is the file's, not the window's");
         // Sample alignment: buffer frame 0 must equal file frame 96000.
-        let full_samples: Vec<f32> = full
-            .source
-            .as_ref()
-            .unwrap()
-            .samples
-            .chunks_exact(1)
-            .map(|c| c[0])
-            .collect();
         let window_samples = &window.source.as_ref().unwrap().samples;
         let file_frame = 2 * rate as usize;
         // Sample-exact: the packet loop drops and trims to the requested

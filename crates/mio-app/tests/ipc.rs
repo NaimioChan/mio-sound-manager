@@ -428,6 +428,101 @@ fn long_file_play_publishes_a_short_prefix_with_full_duration() {
 }
 
 #[test]
+fn prefetched_long_file_continues_past_the_five_second_prefix() {
+    let Some(state) = state() else { return };
+    let root = scratch("long-prefetch");
+    let audio = root.join("prefetched.wav");
+    write_wav(&audio, 44_100, 2, 65 * 44_100);
+    let path = audio.to_string_lossy().into_owned();
+
+    state.prefetch_neighbors(std::slice::from_ref(&path));
+    let cache_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while state.cached_clip(&path).is_none() && std::time::Instant::now() < cache_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        state.cached_clip(&path).is_some(),
+        "prefetch should populate the cache"
+    );
+
+    tauri::async_runtime::block_on(state.play(&path, None)).expect("play prefetched long file");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut position = state.playback_position();
+    while position.position_s < 6.0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        position = state.playback_position();
+    }
+    assert!(
+        position.position_s >= 6.0,
+        "prefetched long file stopped at {:.2}s",
+        position.position_s
+    );
+    state.stop_playback().expect("stop prefetched playback");
+}
+
+#[test]
+fn looping_long_file_uses_a_window_chain_instead_of_full_decode() {
+    let Some(state) = state() else { return };
+    let root = scratch("long-loop");
+    let audio = root.join("loop.wav");
+    write_wav(&audio, 44_100, 2, 65 * 44_100);
+    let path = audio.to_string_lossy().into_owned();
+
+    state
+        .set_loop(true, None)
+        .expect("enable looping before playback");
+    tauri::async_runtime::block_on(state.play(&path, None)).expect("play long loop");
+
+    let clip = state
+        .cached_clip(&path)
+        .expect("the initial window should be cached");
+    assert!(
+        !clip.complete,
+        "looping a long file must not full-decode it"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut position = state.playback_position();
+    while !position.playing && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        position = state.playback_position();
+    }
+    assert!(position.playing, "the window chain should start playing");
+    assert!(
+        state.loop_state().enabled,
+        "the engine should report looping enabled"
+    );
+    state.stop_playback().expect("stop long loop");
+}
+
+#[test]
+fn looping_short_file_still_wraps_inside_the_active_clip() {
+    let Some(state) = state() else { return };
+    let root = scratch("short-loop");
+    let audio = root.join("loop.wav");
+    write_wav(&audio, 44_100, 2, 44_100);
+    let path = audio.to_string_lossy().into_owned();
+
+    state
+        .set_loop(true, None)
+        .expect("enable short-file looping");
+    tauri::async_runtime::block_on(state.play(&path, None)).expect("play short loop");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !state.playback_position().playing && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
+    let position = state.playback_position();
+    assert!(!position.finished, "a short loop must not finish");
+    assert!(
+        position.position_s < 1.1,
+        "looped position escaped the clip: {:.3}s",
+        position.position_s
+    );
+    state.stop_playback().expect("stop short loop");
+}
+
+#[test]
 fn long_file_seek_to_an_undecoded_position_plays_from_there() {
     let Some(state) = state() else { return };
     let root = scratch("long-seek");
@@ -484,8 +579,7 @@ fn long_file_seek_to_an_undecoded_position_plays_from_there() {
         cached = state.playback_position();
     }
     assert!(
-        cached.position_s >= cached_target - 1.0
-            && cached.position_s < cached_target + 1.5,
+        cached.position_s >= cached_target - 1.0 && cached.position_s < cached_target + 1.5,
         "cached-window seek should start near the target, got {}",
         cached.position_s
     );
@@ -502,12 +596,31 @@ fn long_file_seek_to_an_undecoded_position_plays_from_there() {
         backward = state.playback_position();
     }
     assert!(
-        backward.position_s >= before_window - 1.0
-            && backward.position_s < before_window + 1.5,
+        backward.position_s >= before_window - 1.0 && backward.position_s < before_window + 1.5,
         "backward seek should start near the target, got {}",
         backward.position_s
     );
     state.stop_playback().expect("stop seek playback");
+}
+
+#[test]
+fn playback_error_is_consumed_once_and_stop_clears_it() {
+    let Some(state) = state() else { return };
+
+    assert_eq!(state.playback_error_seq(), 0);
+    assert!(state.take_playback_error().is_none());
+
+    state.report_playback_error("C:\\samples\\broken.wav".into(), 12.5);
+    assert_eq!(state.playback_error_seq(), 1);
+    let error = state.take_playback_error().expect("playback error");
+    assert_eq!(error.path, "C:\\samples\\broken.wav");
+    assert!((error.position_s - 12.5).abs() < f64::EPSILON);
+    assert!(state.take_playback_error().is_none());
+
+    state.report_playback_error("C:\\samples\\broken.wav".into(), 27.0);
+    state.stop_playback().expect("stop after playback error");
+    assert!(state.take_playback_error().is_none());
+    assert_eq!(state.playback_error_seq(), 2);
 }
 
 #[test]

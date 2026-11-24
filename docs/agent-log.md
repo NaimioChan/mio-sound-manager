@@ -2,6 +2,40 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+## 当前占用
+
+## 2026-11-24 08:35 · opencode · TODO-2026-11-23 剩余实现与真实库验收
+
+- 改：统一 engine `MAX_PCM_BYTES` 到预取缓存，解码预算错误带实际字节数；窗口链加入可测试的一次重试与最终 stop/notice；索引补只读目录 fixture、native UCS category/subcategory filter/facet/sort、UCS 两级侧栏模式与表格列；description 进入 FTS/IPC，并以共享计数 `×N` 标记包级描述；旧库迁移补 native UCS/description 索引；桌面启动改为 `open_fast` + 后台迁移，避免旧库回填阻塞 WebView 首帧；交互验收按 `data-sort-key`/`data-sidebar-mode` 定位控件。
+- 验证：`cargo test --release --workspace` 全过（app 23、IPC 33、engine 24、index 111）；`cargo check --release --workspace`、`npm run build`、`node ui/../tools/check-i18n.mjs`（en/ja/zh 各 156 键）、`node --check tools/check-interactions.mjs`、`git diff --check` 通过。新增 retry、只读目录、UCS filter/facet/sort 测试全过。
+- 真实库：`D:\reslip-test-library` 271,350 行完成 schema/metadata 回填；`index-stats`：description 146,568/271,350（54.01%）、共享 description 行 142,342、native UCS 835；`search impact` 29,685 命中、119.53ms；`classify-check --ucs` 3,000 样本 0 mismatch；`ucs-report` gained 1,129、regressions 0。
+- 验证补充：最新 release 桌面实例 `check-interactions.mjs 9223` 全通过，真实 1352.90s 素材 seek 到 947.71s 后窗口链继续前进；`check-layout.mjs 9223` 通过（9 列含 UCS，header/row 对齐）；`check-tags.mjs 9223` 全通过（UCS 列、文件夹菜单/筛选、BPM、列拖拽、设置重开、copy 检查）；`check-i18n` en/ja/zh 各 156 键通过。当前环境仍未完成装机版 CDP 200s 独立长播、循环 RSS/任务管理器峰值与真实解码故障注入；最长 1352.9s WAV 用 CLI 全量入口播放时被 256MiB 保护拒绝（源 238,652,248 + 设备 519,515,104 = 758,167,352 bytes），不能替代桌面窗口链验收。未提交工作区保留用户及上一轮改动，未执行回退或清理。
+- Release：`(cd ui && npm run build)`、`cargo build --release` 通过；本次提交暂不推送。
+
+## 2026-11-23 22:57 · opencode · TODO #1-#5 验收推进与窗口链失败可见化
+
+- 改：`crates/mio-app/src/{commands,lib,state}.rs` 增加窗口链 decode 一次重试、epoch CAS 保护的最终 stop 与一次性错误 DTO；`ui/src/{App,ipc,locales/*}.ts` 轮询错误序号并以三语 notice 显示文件名和失败时间；`crates/mio-index/src/probe.rs` 排除 `~$*` / `.tmp` / `.partial`，保留合法隐藏音频；IPC 增加错误消费/stop 清理回归。
+- 验证：`cargo test --release --workspace` 全过（app 20、IPC 33、engine 24、index 109）；`npm run build`、`cargo check --release -p mio-app`、`git diff --check` 通过。D:\ full index 570,511 文件、9 个权限目录跳过、0 prune；紧接增量 0 probe、0 write，约 89.5s。`\\?\` 前缀、空目录及临时/隐藏音频 fixture 通过。目标 MP3 播放 190.435/190.435s、0 underrun；CLI 峰值工作集 151.9 MiB / Private Bytes 147.1 MiB。`mio-cli switch` 14 次切换、0 underrun、出声 p50 17.03ms。D:\ metadata 294,731/570,511（51.66%），FTS impact 36,042、文件名 impact 19,439；`classify-check` 3,000 样本、`--ucs` 后 0 mismatch。
+- 遗留：窗口解码失败重试/notice 有状态单测但尚无真实故障注入；未跑装机版 CDP 的 200s 连续播放和两份其他长文件；未测循环长文件 RSS；metadata 回填尚未按 282,762 行原目标库记录单独计时，当前数字是 D:\ 570,511 行；包级 description 去重展示未做；完整 UCS 两级 UI、留出包 top-1 未验。`cargo fmt --check` 仍被仓库原有 Rust 格式差异阻塞，未格式化无关文件。
+- 下一步：给窗口解码链加可控失败注入，验证一次重试成功/两次失败后停播与 notice；再跑装机版 CDP 长时播放、循环长文件峰值 RSS；用 `D:\reslip-test-library` 单独记录 metadata 回填/impact 口径，之后评估 UCS 两级 UI 契约。
+
+## 2026-11-23 22:07 · opencode · metadata 与 UCS A-lite 第一阶段
+
+- 改：`crates/mio-index/src/probe.rs` 读取 WAV 完整 RIFF chunk 链（`bext`/`iXML`/尾部 `LIST/INFO`/内嵌 `ID3 `/`_PMX`）与 MP3 ID3v2 描述，过滤不可打印文本并丢弃 APIC；`AudioMeta.description` 进入分类与索引。
+- 改：`crates/mio-index/src/db.rs` 新增 `description`、`ucs_category`、`ucs_subcategory`、`ucs_cat_id`，FTS5 加 description，旧库 `metadata_rule` 回填，schema 版本 3；`commands.rs`/`ui/src/ipc.ts` 同步 IPC 字段。
+- 改：`classify/mod.rs` 支持描述低权重特征；显式 UCS CatID 保存官方两级字段，旧 `category/subcategory` 继续使用投影；`tools/import-ucs.py`/`gen-category-dict.py`/生成文件补齐 native CatID 表，并加入无 openpyxl 的 stdlib xlsx fallback。
+- 验证：`cargo test --release --workspace` 通过（app 20、IPC 32、engine 24、index 109，doc-tests 全过）；`npm run build` 通过；`cargo check -p mio-index -p mio-app`、`git diff --check` 通过；index 新增回归覆盖尾部 BEXT、垃圾文本、描述 FTS、描述分类、native UCS round-trip。
+- 遗留：尚未在 28 万行真实库执行一次完整 metadata 回填并记录覆盖率/耗时；尚未把 UI 侧栏切换为 UCS 两级（本轮按 A-lite 保持旧聚合筛选）；真实 D:\ 盘符、\`\\?\\\`、只读目录与窗口链失败重试仍按 TODO 遗留。
+- 下一步：在真实库执行增量/回填测量，核对 description 覆盖率与 `impact` 搜索基准；随后决定 A-lite 的 UI 展示契约，再推进 UCS 两级筛选与排序。
+
+## 2026-11-23 · opencode · 添加库跳过目录保护与长文件循环窗口链
+
+- 改：`crates/mio-index/src/{probe,indexer,db,lib}.rs` 遍历遇到不可枚举子目录时收集 `SkippedDir`，继续索引；full prune 用临时路径范围表保护跳过子树旧行；`IndexReport`/CLI/UI 状态带出跳过清单，桌面端一次性 notice 展示；新增跳过子树 prune 回归。
+- 改：`crates/mio-app/src/{library,commands,state}.rs` 与 `crates/mio-engine/src/output.rs`：后台重扫保存 skipped dirs；长文件循环不再走 full decode，使用窗口链；引擎增加 streaming-loop 模式和队列状态读取；窗口游标按实际解码起点推进；新增长文件预取跨 5 秒、循环长文件、短文件循环回绕 IPC 回归。
+- 验证：`cargo test --release --workspace` 通过（app 20、IPC 31、engine 24、index 104）；`npm run build`（`ui/`）通过；实际 MP3 `mio-cli probe`：190.435s / 48kHz / 2ch / PCM 73,126,960 bytes；冷启动 `mio-cli play ... --hold 8` 完整播放到 190.435s，0 underrun；`cargo check --workspace`、`git diff --check` 通过。
+- 遗留：长文件窗口解码失败仍只写 warn 并结束链，尚未做 UI 可见错误/一次重试；#3 已确认循环 full decode 是主要内存风险，本轮通过窗口链规避，尚未做任务管理器/RSS 峰值实测；#4 metadata 尚未开始；#5 UCS A/A-lite 等待用户拍板。
+- 下一步：补窗口链失败重试与 UI 状态；按 TODO #4 落地 metadata 解析前先确认 schema/FTS 迁移口径；#5 先向用户确认完整 A 或 A-lite。
+
 ## 2026-11-23 16:00 · opencode · 波形 seek 坐标 hotfix，替换 0.2.0 安装包
 
 - 改：`crates/mio-engine/src/{decode,output}.rs` 统一窗口起点、播放头和 seek offset 的设备帧坐标，修复窗口起点与相对 offset 重复计入导致的定位严重偏差/越界；`crates/mio-app/src/state.rs` 修正缓存窗口复用、回退 seek 和不同源/设备采样率换算；`crates/mio-app/tests/ipc.rs` 增加缓存窗口与回退窗口回归；`tools/check-interactions.mjs` 增加 seek 不越界且接近点击位置断言。

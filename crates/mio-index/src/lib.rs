@@ -31,11 +31,12 @@ pub mod wav_header;
 pub use classify::{Classification, Classifier};
 pub use db::{
     CategoryFacet, EditState, IndexDb, SearchParams, SortColumn, SortDir, Sound, SoundRow,
+    UcsFacet,
 };
 pub use error::{IndexError, Result};
 pub use folders::{FolderNode, build_folder_tree, folder_range, relative_folder};
 pub use indexer::{IndexOptions, IndexReport, StageTimings, index_folder};
 pub use probe::{
-    AudioMeta, FileEntry, is_audio_path, probe_file, probe_with_meta, walk_audio_entries,
-    walk_audio_files,
+    AudioMeta, FileEntry, SkippedDir, WalkReport, is_audio_path, probe_file, probe_with_meta,
+    walk_audio_entries, walk_audio_entries_with_report, walk_audio_files,
 };

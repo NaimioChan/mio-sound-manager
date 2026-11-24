@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js'
 import { UNCATEGORIZED, categoryName, t } from './i18n'
-import type { Facet, FolderMenuRequest, FolderNode, LibraryStatus } from './ipc'
+import type { Facet, FolderMenuRequest, FolderNode, LibraryStatus, UcsFacet } from './ipc'
 import { ICON } from './icons'
 
 /**
@@ -22,7 +22,7 @@ import { ICON } from './icons'
  * clears the filter. The index ORs categories and intersects them with
  * subcategories, so several lit rows are one query.
  */
-type Mode = 'categories' | 'folders'
+type Mode = 'categories' | 'ucs' | 'folders'
 
 const MODE_KEY = 'mio:sidebar-mode'
 /** Expanded folders, remembered per library root. */
@@ -52,6 +52,7 @@ function saveExpanded(root: string | null, expanded: Set<string>): void {
 interface Props {
   libraries: LibraryStatus[]
   facets: Facet[]
+  ucsFacets: UcsFacet[]
   favorites: number
   total: number
   folders: FolderNode | null
@@ -59,12 +60,18 @@ interface Props {
   categories: string[]
   /** Lit subcategory rows, each remembering its parent category. */
   subcategories: { category: string; sub: string }[]
+  ucsCategories: string[]
+  ucsSubcategories: { category: string; sub: string }[]
+  facetMode: 'mio' | 'ucs'
   folder: string | null
   favoritesOnly: boolean
   onActivate: (root: string) => void
   /** `additive` is true when Ctrl (or Cmd) was held. */
   onCategory: (category: string | null, additive: boolean) => void
   onSubcategory: (category: string, subcategory: string, additive: boolean) => void
+  onUcsCategory: (category: string | null, additive: boolean) => void
+  onUcsSubcategory: (category: string, subcategory: string, additive: boolean) => void
+  onFacetMode: (mode: 'mio' | 'ucs') => void
   onFolder: (folder: string | null) => void
   onToggleFavorites: () => void
   onOpenSettings: () => void
@@ -88,7 +95,11 @@ function additiveOf(event: MouseEvent): boolean {
 
 export function Sidebar(props: Props) {
   const [mode, setMode] = createSignal<Mode>(
-    localStorage.getItem(MODE_KEY) === 'folders' ? 'folders' : 'categories'
+    localStorage.getItem(MODE_KEY) === 'folders'
+      ? 'folders'
+      : localStorage.getItem('mio:facet-mode') === 'ucs'
+        ? 'ucs'
+        : 'categories'
   )
   const [expandedCats, setExpandedCats] = createSignal<Set<string>>(new Set())
   /**
@@ -178,9 +189,28 @@ export function Sidebar(props: Props) {
     return list
   })
 
+  const ucsGroups = createMemo<CategoryGroup[]>(() => {
+    const byName = new Map<string, CategoryGroup>()
+    for (const facet of props.ucsFacets) {
+      let group = byName.get(facet.category)
+      if (!group) {
+        group = { name: facet.category, count: 0, children: [] }
+        byName.set(facet.category, group)
+      }
+      group.count += facet.count
+      if (facet.subcategory) group.children.push({ name: facet.subcategory, count: facet.count })
+    }
+    return [...byName.values()]
+      .map((group) => ({ ...group, children: group.children.sort((a, b) => b.count - a.count) }))
+      .sort((a, b) => b.count - a.count)
+  })
+
   const categoryLit = (name: string) => props.categories.includes(name)
   const subcategoryLit = (category: string, sub: string) =>
     props.subcategories.some((entry) => entry.category === category && entry.sub === sub)
+  const ucsCategoryLit = (name: string) => props.ucsCategories.includes(name)
+  const ucsSubcategoryLit = (category: string, sub: string) =>
+    props.ucsSubcategories.some((entry) => entry.category === category && entry.sub === sub)
 
   const renderFolder = (node: FolderNode, depth: number) => {
     const hasChildren = () => node.children.length > 0
@@ -240,13 +270,31 @@ export function Sidebar(props: Props) {
       <div class="side-modes">
         <button
           class={mode() === 'categories' ? 'side-mode on' : 'side-mode'}
-          onClick={() => changeMode('categories')}
+          data-sidebar-mode="categories"
+          onClick={() => {
+            changeMode('categories')
+            props.onFacetMode('mio')
+          }}
         >
           {t('side.categories')}
         </button>
         <button
+          class={mode() === 'ucs' ? 'side-mode on' : 'side-mode'}
+          data-sidebar-mode="ucs"
+          onClick={() => {
+            changeMode('ucs')
+            props.onFacetMode('ucs')
+          }}
+        >
+          {t('side.ucs')}
+        </button>
+        <button
           class={mode() === 'folders' ? 'side-mode on' : 'side-mode'}
-          onClick={() => changeMode('folders')}
+          data-sidebar-mode="folders"
+          onClick={() => {
+            changeMode('folders')
+            props.onFacetMode('mio')
+          }}
         >
           {t('side.folders')}
         </button>
@@ -295,7 +343,7 @@ export function Sidebar(props: Props) {
 
                 <Show when={isOpen(library)}>
                   <Show when={library.active}>
-                    <Show when={mode() === 'categories'}>
+                    <Show when={mode() === 'categories' || mode() === 'ucs'}>
                       <button
                         class={props.favoritesOnly ? 'facet selected' : 'facet'}
                         onClick={props.onToggleFavorites}
@@ -306,25 +354,32 @@ export function Sidebar(props: Props) {
                       </button>
                       <button
                         class={
-                          props.categories.length === 0 && !props.favoritesOnly
+                          (mode() === 'ucs' ? props.ucsCategories.length === 0 : props.categories.length === 0) &&
+                          !props.favoritesOnly
                             ? 'facet selected'
                             : 'facet'
                         }
                         data-category=""
-                        onClick={() => props.onCategory(null, false)}
+                         onClick={() =>
+                           mode() === 'ucs'
+                             ? props.onUcsCategory(null, false)
+                             : props.onCategory(null, false)}
                         title={t('side.allSounds')}
                       >
                         <span class="facet-name">{t('side.allSounds')}</span>
                         <span class="count">{props.total.toLocaleString()}</span>
                       </button>
 
-                      <For each={groups()}>
+                      <For each={mode() === 'ucs' ? ucsGroups() : groups()}>
                         {(group) => (
                           <>
                             <button
-                              class={categoryLit(group.name) ? 'facet selected' : 'facet'}
+                              class={(mode() === 'ucs' ? ucsCategoryLit(group.name) : categoryLit(group.name)) ? 'facet selected' : 'facet'}
                               data-category={group.name}
-                              onClick={(event) => props.onCategory(group.name, additiveOf(event))}
+                              onClick={(event) =>
+                                mode() === 'ucs'
+                                  ? props.onUcsCategory(group.name, additiveOf(event))
+                                  : props.onCategory(group.name, additiveOf(event))}
                               title={`${group.name} (${group.count.toLocaleString()})`}
                             >
                               <span
@@ -350,19 +405,18 @@ export function Sidebar(props: Props) {
                                 {(child) => (
                                   <button
                                     class={
-                                      subcategoryLit(group.name, child.name)
+                                       (mode() === 'ucs'
+                                         ? ucsSubcategoryLit(group.name, child.name)
+                                         : subcategoryLit(group.name, child.name))
                                         ? 'facet sub selected'
                                         : 'facet sub'
                                     }
                                     data-category={group.name}
                                     data-subcategory={child.name}
-                                    onClick={(event) =>
-                                      props.onSubcategory(
-                                        group.name,
-                                        child.name,
-                                        additiveOf(event)
-                                      )
-                                    }
+                                     onClick={(event) =>
+                                       mode() === 'ucs'
+                                         ? props.onUcsSubcategory(group.name, child.name, additiveOf(event))
+                                         : props.onSubcategory(group.name, child.name, additiveOf(event))}
                                     title={`${group.name} / ${child.name}`}
                                   >
                                     <span class="facet-name">{categoryName(child.name)}</span>

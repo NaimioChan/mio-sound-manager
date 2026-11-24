@@ -112,6 +112,22 @@ struct AudioSlot {
     asio_frames: Option<u32>,
 }
 
+#[derive(Debug, Clone)]
+struct PlaybackError {
+    path: String,
+    position_s: f64,
+}
+
+fn retry_decode<T, E, F>(mut decode: F) -> std::result::Result<T, E>
+where
+    F: FnMut() -> std::result::Result<T, E>,
+{
+    match decode() {
+        Ok(value) => Ok(value),
+        Err(_) => decode(),
+    }
+}
+
 impl AudioSlot {
     fn open(backend: Backend, device_filter: Option<String>, asio_frames: Option<u32>) -> Self {
         let opened = Engine::start(EngineConfig {
@@ -243,6 +259,8 @@ pub struct AppState {
     prefetch_closed: Arc<std::sync::atomic::AtomicBool>,
     prefetch_generation: Arc<AtomicU64>,
     failed_decodes: Arc<Mutex<HashMap<String, (u64, u128)>>>,
+    playback_error: Arc<Mutex<Option<PlaybackError>>>,
+    playback_error_seq: Arc<AtomicU64>,
 
     /// Publishes the render thread never reached (superseded inside one engine
     /// period). Diagnostic for the status bar.
@@ -263,6 +281,9 @@ pub struct AppState {
     /// The loop switch and region, mirrored outside the audio lock for the same
     /// reason as the gain: a device switch must not lose them.
     loop_state: Mutex<LoopSetting>,
+    /// Lock-free copy used by a long-file window chain. The chain must observe
+    /// loop toggles without taking the control mutex on its worker thread.
+    streaming_loop: Arc<std::sync::atomic::AtomicBool>,
 
     /// Undo/redo for library edits. `None` in tests that do not want history.
     history: Mutex<History>,
@@ -327,6 +348,7 @@ impl AppState {
 
         let jobs = Arc::new(LatestSlot::new());
         let failed_decodes = Arc::new(Mutex::new(HashMap::new()));
+        let playback_error = Arc::new(Mutex::new(None));
         let worker = spawn_decoder(Arc::clone(&jobs), Arc::clone(&failed_decodes));
         let prefetch_cache = Arc::new(Mutex::new(PrefetchCache::new()));
         let (prefetch_sender, prefetch_receiver) = sync_channel(4);
@@ -351,10 +373,13 @@ impl AppState {
             prefetch_closed,
             prefetch_generation,
             failed_decodes,
+            playback_error,
+            playback_error_seq: Arc::new(AtomicU64::new(0)),
             dropped_publishes: AtomicU64::new(0),
             play_epoch: Arc::new(AtomicU64::new(0)),
             gain_bits: AtomicU32::new(1.0f32.to_bits()),
             loop_state: Mutex::new(LoopSetting::default()),
+            streaming_loop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             history: Mutex::new(crate::history::History::new()),
             session: None,
             audio_config: None,
@@ -392,6 +417,13 @@ impl AppState {
 
         if let Ok(mut slot) = self.libraries.lock() {
             *slot = set;
+        }
+        // Opening the remembered database is deliberately fast. Any pending
+        // metadata/UCS migration is picked up by the same background index pass
+        // used for normal incremental reindexing, so a large old library cannot
+        // hold the WebView on an about:blank first frame.
+        for library in self.all_libraries().unwrap_or_default() {
+            let _ = library.reindex();
         }
         self.session = Some(store);
 
@@ -464,6 +496,7 @@ impl AppState {
         // before the engine can be handed a clip: `set_loop` also clears
         // `finished`, which on a fresh engine is already false.
         if let Ok(setting) = self.loop_state.lock() {
+            self.streaming_loop.store(false, Ordering::Release);
             if let Some(engine) = next.engine.as_ref() {
                 engine.set_loop(setting.enabled, setting.region);
             }
@@ -645,6 +678,7 @@ impl AppState {
 
     pub fn stop_playback(&self) -> AppResult<()> {
         self.play_epoch.fetch_add(1, Ordering::AcqRel);
+        self.clear_playback_error();
         self.with_engine(|engine| engine.stop())
     }
 
@@ -693,22 +727,6 @@ impl AppState {
     /// device is reopened — the same shape as the gain, and for the same reason:
     /// a switch flipped while no device is open must not be forgotten.
     pub fn set_loop(&self, enabled: bool, region: Option<(f64, f64)>) -> AppResult<LoopState> {
-        if enabled
-            && self
-                .last_clip
-                .lock()
-                .ok()
-                .and_then(|slot| {
-                    slot.as_ref()
-                        .and_then(|(_, clip)| clip.upgrade())
-                        .map(|clip| !clip.complete)
-                })
-                .unwrap_or(false)
-        {
-            return Err(AppError::internal(
-                "looping is unavailable until the long-file decode completes",
-            ));
-        }
         let mut remembered = self
             .loop_state
             .lock()
@@ -717,9 +735,22 @@ impl AppState {
             enabled,
             region: region.filter(|(from, to)| to > from),
         };
+        let incomplete = self
+            .last_clip
+            .lock()
+            .ok()
+            .and_then(|slot| {
+                slot.as_ref()
+                    .and_then(|(_, clip)| clip.upgrade())
+                    .map(|clip| !clip.complete)
+            })
+            .unwrap_or(false);
+        self.streaming_loop
+            .store(enabled && incomplete, Ordering::Release);
         if let Ok(audio) = self.audio.lock() {
             if let Some(engine) = audio.engine.as_ref() {
                 engine.set_loop(enabled, region);
+                let _ = engine.set_streaming_loop(enabled && incomplete);
             }
         }
         Ok(LoopState {
@@ -814,6 +845,34 @@ impl AppState {
     /// newer play request arrives.
     pub fn bump_epoch(&self) -> u64 {
         self.play_epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn clear_playback_error(&self) {
+        if let Ok(mut error) = self.playback_error.lock() {
+            *error = None;
+        }
+    }
+
+    pub fn report_playback_error(&self, path: String, position_s: f64) {
+        if let Ok(mut error) = self.playback_error.lock() {
+            *error = Some(PlaybackError { path, position_s });
+            self.playback_error_seq.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    pub fn take_playback_error(&self) -> Option<crate::commands::PlaybackErrorDto> {
+        self.playback_error
+            .lock()
+            .ok()?
+            .take()
+            .map(|error| crate::commands::PlaybackErrorDto {
+                path: error.path,
+                position_s: error.position_s,
+            })
+    }
+
+    pub fn playback_error_seq(&self) -> u64 {
+        self.playback_error_seq.load(Ordering::Acquire)
     }
 
     pub fn epoch(&self) -> u64 {
@@ -1028,6 +1087,7 @@ impl AppState {
         }
         // Any decode already in flight belongs to a request this one supersedes.
         let epoch = self.bump_epoch();
+        self.clear_playback_error();
         // A superseded decode-ahead may have parked a window in the engine.
         self.with_engine(|engine| engine.clear_queued()).ok();
 
@@ -1037,7 +1097,7 @@ impl AppState {
             .map(|state| state.enabled)
             .unwrap_or(false);
         let duration_s = mio_index::probe_file(std::path::Path::new(path)).duration_s;
-        let long_file = !looping && duration_s.is_some_and(|duration| duration > 60.0);
+        let long_file = duration_s.is_some_and(|duration| duration > 60.0);
         let start = start_at.unwrap_or(0.0).max(0.0);
 
         // A complete cached clip serves any position (it holds the whole file).
@@ -1052,10 +1112,10 @@ impl AppState {
                 self.remember_clip(path.to_string(), Arc::clone(&clip));
                 return Ok(());
             }
-            let window_start_s = clip
-                .window_start_frames
-                .saturating_sub(clip.trimmed_leading_frames) as f64
-                / clip.source_rate as f64;
+            let window_start_s =
+                clip.window_start_frames
+                    .saturating_sub(clip.trimmed_leading_frames) as f64
+                    / clip.source_rate as f64;
             let window_end_s = window_start_s + clip.frames as f64 / clip.format.sample_rate as f64;
             if !long_file || (start >= window_start_s && start < window_end_s) {
                 let result = match start_at {
@@ -1064,6 +1124,9 @@ impl AppState {
                 };
                 result?;
                 self.remember_clip(path.to_string(), Arc::clone(&clip));
+                if looping && !clip.complete {
+                    let _ = self.with_engine(|engine| engine.set_streaming_loop(true));
+                }
                 self.start_window_chain(path.to_string(), Arc::clone(&clip), epoch);
                 return Ok(());
             }
@@ -1095,6 +1158,9 @@ impl AppState {
             // The decode starts exactly at the window's first frame, so the
             // buffer plays from frame 0 of the clip.
             self.with_engine(|engine| engine.publish_from(Arc::clone(&clip), 0))?;
+            if looping {
+                let _ = self.with_engine(|engine| engine.set_streaming_loop(true));
+            }
         } else {
             match start_at {
                 Some(at) if at > 0.0 => self.publish_at(Arc::clone(&clip), at)?,
@@ -1117,21 +1183,16 @@ impl AppState {
     /// the play epoch and the prefetch generation: a newer play, a stop or a
     /// device switch invalidates the whole chain.
     fn start_window_chain(&self, path: String, first: Arc<DecodedAudio>, epoch: u64) {
-        if self
-            .loop_state
-            .lock()
-            .map(|state| state.enabled)
-            .unwrap_or(false)
-        {
-            return;
-        }
         let audio = Arc::clone(&self.audio);
         let last_clip = Arc::clone(&self.last_clip);
         let prefetch_cache = Arc::clone(&self.prefetch_cache);
         let prefetch_generation = Arc::clone(&self.prefetch_generation);
+        let playback_error = Arc::clone(&self.playback_error);
+        let playback_error_seq = Arc::clone(&self.playback_error_seq);
         let requested_generation = prefetch_generation.load(Ordering::Acquire);
         let engine_format = self.output_format();
         let play_epoch = Arc::clone(&self.play_epoch);
+        let streaming_loop = Arc::clone(&self.streaming_loop);
         let decoder = self.decoder();
         let total_frames = first.total_frames;
         let first_window_start = (first
@@ -1140,7 +1201,7 @@ impl AppState {
             * engine_format.sample_rate as f64
             / first.source_rate as f64)
             .round() as usize;
-        let start_frame = first_window_start + first.frames;
+        let mut next_start = first_window_start + first.frames;
         std::thread::Builder::new()
             .name("mio-decode-ahead".into())
             .spawn(move || {
@@ -1153,15 +1214,62 @@ impl AppState {
                 // Frames already covered by published or queued windows. The
                 // chain stops when that reaches the file's total; the render
                 // callback reports `finished` on its own for the last segment.
-                let mut covered = start_frame;
-                while alive(epoch) && covered < total_device_frames {
-                    let window_start_s = covered as f64 / engine_format.sample_rate as f64;
+                while alive(epoch)
+                    && (streaming_loop.load(Ordering::Acquire) || next_start < total_device_frames)
+                {
+                    let decode_start = if next_start >= total_device_frames {
+                        0
+                    } else {
+                        next_start
+                    };
+                    let window_start_s = decode_start as f64 / engine_format.sample_rate as f64;
                     let window = mio_engine::DecodeWindow::at(window_start_s, WINDOW_SECONDS);
-                    let decoded = decoder.with_window(window).decode_with_source(&path);
+                    let mut attempts = 0;
+                    let mut last_error = None;
+                    let decoded = retry_decode(|| {
+                        attempts += 1;
+                        match decoder.with_window(window).decode_with_source(&path) {
+                            Ok((clip, _)) => Ok(clip),
+                            Err(error) => {
+                                log::warn!(
+                                    "long-file window decode failed for {path} at {window_start_s:.3}s (attempt {attempts}): {error}"
+                                );
+                                last_error = Some(error);
+                                Err(())
+                            }
+                        }
+                    })
+                    .ok();
                     let clip = match decoded {
-                        Ok((clip, _)) => clip,
-                        Err(error) => {
-                            log::warn!("long-file window decode failed for {path}: {error}");
+                        Some(clip) => clip,
+                        None => {
+                            if play_epoch
+                                .compare_exchange(
+                                    epoch,
+                                    epoch + 1,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                )
+                                .is_ok()
+                            {
+                                if let Ok(slot) = audio.lock() {
+                                    if let Some(engine) = slot.engine.as_ref() {
+                                        engine.stop();
+                                    }
+                                }
+                                if let Ok(mut error) = playback_error.lock() {
+                                    *error = Some(PlaybackError {
+                                        path: path.clone(),
+                                        position_s: window_start_s,
+                                    });
+                                    playback_error_seq.fetch_add(1, Ordering::AcqRel);
+                                }
+                            }
+                            if let Some(error) = last_error {
+                                log::error!(
+                                    "long-file window decode abandoned for {path} at {window_start_s:.3}s after retry: {error}"
+                                );
+                            }
                             return;
                         }
                     };
@@ -1199,9 +1307,14 @@ impl AppState {
                             // next window: the queue is one deep, and the
                             // position having moved past the queued boundary
                             // proves the handoff happened.
-                            let position_frames =
-                                snapshot.position_s * engine_format.sample_rate as f64;
-                            if position_frames >= covered as f64 {
+                            let queue_empty = audio
+                                .lock()
+                                .ok()
+                                .and_then(|slot| {
+                                    slot.engine.as_ref().map(|engine| !engine.has_queued())
+                                })
+                                .unwrap_or(false);
+                            if queue_empty {
                                 break;
                             }
                         }
@@ -1210,16 +1323,32 @@ impl AppState {
                     if !alive(epoch) {
                         return;
                     }
-                    covered += clip.frames;
+                    let actual_start = (clip
+                        .window_start_frames
+                        .saturating_sub(clip.trimmed_leading_frames)
+                        as f64
+                        * engine_format.sample_rate as f64
+                        / clip.source_rate as f64)
+                        .round() as usize;
+                    let actual_end = actual_start.saturating_add(clip.frames);
                     // The final window is `complete`; remember it so a replay
                     // of this file serves any position without a decode.
-                    if clip.complete {
+                    if clip.complete && actual_start == 0 && clip.frames >= total_device_frames {
                         if let Ok(mut cache) = prefetch_cache.lock() {
                             cache.insert(path.clone(), Arc::clone(&clip));
                         }
                         if let Ok(mut cache) = last_clip.lock() {
                             *cache = Some((path.clone(), Arc::downgrade(&clip)));
                         }
+                    }
+                    if clip.complete {
+                        if streaming_loop.load(Ordering::Acquire) {
+                            next_start = 0;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        next_start = actual_end;
                     }
                 }
             })
@@ -1237,6 +1366,7 @@ impl AppState {
                     playing: snap.playing,
                     paused: snap.paused,
                     finished: snap.finished,
+                    error_seq: self.playback_error_seq(),
                 }
             }
             None => PlaybackPosition {
@@ -1245,6 +1375,7 @@ impl AppState {
                 playing: false,
                 paused: false,
                 finished: true,
+                error_seq: self.playback_error_seq(),
             },
         }
     }
@@ -1476,9 +1607,19 @@ impl AppState {
                 count: f.count,
             })
             .collect();
+        let ucs_facets = library
+            .ucs_facets()?
+            .into_iter()
+            .map(|f| crate::commands::UcsFacetDto {
+                category: f.category,
+                subcategory: f.subcategory,
+                count: f.count,
+            })
+            .collect();
         let (favorites, total) = library.summary()?;
         Ok(crate::commands::SidebarDto {
             facets,
+            ucs_facets,
             favorites,
             total,
         })
@@ -1734,7 +1875,7 @@ struct PrefetchCache {
 impl PrefetchCache {
     const MAX_NEIGHBORS: usize = 4;
     const MAX_ENTRIES: usize = Self::MAX_NEIGHBORS + 1;
-    const MAX_BYTES: u64 = 256 * 1024 * 1024;
+    const MAX_BYTES: u64 = mio_engine::MAX_PCM_BYTES as u64;
 
     fn new() -> Self {
         Self {
@@ -1873,5 +2014,27 @@ mod state_tests {
             PrefetchCache::MAX_BYTES + 1,
         );
         assert!(cache.get("oversized").is_none());
+    }
+
+    #[test]
+    fn window_decode_retry_recovers_after_one_transient_failure() {
+        let mut calls = 0;
+        let value = retry_decode(|| {
+            calls += 1;
+            if calls == 1 { Err("transient") } else { Ok(42) }
+        });
+        assert_eq!(value, Ok(42));
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn window_decode_retry_stops_after_two_failures() {
+        let mut calls = 0;
+        let value: Result<i32, &str> = retry_decode(|| {
+            calls += 1;
+            Err("broken")
+        });
+        assert_eq!(value, Err("broken"));
+        assert_eq!(calls, 2);
     }
 }
