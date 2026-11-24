@@ -149,6 +149,7 @@ fn status_without_a_device_reports_the_engine_error_not_a_generic_one() {
             trimmed_leading_frames: 0,
             source: None,
             complete: true,
+            total_frames_known: true,
             window_start_frames: 0,
         }),
         mio_engine::PublishSource::Initial,

@@ -78,6 +78,7 @@ export const zh: Record<MessageKey, string> = {
   'edit.favorite': '加入收藏',
   'edit.unfavorite': '取消收藏',
   'edit.setCategory': '设置分类',
+  'edit.setUcsCategory': '设置 UCS 分类',
   'edit.clearCategory': '清除分类',
 
   'index.indexing': '正在索引音色库…',
@@ -91,6 +92,9 @@ export const zh: Record<MessageKey, string> = {
   'col.name': '名称',
   'col.category': '分类',
   'col.ucsCategory': 'UCS',
+  'col.ucsSubcategory': 'UCS 子类',
+  'category.ucsLabel': 'UCS CatID',
+  'category.noUcsLabel': '不设置 UCS 标签',
   'col.length': '时长',
   'col.bpm': 'BPM',
   'col.channels': '声道',

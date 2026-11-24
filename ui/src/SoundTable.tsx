@@ -23,6 +23,7 @@ export type SortKey =
   | 'filename'
   | 'category'
   | 'ucsCategory'
+  | 'ucsSubcategory'
   | 'durationS'
   | 'bpm'
   | 'channels'
@@ -46,6 +47,7 @@ export const SORT_WIRE: Record<SortKey, string> = {
   filename: 'filename',
   category: 'category',
   ucsCategory: 'ucs_category',
+  ucsSubcategory: 'ucs_subcategory',
   durationS: 'duration',
   bpm: 'bpm',
   channels: 'channels',
@@ -66,6 +68,7 @@ const COLUMNS: Column[] = [
   { key: 'filename', label: () => t('col.name'), width: 'minmax(180px, 2fr)' },
   { key: 'category', label: () => t('col.category'), width: 'minmax(140px, 1fr)' },
   { key: 'ucsCategory', label: () => t('col.ucsCategory'), width: 'minmax(160px, 1fr)' },
+  { key: 'ucsSubcategory', label: () => t('col.ucsSubcategory'), width: 'minmax(160px, 1fr)' },
   { key: 'durationS', label: () => t('col.length'), width: '84px', numeric: true },
   { key: 'bpm', label: () => t('col.bpm'), width: '56px', numeric: true },
   { key: 'channels', label: () => t('col.channels'), width: '64px' },
@@ -82,6 +85,7 @@ export const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   filename: 'asc',
   category: 'asc',
   ucsCategory: 'asc',
+  ucsSubcategory: 'asc',
   durationS: 'desc',
   bpm: 'desc',
   channels: 'desc',
@@ -207,6 +211,8 @@ function cellNode(col: SortKey, row: SoundRow) {
           </Show>
         </span>
       )
+    case 'ucsSubcategory':
+      return <span class="cell dim" title={row.ucsCatId ?? undefined}>{row.ucsSubcategory ?? '—'}</span>
     case 'durationS':
       return <span class="cell numeric">{row.durationLabel}</span>
     case 'bpm':

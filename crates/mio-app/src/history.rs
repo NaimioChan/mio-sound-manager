@@ -47,6 +47,7 @@ pub enum EditKind {
     SetCategory,
     /// Dropped a manual category.
     ClearCategory,
+    SetUcsCategory,
 }
 
 /// One field of one sound, as it was before the edit.
@@ -57,6 +58,9 @@ pub struct FieldState {
     pub category: String,
     pub subcategory: Option<String>,
     pub category_manual: bool,
+    pub ucs_category: Option<String>,
+    pub ucs_subcategory: Option<String>,
+    pub ucs_cat_id: Option<String>,
 }
 
 impl FieldState {
@@ -67,6 +71,9 @@ impl FieldState {
             category: sound.category.clone(),
             subcategory: sound.subcategory.clone(),
             category_manual: sound.category_manual,
+            ucs_category: sound.ucs_category.clone(),
+            ucs_subcategory: sound.ucs_subcategory.clone(),
+            ucs_cat_id: sound.ucs_cat_id.clone(),
         }
     }
 
@@ -77,6 +84,9 @@ impl FieldState {
             category: state.category,
             subcategory: state.subcategory,
             category_manual: state.category_manual,
+            ucs_category: state.ucs_category,
+            ucs_subcategory: state.ucs_subcategory,
+            ucs_cat_id: state.ucs_cat_id,
         }
     }
 }
@@ -200,23 +210,12 @@ pub fn restore(library: &Library, states: &[FieldState]) -> AppResult<u64> {
     // handful of transactions rather than one per row.
     let mut favorites_on: Vec<String> = Vec::new();
     let mut favorites_off: Vec<String> = Vec::new();
-    let mut by_category: std::collections::BTreeMap<(String, Option<String>, bool), Vec<String>> =
-        Default::default();
-
     for state in states {
         if state.favorite {
             favorites_on.push(state.path.clone());
         } else {
             favorites_off.push(state.path.clone());
         }
-        by_category
-            .entry((
-                state.category.clone(),
-                state.subcategory.clone(),
-                state.category_manual,
-            ))
-            .or_default()
-            .push(state.path.clone());
     }
 
     if !favorites_on.is_empty() {
@@ -225,12 +224,20 @@ pub fn restore(library: &Library, states: &[FieldState]) -> AppResult<u64> {
     if !favorites_off.is_empty() {
         touched += library.set_favorite(&favorites_off, false)?;
     }
-    for ((category, subcategory, manual), paths) in by_category {
-        // Always the exact-restore path, never `set_category`/`clear_category`:
-        // those two can only produce "manual with this string" or "Uncategorized",
-        // and the state being restored is often neither.
-        touched += library.restore_category(&paths, &category, subcategory.as_deref(), manual)?;
-    }
+    let restore_states: Vec<mio_index::EditState> = states
+        .iter()
+        .map(|state| mio_index::EditState {
+            path: state.path.clone(),
+            favorite: state.favorite,
+            category: state.category.clone(),
+            subcategory: state.subcategory.clone(),
+            category_manual: state.category_manual,
+            ucs_category: state.ucs_category.clone(),
+            ucs_subcategory: state.ucs_subcategory.clone(),
+            ucs_cat_id: state.ucs_cat_id.clone(),
+        })
+        .collect();
+    touched += library.restore_category_and_ucs(&restore_states)?;
     Ok(touched)
 }
 
@@ -329,6 +336,9 @@ mod tests {
             category: category.into(),
             subcategory: None,
             category_manual: false,
+            ucs_category: None,
+            ucs_subcategory: None,
+            ucs_cat_id: None,
         }
     }
 

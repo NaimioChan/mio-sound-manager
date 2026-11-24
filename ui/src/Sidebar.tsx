@@ -1,6 +1,13 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js'
 import { UNCATEGORIZED, categoryName, t } from './i18n'
-import type { Facet, FolderMenuRequest, FolderNode, LibraryStatus, UcsFacet } from './ipc'
+import type {
+  Facet,
+  FolderMenuRequest,
+  FolderNode,
+  LibraryStatus,
+  UcsCategory,
+  UcsFacet
+} from './ipc'
 import { ICON } from './icons'
 
 /**
@@ -53,6 +60,7 @@ interface Props {
   libraries: LibraryStatus[]
   facets: Facet[]
   ucsFacets: UcsFacet[]
+  ucsCatalog: UcsCategory[]
   favorites: number
   total: number
   folders: FolderNode | null
@@ -62,6 +70,7 @@ interface Props {
   subcategories: { category: string; sub: string }[]
   ucsCategories: string[]
   ucsSubcategories: { category: string; sub: string }[]
+  ucsCatIds: string[]
   facetMode: 'mio' | 'ucs'
   folder: string | null
   favoritesOnly: boolean
@@ -70,7 +79,7 @@ interface Props {
   onCategory: (category: string | null, additive: boolean) => void
   onSubcategory: (category: string, subcategory: string, additive: boolean) => void
   onUcsCategory: (category: string | null, additive: boolean) => void
-  onUcsSubcategory: (category: string, subcategory: string, additive: boolean) => void
+  onUcsSubcategory: (category: string, subcategory: string, additive: boolean, catId?: string) => void
   onFacetMode: (mode: 'mio' | 'ucs') => void
   onFolder: (folder: string | null) => void
   onToggleFavorites: () => void
@@ -85,7 +94,7 @@ interface Props {
 interface CategoryGroup {
   name: string
   count: number
-  children: { name: string; count: number }[]
+  children: { name: string; count: number; filterName?: string; catId?: string }[]
 }
 
 /** Ctrl on Windows and Linux, Cmd elsewhere. Matches the table's selection. */
@@ -97,9 +106,11 @@ export function Sidebar(props: Props) {
   const [mode, setMode] = createSignal<Mode>(
     localStorage.getItem(MODE_KEY) === 'folders'
       ? 'folders'
-      : localStorage.getItem('mio:facet-mode') === 'ucs'
-        ? 'ucs'
-        : 'categories'
+      : localStorage.getItem(MODE_KEY) === 'categories'
+        ? 'categories'
+        : localStorage.getItem('mio:facet-mode') === 'mio'
+          ? 'categories'
+          : 'ucs'
   )
   const [expandedCats, setExpandedCats] = createSignal<Set<string>>(new Set())
   /**
@@ -201,6 +212,39 @@ export function Sidebar(props: Props) {
       if (facet.subcategory) group.children.push({ name: facet.subcategory, count: facet.count })
     }
     return [...byName.values()]
+      .map((group) => ({ ...group, children: group.children.sort((a, b) => b.count - a.count) }))
+      .sort((a, b) => b.count - a.count)
+  })
+
+  /**
+   * The catalog is the stable UCS tree; facet counts are the live index counts.
+   * Children with no indexed rows stay hidden, so the rail does not become a
+   * 753-row wall on a library that only uses a small part of UCS.
+   */
+  const ucsCatalogGroups = createMemo<CategoryGroup[]>(() => {
+    const parentCounts = new Map<string, number>()
+    for (const facet of props.ucsFacets) {
+      parentCounts.set(facet.category, (parentCounts.get(facet.category) ?? 0) + facet.count)
+    }
+    const byName = new Map<string, CategoryGroup>()
+    for (const entry of props.ucsCatalog) {
+      const count = entry.count
+      let group = byName.get(entry.category)
+      if (!group) {
+        group = { name: entry.category, count: parentCounts.get(entry.category) ?? 0, children: [] }
+        byName.set(entry.category, group)
+      }
+      if (count > 0) {
+        group.children.push({
+          name: `${entry.catId}${entry.subcategory ? ` · ${entry.subcategory}` : ''}`,
+          count,
+          filterName: entry.subcategory ?? '',
+          catId: entry.catId
+        })
+      }
+    }
+    return [...byName.values()]
+      .filter((group) => group.count > 0)
       .map((group) => ({ ...group, children: group.children.sort((a, b) => b.count - a.count) }))
       .sort((a, b) => b.count - a.count)
   })
@@ -370,7 +414,7 @@ export function Sidebar(props: Props) {
                         <span class="count">{props.total.toLocaleString()}</span>
                       </button>
 
-                      <For each={mode() === 'ucs' ? ucsGroups() : groups()}>
+                      <For each={mode() === 'ucs' ? (props.ucsCatalog.length > 0 ? ucsCatalogGroups() : ucsGroups()) : groups()}>
                         {(group) => (
                           <>
                             <button
@@ -412,10 +456,11 @@ export function Sidebar(props: Props) {
                                         : 'facet sub'
                                     }
                                     data-category={group.name}
-                                    data-subcategory={child.name}
+                                    data-subcategory={child.filterName ?? child.name}
+                                    data-ucs-cat-id={child.catId}
                                      onClick={(event) =>
                                        mode() === 'ucs'
-                                         ? props.onUcsSubcategory(group.name, child.name, additiveOf(event))
+                                          ? props.onUcsSubcategory(group.name, child.filterName ?? child.name, additiveOf(event), child.catId)
                                          : props.onSubcategory(group.name, child.name, additiveOf(event))}
                                     title={`${group.name} / ${child.name}`}
                                   >

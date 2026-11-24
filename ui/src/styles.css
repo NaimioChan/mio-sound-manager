@@ -765,6 +765,16 @@ button {
   max-width: 30%;
 }
 
+.dock-description {
+  min-width: 0;
+  max-width: 22%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-color-std-text);
+  opacity: 0.72;
+}
+
 /* The volume group: a mute toggle and a short horizontal slider, sitting left of
    AUTO PLAY. One cluster, so the two controls that change loudness read as a pair
    rather than as two unrelated widgets. */

@@ -84,6 +84,7 @@ export const en = {
   'edit.favorite': 'Add to Favorites',
   'edit.unfavorite': 'Remove from Favorites',
   'edit.setCategory': 'Set Category',
+  'edit.setUcsCategory': 'Set UCS Category',
   'edit.clearCategory': 'Clear Category',
 
   // ------------------------------------------------------------- index pass
@@ -99,6 +100,9 @@ export const en = {
   'col.name': 'Name',
   'col.category': 'Category',
   'col.ucsCategory': 'UCS',
+  'col.ucsSubcategory': 'UCS subcategory',
+  'category.ucsLabel': 'UCS CatID',
+  'category.noUcsLabel': 'No UCS label',
   'col.length': 'Length',
   'col.bpm': 'BPM',
   'col.channels': 'Ch',

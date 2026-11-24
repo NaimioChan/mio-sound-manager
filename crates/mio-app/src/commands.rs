@@ -126,6 +126,17 @@ pub struct UcsFacetDto {
     pub count: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UcsCategoryDto {
+    pub cat_id: String,
+    pub category: String,
+    pub subcategory: Option<String>,
+    pub projected_category: String,
+    pub projected_subcategory: Option<String>,
+    pub count: u64,
+}
+
 /// Everything the sidebar draws, in one round trip.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +213,7 @@ pub struct SearchRequest {
     pub subcategories: Vec<String>,
     pub ucs_categories: Vec<String>,
     pub ucs_subcategories: Vec<String>,
+    pub ucs_cat_ids: Vec<String>,
     pub folder: Option<String>,
     pub min_confidence: Option<f64>,
     pub favorite_only: bool,
@@ -243,6 +255,7 @@ impl SearchRequest {
             subcategories: self.subcategories,
             ucs_categories: self.ucs_categories,
             ucs_subcategories: self.ucs_subcategories,
+            ucs_cat_ids: self.ucs_cat_ids,
             folder: self.folder,
             min_confidence: self.min_confidence,
             favorite_only: self.favorite_only,
@@ -696,6 +709,69 @@ pub fn set_category(
     subcategory: Option<String>,
 ) -> AppResult<u64> {
     state.set_category(&paths, &category, subcategory.as_deref())
+}
+
+#[tauri::command]
+pub fn list_ucs_categories(state: State<'_, AppState>) -> AppResult<Vec<UcsCategoryDto>> {
+    let counts = state.library()?.ucs_cat_counts()?;
+    Ok(mio_index::classify::UCS_CAT_ID_NATIVE
+        .iter()
+        .map(|(cat_id, category, subcategory)| {
+            let projected = mio_index::classify::UCS_CAT_IDS
+                .iter()
+                .find(|(known, _, _)| known == cat_id)
+                .map(|(_, category, subcategory)| (*category, *subcategory))
+                .unwrap_or(("Uncategorized", None));
+            UcsCategoryDto {
+                cat_id: (*cat_id).to_string(),
+                category: (*category).to_string(),
+                subcategory: subcategory.map(str::to_string),
+                projected_category: projected.0.to_string(),
+                projected_subcategory: projected.1.map(str::to_string),
+                count: counts.get(*cat_id).copied().unwrap_or(0),
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn set_ucs_category(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    category: String,
+    subcategory: Option<String>,
+    cat_id: String,
+    projected_category: String,
+    projected_subcategory: Option<String>,
+) -> AppResult<u64> {
+    state.set_ucs_category(
+        &paths,
+        &category,
+        subcategory.as_deref(),
+        &cat_id,
+        &projected_category,
+        projected_subcategory.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn set_ucs_category_matching(
+    state: State<'_, AppState>,
+    request: MatchingEditRequest,
+    category: String,
+    subcategory: Option<String>,
+    cat_id: String,
+    projected_category: String,
+    projected_subcategory: Option<String>,
+) -> AppResult<u64> {
+    state.set_ucs_category_matching(
+        request,
+        &category,
+        subcategory.as_deref(),
+        &cat_id,
+        &projected_category,
+        projected_subcategory.as_deref(),
+    )
 }
 
 /// Drop the manual category on many sounds, so the next pass reclassifies them.

@@ -81,6 +81,7 @@ export const ja: Record<MessageKey, string> = {
   'edit.favorite': 'お気に入りに追加',
   'edit.unfavorite': 'お気に入りから削除',
   'edit.setCategory': 'カテゴリの設定',
+  'edit.setUcsCategory': 'UCS カテゴリの設定',
   'edit.clearCategory': 'カテゴリのクリア',
 
   'index.indexing': 'ライブラリをインデックス中…',
@@ -94,6 +95,9 @@ export const ja: Record<MessageKey, string> = {
   'col.name': '名前',
   'col.category': 'カテゴリ',
   'col.ucsCategory': 'UCS',
+  'col.ucsSubcategory': 'UCS サブカテゴリ',
+  'category.ucsLabel': 'UCS CatID',
+  'category.noUcsLabel': 'UCS ラベルなし',
   'col.length': '長さ',
   'col.bpm': 'BPM',
   'col.channels': 'ch',

@@ -92,6 +92,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 2,
             trimmed_leading_frames: 0,
+            window_start_frames: 0,
         }
     }
 

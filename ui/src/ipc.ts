@@ -148,6 +148,15 @@ export interface UcsFacet {
   count: number
 }
 
+export interface UcsCategory {
+  catId: string
+  category: string
+  subcategory: string | null
+  projectedCategory: string
+  projectedSubcategory: string | null
+  count: number
+}
+
 export interface Sidebar {
   facets: Facet[]
   ucsFacets: UcsFacet[]
@@ -156,7 +165,7 @@ export interface Sidebar {
 }
 
 /** What an undoable edit was. The words for these live in `locales/`. */
-export type EditKind = 'favorite' | 'unfavorite' | 'setCategory' | 'clearCategory'
+export type EditKind = 'favorite' | 'unfavorite' | 'setCategory' | 'clearCategory' | 'setUcsCategory'
 
 export interface HistoryState {
   undoKind: EditKind | null
@@ -179,6 +188,7 @@ export interface SearchRequest {
   subcategories?: string[]
   ucsCategories?: string[]
   ucsSubcategories?: string[]
+  ucsCatIds?: string[]
   folder?: string
   minConfidence?: number
   favoriteOnly?: boolean
@@ -302,11 +312,35 @@ export const api = {
   /** Facet counts, favorites and total for the sidebar. */
   sidebar: () => invoke<Sidebar>('get_sidebar'),
 
+  ucsCategories: () => invoke<UcsCategory[]>('list_ucs_categories'),
+
   setFavorite: (paths: string[], favorite: boolean) =>
     invoke<number>('set_favorite', { paths, favorite }),
 
   setCategory: (paths: string[], category: string, subcategory?: string | null) =>
     invoke<number>('set_category', { paths, category, subcategory: subcategory ?? null }),
+
+  setUcsCategory: (
+    paths: string[],
+    value: UcsCategory
+  ) => invoke<number>('set_ucs_category', {
+    paths,
+    category: value.category,
+    subcategory: value.subcategory,
+    catId: value.catId,
+    projectedCategory: value.projectedCategory,
+    projectedSubcategory: value.projectedSubcategory
+  }),
+
+  setUcsCategoryMatching: (request: MatchingEditRequest, value: UcsCategory) =>
+    invoke<number>('set_ucs_category_matching', {
+      request,
+      category: value.category,
+      subcategory: value.subcategory,
+      catId: value.catId,
+      projectedCategory: value.projectedCategory,
+      projectedSubcategory: value.projectedSubcategory
+    }),
 
   clearCategory: (paths: string[]) => invoke<number>('clear_category', { paths }),
 

@@ -203,19 +203,24 @@ def build(entries, top_explanations, evidence, catid_evidence):
     # Collect every claim first: a synonym reaches the dictionary only if exactly
     # one of our targets wants it.
     claims = collections.defaultdict(set)
+    native_claims = collections.defaultdict(set)
     for entry in entries:
         target = target_for(entry)
         if target is None:
             continue
+        native = (entry["category"], entry["subcategory"] or None)
         for raw in entry["synonyms"]:
             if not raw.isascii():
                 continue                      # mojibake in the source list
             word = normalise(raw)
             if word:
                 claims[word].add(target)
+                native_claims[word].add(native)
 
     keywords = collections.defaultdict(set)
     phrases = collections.defaultdict(set)
+    native_keywords = {}
+    native_phrases = {}
     unmeasured = []
     for word, targets in sorted(claims.items()):
         if len(targets) > 1:
@@ -235,6 +240,9 @@ def build(entries, top_explanations, evidence, catid_evidence):
             continue
         if " " in word:
             phrases[target].add(word)
+            label = native_label(native_claims[word])
+            if label is not None:
+                native_phrases[word] = label
             continue
         if len(word) < MIN_TOKEN_LEN:
             exclude(word, "shorter than the tokenizer floor")
@@ -246,8 +254,14 @@ def build(entries, top_explanations, evidence, catid_evidence):
         if verdict is None:
             unmeasured.append(word)
             keywords[target].add(word)
+            label = native_label(native_claims[word])
+            if label is not None:
+                native_keywords[word] = label
         elif verdict:
             keywords[target].add(word)
+            label = native_label(native_claims[word])
+            if label is not None:
+                native_keywords[word] = label
         else:
             classified = evidence[word]["same"] + evidence[word]["other"]
             if classified >= HITS_CUT:
@@ -290,6 +304,8 @@ def build(entries, top_explanations, evidence, catid_evidence):
     return {
         "keywords": keywords,
         "phrases": phrases,
+        "native_keywords": native_keywords,
+        "native_phrases": native_phrases,
         "cat_ids": cat_ids,
         "native_cat_ids": native_cat_ids,
         "excluded": excluded,
@@ -297,6 +313,20 @@ def build(entries, top_explanations, evidence, catid_evidence):
         "top_cats": top_cats,
         "unmeasured": unmeasured,
     }
+
+
+def native_label(labels):
+    """Keep a native category when subcategory evidence is split but the UCS
+    top-level category is still unambiguous. A split across top-level categories
+    is omitted rather than inventing an official label.
+    """
+    categories = {category for category, _ in labels}
+    if len(categories) != 1:
+        return None
+    category = next(iter(categories))
+    subcategories = {subcategory for _, subcategory in labels}
+    subcategory = next(iter(subcategories)) if len(subcategories) == 1 else None
+    return category, subcategory
 
 
 def render(result, measured):
@@ -373,6 +403,20 @@ def render(result, measured):
     for cid in sorted(result["native_cat_ids"]):
         cat, sub = result["native_cat_ids"][cid]
         out.append(f"    {cid!r}: ({cat!r}, {sub!r}),")
+    out.append("}")
+    out.append("")
+    out.append("# Unique UCS synonym -> official native category/subcategory.")
+    out.append("# Ambiguous synonyms are omitted rather than assigned a false label.")
+    out.append("NATIVE_KEYWORDS = {")
+    for word in sorted(result["native_keywords"]):
+        cat, sub = result["native_keywords"][word]
+        out.append(f"    {word!r}: ({cat!r}, {sub!r}),")
+    out.append("}")
+    out.append("")
+    out.append("NATIVE_PHRASES = {")
+    for phrase in sorted(result["native_phrases"]):
+        cat, sub = result["native_phrases"][phrase]
+        out.append(f"    {phrase!r}: ({cat!r}, {sub!r}),")
     out.append("}")
     out.append("")
     return "\n".join(out)

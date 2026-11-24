@@ -12,7 +12,8 @@ import {
   type LibraryStatus,
   type PlaybackError,
   type SoundRow,
-  type UcsFacet
+  type UcsFacet,
+  type UcsCategory
 } from './ipc'
 import {
   SoundTable,
@@ -198,10 +199,11 @@ export function App() {
   const [subcategories, setSubcategories] = createSignal<{ category: string; sub: string }[]>([])
   const [ucsCategories, setUcsCategories] = createSignal<string[]>([])
   const [ucsSubcategories, setUcsSubcategories] = createSignal<{ category: string; sub: string }[]>([])
+  const [ucsCatIds, setUcsCatIds] = createSignal<string[]>([])
   const [folder, setFolder] = createSignal<string | null>(null)
   const [favoritesOnly, setFavoritesOnly] = createSignal(false)
   const [facetMode, setFacetMode] = createSignal<'mio' | 'ucs'>(
-    localStorage.getItem('mio:facet-mode') === 'ucs' ? 'ucs' : 'mio'
+    localStorage.getItem('mio:facet-mode') === 'mio' ? 'mio' : 'ucs'
   )
 
   const [sortKey, setSortKey] = createSignal<SortKey>('filename')
@@ -239,6 +241,7 @@ export function App() {
     scope: EditScope
     count: number
   } | null>(null)
+  const [ucsCatalog, setUcsCatalog] = createSignal<UcsCategory[]>([])
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [history, setHistory] = createSignal<{ undo: EditKind | null; redo: EditKind | null }>({
     undo: null,
@@ -325,6 +328,7 @@ export function App() {
     ucsCategories: ucsCategories().length > 0 ? ucsCategories() : undefined,
     ucsSubcategories:
       ucsSubcategories().length > 0 ? ucsSubcategories().map((entry) => entry.sub) : undefined,
+    ucsCatIds: ucsCatIds().length > 0 ? ucsCatIds() : undefined,
     folder: folder() ?? undefined,
     favoriteOnly: favoritesOnly() ? true : undefined,
     sortBy: SORT_WIRE[sortKey()],
@@ -398,11 +402,12 @@ export function App() {
    */
   const loadSidebar = async () => {
     try {
-      const sidebar = await api.sidebar()
+      const [sidebar, catalog] = await Promise.all([api.sidebar(), api.ucsCategories()])
       setFacets(sidebar.facets)
       setUcsFacets(sidebar.ucsFacets)
       setFavorites(sidebar.favorites)
       setTotal(sidebar.total)
+      setUcsCatalog(catalog)
     } catch {
       setFacets([])
       setUcsFacets([])
@@ -653,6 +658,7 @@ export function App() {
       setSubcategories([])
       setUcsCategories([])
       setUcsSubcategories([])
+      setUcsCatIds([])
       setFolder(null)
       setFavoritesOnly(false)
       clearSelection()
@@ -741,6 +747,7 @@ export function App() {
       setSubcategories([])
       setUcsCategories([])
       setUcsSubcategories([])
+      setUcsCatIds([])
       setFolder(null)
       setFavoritesOnly(false)
       void runSearch()
@@ -826,7 +833,7 @@ export function App() {
     void runSearch()
   }
 
-  const toggleUcsSubcategory = (category: string, sub: string, additive: boolean) => {
+  const toggleUcsSubcategory = (category: string, sub: string, additive: boolean, catId?: string) => {
     const same = (entry: { category: string; sub: string }) =>
       entry.category === category && entry.sub === sub
     const lit = ucsSubcategories().some(same)
@@ -845,6 +852,7 @@ export function App() {
     setUcsCategories(additive
       ? [...new Set([...ucsCategories().filter((value) => value !== category || parents.has(value)), ...parents])]
       : [...parents])
+    setUcsCatIds(catId ? (additive ? [...new Set([...ucsCatIds(), catId])] : [catId]) : [])
     setFolder(null)
     setFavoritesOnly(false)
     void runSearch()
@@ -857,6 +865,7 @@ export function App() {
     setSubcategories([])
     setUcsCategories([])
     setUcsSubcategories([])
+    setUcsCatIds([])
     void runSearch()
   }
 
@@ -1151,6 +1160,25 @@ export function App() {
     )
   }
 
+  const applyUcsCategory = (value: UcsCategory) => {
+    const dialog = categoryDialog()
+    if (!dialog) return
+    setCategoryDialog(null)
+    void editThenRefresh(() =>
+      dialog.scope.kind === 'paths'
+        ? api.setUcsCategory(dialog.scope.paths, value)
+        : api.setUcsCategoryMatching(
+            {
+              request: dialog.scope.request,
+              exclude: dialog.scope.exclude,
+              offset: dialog.scope.offset,
+              limit: dialog.scope.limit
+            },
+            value
+          )
+    )
+  }
+
   const clearCategory = () => {
     const dialog = categoryDialog()
     setCategoryDialog(null)
@@ -1328,6 +1356,12 @@ export function App() {
         clear: () => toggleUcsSubcategory(entry.category, entry.sub, true)
       })
     }
+    for (const catId of ucsCatIds()) {
+      chips.push({
+        label: catId,
+        clear: () => setUcsCatIds(ucsCatIds().filter((value) => value !== catId))
+      })
+    }
     if (folder()) {
       chips.push({
         label: folder()!.split(/[\\/]/).pop() ?? folder()!,
@@ -1425,6 +1459,7 @@ export function App() {
             libraries={libraries()}
             facets={facets()}
             ucsFacets={ucsFacets()}
+            ucsCatalog={ucsCatalog()}
             favorites={favorites()}
             total={total()}
             folders={folders()}
@@ -1432,6 +1467,7 @@ export function App() {
             subcategories={subcategories()}
             ucsCategories={ucsCategories()}
             ucsSubcategories={ucsSubcategories()}
+            ucsCatIds={ucsCatIds()}
             facetMode={facetMode()}
             folder={folder()}
             favoritesOnly={favoritesOnly()}
@@ -1631,7 +1667,9 @@ export function App() {
           <CategoryDialog
             count={dialog().count}
             facets={facets()}
+            ucsCategories={ucsCatalog()}
             onSave={applyCategory}
+            onSaveUcs={applyUcsCategory}
             onClear={clearCategory}
             onClose={() => setCategoryDialog(null)}
           />

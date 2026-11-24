@@ -30,6 +30,8 @@ src/
 1. **WAV 的 `fmt ` chunk 长度为 20 字节时被拒**。symphonia 的 `wave/chunks.rs::read_pcm_fmt` 只接受 16 / 18 / 40，其它长度直接 `malformed fmt_pcm chunk`。20 字节是合法的 `WAVEFORMATEX`（`cbSize = 2`），真实库里 28 万文件中有 284 个是这种，全部是可正常播放的 PCM，ffprobe 读得出。兜底解析器在 `wav_header.rs`，只读 RIFF 头，不碰音频数据。
 2. **M4A 头里没有声道数**。symphonia 的 `isomp4` 把 `codec_params.channels` 留空，值在 sample description 里。解码首包才能拿到，成本约 0.3ms，只对需要它的文件做。
 
+**AIFF/FLAC metadata 不做回填。** 这两种格式在目标库里基本没有可用的描述标签；继续解析只会增加探测成本，不能带来有意义的覆盖率。
+
 **`._` 开头的文件不索引。** macOS 拷出来的 `._name.wav` 是 AppleDouble 资源叉，几百字节的元数据带着音频扩展名。真实库里有 9,455 个，全部探测失败；不过滤的话它们会以「文件损坏」的样子进索引。
 
 **为什么不解码整文件。** 索引阶段解码 28 万个文件是不可接受的（按 P1 的 3 分钟 96k 文件 112ms 外推，是几小时）。头探测够了：duration 从 `n_frames / sample_rate` 得来，两种值都在头里。
@@ -93,19 +95,18 @@ src/
 `mio-cli classify-diff` 仍然保留，但它是「旧库与当前词表有多少行不同」的对比工具，
 不是一致性验收：词表不同，结果本就不该一致。
 
-## classify：UCS 兜底与 A-lite 字段
+## classify：完整 UCS A 与 22 类投影
 
 第二套词表来自 [Universal Category System](https://www.universalcategorysystem.com/)
 8.2.1（82 个大类、753 个 Category/SubCategory、约一万条同义词）。UCS 是音效馆员的索引，
-本项目的 22 个分类是制作人的分类法，两者不是一回事，所以 UCS 不做替换，只做**兜底**。
+本项目的 22 个分类是制作人的分类法，两者不是一回事，所以数据库同时保留 native UCS 字段和
+22 类投影字段。
 
-**两遍分类，结构上保证不覆盖。** 第一遍只用本项目的词表；只有第一遍完全没分出来时，
-第二遍才看 UCS 的 CatID、短语和词。把两遍分开而不是把 UCS 当低权重词混进同一张分数表，
-让「UCS 永不覆盖手工词表」成为代码结构而不是权重巧合。
+**完整 A 的单遍分类在 CatID 层决策。** 文件名的 CatID 是强声明，UCS 词和短语在同一层
+参与评分；最终把获胜 CatID 投影成 22 类。手工分类仍由 `category_manual` 保护，不会被重索引覆盖。
 
 ```
-curated 阶段：短语 4 / 文件名词 3 / 目录每目标 1 票
-UCS 阶段（仅在 curated 得分为 0 时）：CatID 8 / 短语 3 / 文件名词 2 / 目录每目标 1 票
+CatID 声明：8 / UCS 短语：3 / 文件名词词根：2 / 目录每目标：1
 ```
 
 **CatID 是不猜的。** 文件名以 UCS CatID 开头（`GORESqsh_Slime Squeeze_01.wav`）等于声明了
@@ -130,25 +131,26 @@ RAIN。
    同义词，在库里是包名的一部分：12,454 个文件横跨 19 个包）。每个被排除的词与它的计数都在
    `tools/ucs-evidence.json` 里。
 
-最终收进 6,085 个词、136 条短语、703 个 CatID。实测（同一 271,350 条路径）：
+最终收进 6,085 个词、136 条短语、703 个可投影 CatID；native 表仍保留全部 753 条官方
+CatID 记录。实测（同一 271,350 条路径）：
 
 | | 未分类 | 分类总数 |
 | --- | --- | --- |
 | 只有本项目词表 | 12,740（4.70%） | 133 组合 |
 | 加 UCS 兜底 | 11,611（4.28%） | 133 组合 |
 
-**1,129 个文件拿到分类，已分类文件的分类变化 0 个。** 这个 0 不是调出来的，是两遍结构
-给的：兜底只在第一遍得分为 0 时运行。
+完整 A 的 Rust/Python mirror parity 以 `mio-cli classify-check` 为硬门槛；CatID 声明和
+UCS 词汇会与 curated 词汇共同参与评分。
 
 **维护流程。** UCS 的发布包不进 git（`/docs/UCS Release/` 已忽略，也不随产物分发）。
 换新版本时：解压到该目录，依次跑 `tools/ucs-evidence.py`、`tools/ucs-catid-evidence.py`、
 `tools/import-ucs.py`、`tools/gen-category-dict.py`。改 `tools/ucs_mapping.py` 的映射也走
 同一条链，否则新映射没有证据支撑。
 
-当前采用 A-lite 过渡：显式 CatID 还会同时写入 `ucs_category`、`ucs_subcategory`、
-`ucs_cat_id` 三个原生字段；旧的 `category/subcategory` 仍保存 22 类投影，侧栏、筛选和
-排序暂不切换。没有显式 CatID 的文件不会把投影结果冒充成 UCS 原生标签。这样可以先
-完成数据契约与回填，再单独推进 UI 的两级分类切换。
+当前数据库已保存官方 native category/subcategory、22 类投影字段和 UCS category/subcategory
+的 FTS 搜索；唯一、证据筛选通过的 UCS 同义词可以写入 native category/subcategory，但不会
+凭空生成 `ucs_cat_id`。`ucs_cat_id` 只表示文件名显式声明的 CatID；CLI 的 `index-stats`
+同时报告 native category 覆盖和 explicit CatID 覆盖，避免混淆两个口径。
 
 WAV 的 `bext`、`iXML`、尾部 `LIST/INFO`、内嵌 `ID3 ` 与 MP3 ID3v2 的文本描述会进入
 `description`，并加入 FTS5。解析只收可打印文本，APIC 图片丢弃；旧库首次打开时按

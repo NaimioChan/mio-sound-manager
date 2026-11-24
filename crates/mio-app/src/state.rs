@@ -803,7 +803,10 @@ impl AppState {
             return Err(AppError::internal("the selected region is empty"));
         }
 
-        let decoder = self.decoder();
+        let decoder = self.decoder().with_window(mio_engine::DecodeWindow::at(
+            start_s.max(0.0),
+            (end_s - start_s).max(0.0),
+        ));
         let source_path = path.to_string();
         let out_dir = dir.to_path_buf();
         let stem = std::path::Path::new(path)
@@ -825,7 +828,7 @@ impl AppState {
                 AppError::internal(format!("could not create the export folder: {e}"))
             })?;
             let source = decoder.decode_source(&source_path)?;
-            mio_engine::export::write_wav_region(&out_path, &source, start_s, end_s)
+            mio_engine::export::write_wav_region(&out_path, &source, 0.0, end_s - start_s)
                 .map(|frames| (out_path, frames))
                 .map_err(AppError::from)
         })
@@ -982,6 +985,25 @@ impl AppState {
         }
     }
 
+    async fn await_decode(
+        &self,
+        receiver: Receiver<AppResult<Arc<DecodedAudio>>>,
+    ) -> AppResult<Arc<DecodedAudio>> {
+        tauri::async_runtime::spawn_blocking(move || {
+            receiver.recv_timeout(std::time::Duration::from_secs(35))
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("decode task failed: {e}")))?
+        .map_err(|e| match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => {
+                AppError::internal("decode worker did not respond before the 35s command limit")
+            }
+            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                AppError::internal("decode worker closed before answering")
+            }
+        })?
+    }
+
     /// The library the window is showing.
     pub fn library(&self) -> AppResult<Arc<Library>> {
         self.libraries
@@ -1096,8 +1118,14 @@ impl AppState {
             .lock()
             .map(|state| state.enabled)
             .unwrap_or(false);
-        let duration_s = mio_index::probe_file(std::path::Path::new(path)).duration_s;
-        let long_file = duration_s.is_some_and(|duration| duration > 60.0);
+        let probe = mio_index::probe_file(std::path::Path::new(path));
+        let duration_s = probe.duration_s;
+        // A missing duration is not evidence that a file is short. Large files
+        // with damaged or non-standard headers take the bounded path as well.
+        let long_file = duration_s.is_some_and(|duration| duration > 60.0)
+            || duration_s.is_none() && probe.filesize >= 4 * 1024 * 1024
+            || full_decode_bytes(&probe, self.output_format())
+                .is_some_and(|bytes| bytes > mio_engine::MAX_PCM_BYTES);
         let start = start_at.unwrap_or(0.0).max(0.0);
 
         // A complete cached clip serves any position (it holds the whole file).
@@ -1133,20 +1161,15 @@ impl AppState {
         }
 
         let window = long_file.then(|| mio_engine::DecodeWindow::at(start, WINDOW_SECONDS));
-        let receiver = self.request_decode(path.to_string(), None, window)?;
-        let clip = tauri::async_runtime::spawn_blocking(move || {
-            receiver.recv_timeout(std::time::Duration::from_secs(35))
-        })
-        .await
-        .map_err(|e| AppError::internal(format!("decode task failed: {e}")))?
-        .map_err(|e| match e {
-            std::sync::mpsc::RecvTimeoutError::Timeout => {
-                AppError::internal("decode worker did not respond before the 35s command limit")
+        let clip = match self.await_decode(self.request_decode(path.to_string(), None, window)?) .await {
+            Ok(clip) => clip,
+            Err(error) if window.is_none() && matches!(&error, AppError::Engine(e) if e.is_memory_budget()) => {
+                log::warn!("full decode exceeded the safety budget for {path}; retrying with windows");
+                let fallback = Some(mio_engine::DecodeWindow::at(start, WINDOW_SECONDS));
+                self.await_decode(self.request_decode(path.to_string(), None, fallback)?).await?
             }
-            std::sync::mpsc::RecvTimeoutError::Disconnected => {
-                AppError::internal("decode worker closed before answering")
-            }
-        })??;
+            Err(error) => return Err(error),
+        };
 
         // A newer play or a stop arrived while this decoded. Dropping the result
         // is correct: starting it now would play a sound the user already left.
@@ -1195,6 +1218,7 @@ impl AppState {
         let streaming_loop = Arc::clone(&self.streaming_loop);
         let decoder = self.decoder();
         let total_frames = first.total_frames;
+        let total_frames_known = first.total_frames_known;
         let first_window_start = (first
             .window_start_frames
             .saturating_sub(first.trimmed_leading_frames) as f64
@@ -1215,9 +1239,11 @@ impl AppState {
                 // chain stops when that reaches the file's total; the render
                 // callback reports `finished` on its own for the last segment.
                 while alive(epoch)
-                    && (streaming_loop.load(Ordering::Acquire) || next_start < total_device_frames)
+                    && (streaming_loop.load(Ordering::Acquire)
+                        || !total_frames_known
+                        || next_start < total_device_frames)
                 {
-                    let decode_start = if next_start >= total_device_frames {
+                    let decode_start = if total_frames_known && next_start >= total_device_frames {
                         0
                     } else {
                         next_start
@@ -1273,6 +1299,9 @@ impl AppState {
                             return;
                         }
                     };
+                    if clip.frames == 0 {
+                        break;
+                    }
                     if !alive(epoch) {
                         return;
                     }
@@ -1655,6 +1684,61 @@ impl AppState {
         Ok(paths.len() as u64)
     }
 
+    pub fn set_ucs_category(
+        &self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+        cat_id: &str,
+        projected_category: &str,
+        projected_subcategory: Option<&str>,
+    ) -> AppResult<u64> {
+        let library = self.library()?;
+        let edit = crate::history::run(&library, EditKind::SetUcsCategory, paths, || {
+            Ok(library.set_ucs_category(
+                paths,
+                category,
+                subcategory,
+                cat_id,
+                projected_category,
+                projected_subcategory,
+            )?)
+        })?;
+        self.record(edit);
+        Ok(paths.len() as u64)
+    }
+
+    pub fn set_ucs_category_matching(
+        &self,
+        edit: MatchingEditRequest,
+        category: &str,
+        subcategory: Option<&str>,
+        cat_id: &str,
+        projected_category: &str,
+        projected_subcategory: Option<&str>,
+    ) -> AppResult<u64> {
+        let library = self.library()?;
+        let params = Self::matching_edit_params(&edit)?;
+        let (before, changed) = library.set_ucs_category_matching(
+            &params,
+            &edit.exclude,
+            category,
+            subcategory,
+            cat_id,
+            projected_category,
+            projected_subcategory,
+        )?;
+        if changed == 0 {
+            return Ok(0);
+        }
+        self.record(crate::history::edit_from_snapshot(
+            &library,
+            EditKind::SetUcsCategory,
+            before,
+        ));
+        Ok(changed)
+    }
+
     /// Drop the manual category on many sounds, recording for undo.
     pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
         let library = self.library()?;
@@ -1875,7 +1959,8 @@ struct PrefetchCache {
 impl PrefetchCache {
     const MAX_NEIGHBORS: usize = 4;
     const MAX_ENTRIES: usize = Self::MAX_NEIGHBORS + 1;
-    const MAX_BYTES: u64 = mio_engine::MAX_PCM_BYTES as u64;
+    /// The LRU budget is independent from the decoder's per-clip safety valve.
+    const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
     fn new() -> Self {
         Self {
@@ -1967,6 +2052,24 @@ fn sanitize_file_name(name: &str) -> String {
     cleaned.trim_matches(['.', ' ']).to_string()
 }
 
+/// Decide whether a declared file can be resident before opening the decoder.
+///
+/// The safety valve in the engine remains necessary for dishonest/truncated
+/// headers, but ordinary long files should enter the window path without first
+/// allocating hundreds of megabytes and discovering the problem late.
+fn full_decode_bytes(meta: &mio_index::AudioMeta, format: OutputFormat) -> Option<usize> {
+    let seconds = meta.duration_s.filter(|value| value.is_finite() && *value > 0.0)?;
+    let source_rate = meta.sample_rate? as f64;
+    let source_channels = meta.channels? as usize;
+    let frames = (seconds * source_rate).ceil() as usize;
+    let source = frames
+        .saturating_mul(source_channels.max(1))
+        .saturating_mul(std::mem::size_of::<f32>());
+    let device = ((frames as f64 * format.sample_rate as f64 / source_rate).ceil() as usize)
+        .saturating_mul(format.frame_bytes());
+    Some(source.saturating_add(device))
+}
+
 #[cfg(test)]
 mod state_tests {
     use super::*;
@@ -1989,6 +2092,7 @@ mod state_tests {
             trimmed_leading_frames: 0,
             source: None,
             complete: true,
+            total_frames_known: true,
             window_start_frames: 0,
         })
     }

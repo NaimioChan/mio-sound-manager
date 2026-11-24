@@ -4,6 +4,42 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 ## 当前占用
 
+## 2026-11-24 17:05 · opencode · release 构建并提交 TODO 实现
+- 改：提交本轮解码预算/窗口链、完整 A 分类、native UCS inference、CatID 精确筛选、批量 UCS 编辑/undo、description UI、FTS/schema v4 和 UCS 目录 UI 全部改动。
+- 验证：`(cd ui && npm run build)`、`cargo test --release --workspace`（23 + 33 + 24 + 112）、`cargo build -p mio-app --release`、`node ui/../tools/check-i18n.mjs`（160 键）、`git diff --check` 全通过。
+- parity：`classify-mirror.py --ucs` + `mio-cli classify-check` 3,000 样本 0 mismatch。
+- 真实库：271,350 行；description 146,568（54.01%）；native UCS category 6,617（2.44%）；explicit CatID 835（0.31%）。
+- 遗留：未跑装机版 CDP 200s 连续播、循环 RSS/任务管理器峰值、真实解码故障注入；native UCS ≥95% 仍未达到；提交未推送。
+
+## 2026-11-24 16:35 · opencode · TODO #3/#5 最终实现回归
+- 改：完成完整 A 分类、native UCS inference 生成链、CatID 精确筛选、UCS 753 条目录计数、批量 UCS 编辑与 undo/redo、解码预算/窗口链/波形/导出边界；生成链现在使用公开 UCS 8.2.1 spreadsheet，唯一 top-level native label 进入官方 category/subcategory。
+- 验证：`cargo test --release --workspace` 全过（23 + 33 + 24 + 112）；`cargo check --release --workspace`、`ui/npm run build`、`ui/node ..\\tools\\check-i18n.mjs`（160 键）、`git diff --check`；`classify-mirror.py --ucs` + `mio-cli classify-check` 3,000 样本 0 mismatch。
+- 真实库：271,350 行；description 146,568（54.01%）；native UCS category 6,617（2.44%）；explicit CatID 835（0.31%）。native category 只写 evidence-approved/官方 top-level 唯一的标签，不把 22 类投影冒充 native。
+- 遗留：native ≥95% 仍未达到，这是数据证据覆盖限制；完整 82 组树只显示有索引计数的节点；尚未跑装机版 CDP 200s 连续播、循环 RSS/任务管理器峰值和真实解码故障注入。工作区未提交。
+## 2026-11-24 14:05 · opencode · UCS CatID 手动编辑与最终回归
+- 改：新增 `list_ucs_categories` / `set_ucs_category` IPC 与数据库写入，CategoryDialog 提供 753 条官方 CatID 选择并展示 22 类投影；UCS 子类列、description dock、默认 UCS 模式、FTS v3 和完整 A 分类保持接通。
+- 验证：`cargo test --release --workspace` 全过（23 app、33 IPC、24 engine、111 index）；`cargo check --release --workspace`、`ui/npm run build`、`ui/node ..\\tools\\check-i18n.mjs`（159 键）和 `git diff --check` 通过；`classify-mirror.py --ucs` + `mio-cli classify-check` 3,000 样本 0 mismatch。
+- 真实库：`D:\reslip-test-library\mio-sm.db` 271,350 行；metadata 回填约 262.9s，description 146,568/271,350（54.01%），shared-description rows 142,342，native UCS 835/271,350（0.31%，显式 CatID 口径）。
+- 追加：UCS native category inference 已从官方 753 行表和证据筛选生成，真实库 SQLite 统计为 5,696/271,350（2.10%）native category，835 行 explicit CatID（0.31%）；CLI `index-stats` 已分开报告两种口径。
+- 遗留：未完成装机版 CDP 200s 连续播、循环 RSS/任务管理器峰值、真实解码故障注入；UCS 完整 82 组两级树折叠记忆和 native category ≥95% 仍未达标，不能把无证据的 22 类投影当成 native UCS。
+- 下一步：补 `set_ucs_category_matching` 与包含 UCS 字段的 undo 快照，再跑装机版 `check-interactions.mjs` / `check-layout.mjs` / `check-tags.mjs`。
+
+## 2026-11-24 16:10 · opencode · native UCS inference、精确 CatID 筛选与最终回归
+- 改：从公开 UCS 8.2.1 spreadsheet 生成唯一 evidence-approved synonym/phrase → official native category/subcategory 映射；`ucs_cat_id` 仍只表示显式 CatID；metadata backfill rule 升到 5。UCS 侧栏按官方 CatID 真实计数，叶子筛选使用 `ucs_cat_id`，不再按 subcategory 混筛。
+- 改：UCS 单行/筛选批量编辑进入 undo/redo；EditState 保存并恢复 UCS 三列；新增 `set_ucs_category_matching`；UCS CategoryDialog 与三语文案完成。
+- 验证：`cargo test --release --workspace` 全过（23 + 33 + 24 + 112）；`cargo check --release --workspace`、`ui/npm run build`、`ui/node ..\\tools\\check-i18n.mjs`（160 键）、`git diff --check`；`classify-check` 3,000 样本 0 mismatch。
+- 真实库：271,350 行；description 146,568（54.01%）；native UCS category 5,696（2.10%）；explicit CatID 835（0.31%）。这是证据筛选后安全 native 标签的真实覆盖，未把普通 22 类投影冒充 UCS。
+- 追加：native inference 现支持唯一 UCS synonym/phrase 的 stem 与目录投票，回填 rule 已升到 6；最终真实库覆盖数字待本轮长回填结束后补录。
+- 追加：公开 UCS 8.2.1 spreadsheet 已纳入生成链；native keyword/phrase maps 按官方 top-level 唯一性生成，CatID 仍只保留显式声明；UCS 侧栏父级使用 live facet total，叶子使用 explicit CatID count，精确 `ucs_cat_ids` 搜索过滤已接通。
+- 遗留：native ≥95% 仍未达到，因为剩余文件没有唯一、证据支持的官方 UCS label；完整 82 组树只展示有索引计数的节点；未跑装机版 CDP 200s 连续播、循环 RSS 和真实故障注入。
+
+## 2026-11-24 13:20 · opencode · TODO #3 解码预算、完整 A 分类与 UCS UI 收口
+- 改：解码安全阀升为 512 MiB 并与 256 MiB 预取 LRU 解耦；未知时长大文件默认窗口链；窗口 EOF 终止、一次重试失败可见、区域导出和波形改为有界窗口；补全文件预算预判与长文件链动态时长。
+- 改：分类器切为 CatID/UCS/curated 单遍评分，CatID=8、UCS phrase=3、词=2、目录=1；修复 Unicode 路径 raw/normalized 边界；schema v4/FTS 加 UCS category/subcategory；UCS 子类排序、默认 UCS 模式、description 在 waveform dock 可见；AGENTS.md 不变量按用户批准更新。
+- 验证：`cargo test --release --workspace` 23 + 33 + 24 + 111 全过；`cargo check --release --workspace`、`ui/npm run build`、`ui/node ..\\tools\\check-i18n.mjs`（en/ja/zh 157 键）、`git diff --check` 通过；真实库 271,350 行 metadata 回填 wall 261.439s，description 146,568/271,350（54.01%），native UCS 835/271,350（0.31%，仅显式 CatID）。
+- 验证补充：`classify-mirror.py --ucs` + `mio-cli classify-check` 3,000 样本 0 mismatch；真实库分类器 parity 已因 Unicode 边界修复恢复；`mio-sm.db` 约 408 MB。未跑装机版 CDP 200s 连续播、循环 RSS/任务管理器峰值、真实解码故障注入。
+- 遗留：完整 A 的 CatID native 覆盖仍按“显式 CatID”口径为 0.31%，不能声称达到 TODO 的 ≥95% native 覆盖；753 条官方 CatID 词表与 22 类投影数据已保留，未把推断 CatID 伪写入 `ucs_cat_id`。手动 753 CatID combobox/批量 UCS 写入、UCS 两级树完整折叠记忆和装机版 UI 三项验收未完成。
+- 下一步：先补手动 UCS CatID 写入的数据契约与 GUI，再决定是否将无显式 CatID 的 UCS 投影单独存为 `ucs_inferred_*`，避免污染 native 字段；随后对装机版跑 `check-interactions/layout/tags`。
 ## 2026-11-24 08:35 · opencode · TODO-2026-11-23 剩余实现与真实库验收
 
 - 改：统一 engine `MAX_PCM_BYTES` 到预取缓存，解码预算错误带实际字节数；窗口链加入可测试的一次重试与最终 stop/notice；索引补只读目录 fixture、native UCS category/subcategory filter/facet/sort、UCS 两级侧栏模式与表格列；description 进入 FTS/IPC，并以共享计数 `×N` 标记包级描述；旧库迁移补 native UCS/description 索引；桌面启动改为 `open_fast` + 后台迁移，避免旧库回填阻塞 WebView 首帧；交互验收按 `data-sort-key`/`data-sidebar-mode` 定位控件。

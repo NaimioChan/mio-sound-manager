@@ -188,6 +188,20 @@ def emit_cat_ids(module):
     out.append("];\n\n")
     out.append(f"/// The UCS release this vocabulary was derived from.\n"
                f"pub const UCS_VERSION: &str = {rust_string(module.UCS_VERSION)};\n")
+    out.append("\n/// Unique UCS keyword -> official native category and subcategory.\n")
+    out.append("pub static UCS_NATIVE_KEYWORDS: &[(&str, &str, Option<&str>)] = &[\n")
+    for word in sorted(module.NATIVE_KEYWORDS):
+        category, subcategory = module.NATIVE_KEYWORDS[word]
+        sub = "None" if subcategory is None else f"Some({rust_string(subcategory)})"
+        out.append(f"    ({rust_string(word)}, {rust_string(category)}, {sub}),\n")
+    out.append("];\n")
+    out.append("\n/// Unique UCS phrase -> official native category and subcategory.\n")
+    out.append("pub static UCS_NATIVE_PHRASES: &[(&str, &str, Option<&str>)] = &[\n")
+    for phrase in sorted(module.NATIVE_PHRASES):
+        category, subcategory = module.NATIVE_PHRASES[phrase]
+        sub = "None" if subcategory is None else f"Some({rust_string(subcategory)})"
+        out.append(f"    ({rust_string(phrase)}, {rust_string(category)}, {sub}),\n")
+    out.append("];\n")
     return out
 
 

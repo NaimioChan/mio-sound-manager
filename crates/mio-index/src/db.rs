@@ -17,6 +17,7 @@
 //! * **WAL is mandatory.** The UI queries while the indexer writes.
 
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
@@ -26,9 +27,10 @@ use crate::folders::{FolderNode, build_folder_tree, folder_range, relative_folde
 
 /// Current schema version, stored in `meta`. Bump when a migration is added.
 ///
-/// 2 added `bpm`; 3 added metadata and native UCS fields. Rule-only changes use
+/// 2 added `bpm`; 3 added metadata and native UCS fields; 4 adds UCS fields to FTS.
+/// Rule-only changes use
 /// the dedicated backfill keys below rather than bumping this structural version.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// `meta` key recording which version of the tempo rule last touched the `bpm`
 /// column, and the current version.
@@ -39,7 +41,7 @@ pub const SCHEMA_VERSION: i64 = 3;
 pub const BPM_BACKFILL_KEY: &str = "bpm_rule";
 pub const BPM_BACKFILL: &str = "2";
 pub const METADATA_BACKFILL_KEY: &str = "metadata_rule";
-pub const METADATA_BACKFILL: &str = "1";
+pub const METADATA_BACKFILL: &str = "6";
 
 /// File name of the index inside a library folder.
 ///
@@ -110,6 +112,9 @@ pub struct EditState {
     pub category: String,
     pub subcategory: Option<String>,
     pub category_manual: bool,
+    pub ucs_category: Option<String>,
+    pub ucs_subcategory: Option<String>,
+    pub ucs_cat_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +128,7 @@ pub enum SortColumn {
     SampleRate,
     Filesize,
     UcsCategory,
+    UcsSubcategory,
 }
 
 impl SortColumn {
@@ -138,6 +144,7 @@ impl SortColumn {
             SortColumn::SampleRate => "s.sample_rate",
             SortColumn::Filesize => "s.filesize",
             SortColumn::UcsCategory => "s.ucs_category COLLATE NOCASE",
+            SortColumn::UcsSubcategory => "s.ucs_subcategory COLLATE NOCASE",
         }
     }
 }
@@ -166,6 +173,7 @@ pub struct SearchParams {
     /// Native UCS category filters, kept separate from Mio's legacy projection.
     pub ucs_categories: Vec<String>,
     pub ucs_subcategories: Vec<String>,
+    pub ucs_cat_ids: Vec<String>,
     /// Absolute folder path; matches the folder and everything below it.
     pub folder: Option<String>,
     pub min_confidence: Option<f64>,
@@ -376,7 +384,7 @@ impl IndexDb {
         };
         db.create_base_schema()?;
         db.migrate(backfill)?;
-        if db.get_meta("fts_version")?.as_deref() != Some("2") {
+        if db.get_meta("fts_version")?.as_deref() != Some("3") {
             db.conn.execute_batch(
                 "DROP TABLE IF EXISTS sounds_fts;
                  DROP TRIGGER IF EXISTS sounds_ai;
@@ -385,7 +393,7 @@ impl IndexDb {
             )?;
             db.create_fts()?;
             db.rebuild_fts()?;
-            db.set_meta("fts_version", "2")?;
+            db.set_meta("fts_version", "3")?;
         } else {
             db.create_fts()?;
         }
@@ -779,21 +787,23 @@ impl IndexDb {
     fn backfill_metadata(&self) -> Result<()> {
         let rows: Vec<(
             String,
+            bool,
             Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
         )> = {
             let mut stmt = self.conn.prepare(
-                "SELECT path, description, ucs_category, ucs_subcategory, ucs_cat_id FROM sounds",
+                "SELECT path, category_manual, description, ucs_category, ucs_subcategory, ucs_cat_id FROM sounds",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get(0)?,
-                    row.get(1)?,
+                    row.get::<_, i64>(1)? == 1,
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -801,10 +811,9 @@ impl IndexDb {
 
         let classifier = crate::classify::Classifier::new();
         let mut updates = Vec::new();
-        for (path, description, ucs_category, ucs_subcategory, ucs_cat_id) in rows {
+        for (path, category_manual, description, ucs_category, ucs_subcategory, ucs_cat_id) in rows {
             let needs_description = description.is_none();
-            let needs_ucs = ucs_cat_id.is_none();
-            if !needs_description && !needs_ucs {
+            if !needs_description && category_manual {
                 continue;
             }
             let meta = if needs_description {
@@ -812,32 +821,48 @@ impl IndexDb {
             } else {
                 crate::probe::AudioMeta::default()
             };
-            let classification = if needs_ucs {
-                classifier.classify_with_description(&path, meta.description.as_deref())
-            } else {
-                crate::classify::Classification::uncategorized()
-            };
+            let classification = classifier.classify_with_description(&path, meta.description.as_deref());
             updates.push((
                 path,
                 description.or(meta.description),
-                ucs_category.or(classification.ucs_category),
-                ucs_subcategory.or(classification.ucs_subcategory),
-                ucs_cat_id.or(classification.ucs_cat_id),
+                category_manual,
+                classification,
+                ucs_category,
+                ucs_subcategory,
+                ucs_cat_id,
             ));
         }
 
         let tx = self.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
-                "UPDATE sounds SET description = ?1, ucs_category = ?2,
-                 ucs_subcategory = ?3, ucs_cat_id = ?4 WHERE path = ?5",
+                "UPDATE sounds SET description = ?1,
+                 category = CASE WHEN ?2 THEN category ELSE ?3 END,
+                 subcategory = CASE WHEN ?2 THEN subcategory ELSE ?4 END,
+                 confidence = CASE WHEN ?2 THEN confidence ELSE ?5 END,
+                 matched_terms = CASE WHEN ?2 THEN matched_terms ELSE ?6 END,
+                 ucs_category = ?7, ucs_subcategory = ?8, ucs_cat_id = ?9 WHERE path = ?10",
             )?;
-            for (path, description, ucs_category, ucs_subcategory, ucs_cat_id) in updates {
+            for (
+                path,
+                description,
+                category_manual,
+                classification,
+                _old_ucs_category,
+                _old_ucs_subcategory,
+                _old_ucs_cat_id,
+            ) in updates
+            {
                 stmt.execute(params![
                     description,
-                    ucs_category,
-                    ucs_subcategory,
-                    ucs_cat_id,
+                    category_manual,
+                    classification.category,
+                    classification.subcategory,
+                    classification.confidence,
+                    serde_json::to_string(&classification.matched_terms).unwrap_or_else(|_| "[]".into()),
+                    classification.ucs_category,
+                    classification.ucs_subcategory,
+                    classification.ucs_cat_id,
                     path
                 ])?;
             }
@@ -846,7 +871,8 @@ impl IndexDb {
         Ok(())
     }
 
-    /// FTS5 external-content table over the four searchable columns, plus the
+    /// FTS5 external-content table over the searchable filename/category/UCS
+    /// columns, plus the
     /// three triggers that keep it correct.
     fn create_fts(&self) -> Result<()> {
         self.conn.execute_batch(
@@ -857,6 +883,8 @@ impl IndexDb {
                  subcategory,
                  folder,
                  description,
+                 ucs_category,
+                 ucs_subcategory,
                  content='sounds',
                 content_rowid='id',
                 tokenize = "unicode61 remove_diacritics 2"
@@ -870,25 +898,25 @@ impl IndexDb {
             );
 
             CREATE TRIGGER IF NOT EXISTS sounds_ai AFTER INSERT ON sounds BEGIN
-              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description)
-              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description);
+              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
+              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description, new.ucs_category, new.ucs_subcategory);
               INSERT INTO sounds_trigram(rowid, filename) VALUES (new.id, new.filename);
             END;
 
             CREATE TRIGGER IF NOT EXISTS sounds_ad AFTER DELETE ON sounds BEGIN
-              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description)
-              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description);
+              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
+              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description, old.ucs_category, old.ucs_subcategory);
               INSERT INTO sounds_trigram(sounds_trigram, rowid, filename)
               VALUES ('delete', old.id, old.filename);
             END;
 
             CREATE TRIGGER IF NOT EXISTS sounds_au AFTER UPDATE ON sounds BEGIN
-              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description)
-              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description);
+              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
+              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description, old.ucs_category, old.ucs_subcategory);
               INSERT INTO sounds_trigram(sounds_trigram, rowid, filename)
               VALUES ('delete', old.id, old.filename);
-              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description)
-              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description);
+              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
+              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description, new.ucs_category, new.ucs_subcategory);
               INSERT INTO sounds_trigram(rowid, filename) VALUES (new.id, new.filename);
             END;
             "#,
@@ -1204,6 +1232,38 @@ impl IndexDb {
         Ok(changed)
     }
 
+    /// Assign an official UCS label and the corresponding 22-category projection.
+    pub fn set_ucs_category_many(
+        &mut self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+        cat_id: &str,
+        projected_category: &str,
+        projected_subcategory: Option<&str>,
+    ) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let mut stmt = tx.prepare(
+            "UPDATE sounds SET ucs_category = ?1, ucs_subcategory = ?2, ucs_cat_id = ?3,
+             category = ?4, subcategory = ?5, confidence = 1, category_manual = 1
+             WHERE path = ?6",
+        )?;
+        let mut changed = 0;
+        for path in paths {
+            changed += stmt.execute(params![
+                category,
+                subcategory,
+                cat_id,
+                projected_category,
+                projected_subcategory,
+                path
+            ])? as u64;
+        }
+        drop(stmt);
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Undo a manual assignment, so the next reindex re-classifies the file.
     pub fn clear_category(&self, path: &str) -> Result<()> {
         self.conn.execute(
@@ -1270,6 +1330,33 @@ impl IndexDb {
         Ok(changed)
     }
 
+    pub fn restore_category_and_ucs_many(
+        &mut self,
+        states: &[EditState],
+    ) -> Result<u64> {
+        let tx = self.conn.transaction()?;
+        let mut stmt = tx.prepare(
+            "UPDATE sounds SET category = ?1, subcategory = ?2, category_manual = ?3,
+             ucs_category = ?4, ucs_subcategory = ?5, ucs_cat_id = ?6
+             WHERE path = ?7",
+        )?;
+        let mut changed = 0;
+        for state in states {
+            changed += stmt.execute(params![
+                state.category,
+                state.subcategory,
+                state.category_manual as i64,
+                state.ucs_category,
+                state.ucs_subcategory,
+                state.ucs_cat_id,
+                state.path
+            ])? as u64;
+        }
+        drop(stmt);
+        tx.commit()?;
+        Ok(changed)
+    }
+
     pub fn search(&self, params: &SearchParams) -> Result<Vec<Sound>> {
         let (sql, args) = Self::build_search_sql(params, false, false);
         let mut out = self.read_sounds(&sql, &args)?;
@@ -1328,6 +1415,46 @@ impl IndexDb {
         )
     }
 
+    pub fn set_ucs_category_matching(
+        &mut self,
+        params: &SearchParams,
+        excluded: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+        cat_id: &str,
+        projected_category: &str,
+        projected_subcategory: Option<&str>,
+    ) -> Result<(Vec<EditState>, u64)> {
+        use rusqlite::types::Value;
+        self.update_matching(
+            params,
+            excluded,
+            "ucs_category = ?, ucs_subcategory = ?, ucs_cat_id = ?,
+             category = ?, subcategory = ?, confidence = 1, category_manual = 1",
+            vec![
+                Value::Text(category.to_string()),
+                subcategory.map(|v| Value::Text(v.to_string())).unwrap_or(Value::Null),
+                Value::Text(cat_id.to_string()),
+                Value::Text(projected_category.to_string()),
+                projected_subcategory
+                    .map(|v| Value::Text(v.to_string()))
+                    .unwrap_or(Value::Null),
+            ],
+            "s.ucs_category IS NOT ? OR s.ucs_subcategory IS NOT ? OR s.ucs_cat_id IS NOT ?
+             OR s.category IS NOT ? OR s.subcategory IS NOT ? OR s.confidence != 1
+             OR s.category_manual != 1",
+            vec![
+                Value::Text(category.to_string()),
+                subcategory.map(|v| Value::Text(v.to_string())).unwrap_or(Value::Null),
+                Value::Text(cat_id.to_string()),
+                Value::Text(projected_category.to_string()),
+                projected_subcategory
+                    .map(|v| Value::Text(v.to_string()))
+                    .unwrap_or(Value::Null),
+            ],
+        )
+    }
+
     pub fn clear_category_matching(
         &mut self,
         params: &SearchParams,
@@ -1366,7 +1493,8 @@ impl IndexDb {
 
         let (snapshot_sql, snapshot_args) = Self::build_search_sql_for(
             params,
-            "s.path, s.favorite, s.category, s.subcategory, s.category_manual",
+            "s.path, s.favorite, s.category, s.subcategory, s.category_manual,
+             s.ucs_category, s.ucs_subcategory, s.ucs_cat_id",
             false,
             substring,
             excluded,
@@ -1383,6 +1511,9 @@ impl IndexDb {
                     category: row.get(2)?,
                     subcategory: row.get(3)?,
                     category_manual: row.get::<_, i64>(4)? == 1,
+                    ucs_category: row.get(5)?,
+                    ucs_subcategory: row.get(6)?,
+                    ucs_cat_id: row.get(7)?,
                 });
             }
         }
@@ -1534,6 +1665,15 @@ impl IndexDb {
                 args.push(Value::Text(subcategory.clone()));
             }
         }
+        if !params.ucs_cat_ids.is_empty() {
+            let holes = std::iter::repeat_n("?", params.ucs_cat_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("s.ucs_cat_id IN ({holes})"));
+            for cat_id in &params.ucs_cat_ids {
+                args.push(Value::Text(cat_id.clone()));
+            }
+        }
         if let Some(folder) = &params.folder {
             if !folder.is_empty() {
                 let (lo, hi) = folder_range(folder);
@@ -1643,6 +1783,19 @@ impl IndexDb {
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn ucs_cat_counts(&self) -> Result<HashMap<String, u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ucs_cat_id, COUNT(*) FROM sounds
+             WHERE ucs_cat_id IS NOT NULL
+             GROUP BY ucs_cat_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+        })?;
+        rows.collect::<rusqlite::Result<HashMap<_, _>>>()
             .map_err(Into::into)
     }
 

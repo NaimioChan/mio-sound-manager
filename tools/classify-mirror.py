@@ -117,8 +117,11 @@ class Classifier:
         self.ucs = {}
         for target, words in (ucs_keywords or {}).items():
             for word in words:
-                if word not in self.keyword_to_target:
-                    self.ucs.setdefault(word, tuple(target))
+                # Complete UCS A scores both vocabularies. A shared word still
+                # contributes one vote to each target table, and the Rust Aho
+                # matcher keeps the vocabulary-specific match alongside the
+                # curated one.
+                self.ucs.setdefault(word, tuple(target))
         self.ucs_phrases = [(p, tuple(t)) for t, ps in (ucs_phrases or {}).items() for p in ps]
 
     def lookup(self, token):
@@ -141,14 +144,7 @@ class Classifier:
         return None
 
     def classify(self, path):
-        """Two passes, exactly as `crates/mio-index/src/classify/mod.rs` does it.
-
-        Pass 1 is the curated vocabulary alone. Pass 2 runs only if pass 1 scored
-        nothing, and is the only place a UCS CatID or a UCS word can vote. Keeping
-        the passes separate is what makes "UCS never overrides a curated answer"
-        true by construction; a single score table with different weights would
-        only make it likely.
-        """
+        """Score curated and UCS evidence together, with CatID as the declaration."""
         dir_part, filename = split_path(path)
         normalised = normalise(path)
 
@@ -163,16 +159,35 @@ class Classifier:
                 scores.append((target, weight))
             matched.append(term)
 
-        # ---- pass 1: curated ----
+        declared = cat_id_prefix(filename, self.cat_ids)
+        if declared:
+            add(self.cat_ids[declared], WEIGHT_CAT_ID, declared)
+
         for phrase, target in self.phrases:
             if phrase in normalised:
                 add(target, WEIGHT_PHRASE, phrase)
 
+        for phrase, target in self.ucs_phrases:
+            if phrase in normalised:
+                add(target, UCS_PHRASE_WEIGHT, phrase)
+
+        # Keep the same insertion order as Rust: curated directory, UCS
+        # directory, curated filename, UCS filename. Tie-breaking depends on it.
         dir_voted = []
         for token in tokenize(dir_part):
             if token in BRAND_TOKENS:
                 continue
             target = self.lookup(token)
+            if target is None or target in dir_voted:
+                continue
+            dir_voted.append(target)
+            add(target, WEIGHT_DIR, token)
+
+        dir_voted = []
+        for token in tokenize(dir_part):
+            if token in BRAND_TOKENS:
+                continue
+            target = self.lookup_ucs(token)
             if target is None or target in dir_voted:
                 continue
             dir_voted.append(target)
@@ -195,41 +210,6 @@ class Classifier:
             file_voted.append(target)
             add(target, WEIGHT_FILE, token)
 
-        if not scores:
-            return self.classify_fallback(normalised, dir_part, filename)
-        return self.finish(scores, matched)
-
-    def classify_fallback(self, normalised, dir_part, filename):
-        """The UCS pass. Reached only when the curated pass scored nothing."""
-        scores, matched = [], []
-
-        def add(target, weight, term):
-            for i, (t, s) in enumerate(scores):
-                if t == target:
-                    scores[i] = (t, s + weight)
-                    break
-            else:
-                scores.append((target, weight))
-            matched.append(term)
-
-        declared = cat_id_prefix(filename, self.cat_ids)
-        if declared:
-            add(self.cat_ids[declared], WEIGHT_CAT_ID, declared)
-
-        for phrase, target in self.ucs_phrases:
-            if phrase in normalised:
-                add(target, UCS_PHRASE_WEIGHT, phrase)
-
-        dir_voted = []
-        for token in tokenize(dir_part):
-            if token in BRAND_TOKENS:
-                continue
-            target = self.lookup_ucs(token)
-            if target is None or target in dir_voted:
-                continue
-            dir_voted.append(target)
-            add(target, WEIGHT_DIR, token)
-
         voted = []
         seen = set()
         first = True
@@ -246,7 +226,6 @@ class Classifier:
                 continue
             voted.append(target)
             add(target, UCS_FILE_WEIGHT, token)
-
         return self.finish(scores, matched)
 
     @staticmethod
@@ -331,7 +310,7 @@ def main():
     ap.add_argument("--sample", type=int, default=3000)
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--ucs", action="store_true",
-                    help="include the UCS fallback, as the shipped classifier does")
+                    help="include the complete UCS A vocabulary")
     args = ap.parse_args()
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

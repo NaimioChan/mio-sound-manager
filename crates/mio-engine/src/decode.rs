@@ -30,8 +30,12 @@ use symphonia::core::units::Time;
 
 use crate::error::{EngineError, Result};
 
-/// Maximum retained PCM for one decoded clip or window path.
-pub const MAX_PCM_BYTES: usize = 256 * 1024 * 1024;
+/// Safety valve for one decoded clip or window path.
+///
+/// This is deliberately separate from the app's prefetch LRU budget. A file is
+/// routed to window decoding before it reaches this limit; the guard remains for
+/// malformed headers and unexpectedly large packets.
+pub const MAX_PCM_BYTES: usize = 512 * 1024 * 1024;
 
 /// How the device wants its samples. Only the two formats shared-mode devices
 /// actually hand out are supported; anything else is reported instead of guessed.
@@ -97,6 +101,9 @@ pub struct DecodedAudio {
     pub trimmed_leading_frames: usize,
     pub source: Option<Arc<SourceAudio>>,
     pub complete: bool,
+    /// Whether `total_frames` came from a trustworthy container declaration or
+    /// from reaching EOF while decoding a window.
+    pub total_frames_known: bool,
     /// First frame of `bytes` measured from the head of the *audible* stream,
     /// in source frames. Zero for a clip decoded from the top; the seek target
     /// (converted to source frames) for a window decode. Source frames, not
@@ -133,6 +140,8 @@ pub struct SourceAudio {
     pub sample_rate: u32,
     pub channels: usize,
     pub trimmed_leading_frames: usize,
+    /// First audible source frame represented by `samples`; zero for full decodes.
+    pub window_start_frames: usize,
 }
 
 /// A bounded decode request: start at `start_s` and produce at most
@@ -226,6 +235,11 @@ impl Decoder {
             sample_rate: source_rate,
             channels: source_channels,
             trimmed_leading_frames: trimmed,
+            window_start_frames: match window {
+                Some(window) => ((window.start_s * source_rate as f64).round() as usize)
+                    .saturating_sub(trimmed),
+                None => 0,
+            },
         });
         let (src_rate, src_channels, trimmed) = (
             source.sample_rate,
@@ -238,7 +252,7 @@ impl Decoder {
             return Err(EngineError::Decode {
                 path: display,
                 detail: format!(
-                    "decoded PCM is {source_bytes} bytes, over the {MAX_PCM_BYTES} byte per-clip memory budget"
+                    "decoded source PCM is {source_bytes} bytes, over the {MAX_PCM_BYTES} byte safety budget"
                 ),
             });
         }
@@ -258,7 +272,7 @@ impl Decoder {
             return Err(EngineError::Decode {
                 path: display,
                 detail: format!(
-                    "source PCM {source_bytes} + device PCM {} = {} bytes, over the {MAX_PCM_BYTES} byte per-clip memory budget",
+                    "source PCM {source_bytes} + device PCM {} = {} bytes, over the {MAX_PCM_BYTES} byte safety budget",
                     bytes.len(),
                     source_bytes.saturating_add(bytes.len())
                 ),
@@ -314,6 +328,7 @@ impl Decoder {
                 trimmed_leading_frames: trimmed,
                 source: source_cache.clone(),
                 complete,
+                total_frames_known: complete || (window.is_none() && declared_frames.is_some()),
                 window_start_frames,
             },
             source_cache,
@@ -333,6 +348,13 @@ impl Decoder {
             sample_rate,
             channels,
             trimmed_leading_frames,
+            window_start_frames: self
+                .window
+                .map(|window| {
+                    ((window.start_s * sample_rate as f64).round() as usize)
+                        .saturating_sub(trimmed_leading_frames)
+                })
+                .unwrap_or(0),
         })
     }
 
@@ -558,18 +580,22 @@ impl Decoder {
                 }
             };
 
-            let packet_bytes = decoded.capacity().saturating_mul(
-                decoded.spec().channels.count().max(1) * std::mem::size_of::<f32>(),
-            );
+            let decoded_frames = decoded.frames();
+            let packet_bytes = decoded_frames
+                .saturating_mul(decoded.spec().channels.count().max(1))
+                .saturating_mul(std::mem::size_of::<f32>());
             let estimated_out_bytes = out
                 .len()
-                .saturating_add(packet_bytes / 4)
+                .saturating_add(
+                    decoded_frames
+                        .saturating_mul(decoded.spec().channels.count().max(1)),
+                )
                 .saturating_mul(std::mem::size_of::<f32>());
             if packet_bytes > MAX_PCM_BYTES || estimated_out_bytes > MAX_PCM_BYTES {
                 return Err(EngineError::Decode {
                     path: display.clone(),
                     detail: format!(
-                        "decoded packet {packet_bytes} bytes, accumulated PCM {estimated_out_bytes} bytes, budget {MAX_PCM_BYTES} bytes"
+                        "decoded packet {packet_bytes} bytes, accumulated source PCM {estimated_out_bytes} bytes, safety budget {MAX_PCM_BYTES} bytes"
                     ),
                 });
             }
@@ -625,6 +651,23 @@ impl Decoder {
         }
 
         if src_rate == 0 {
+            if window.is_some() {
+                let fallback_rate = track.codec_params.sample_rate.unwrap_or(48_000);
+                let fallback_channels = track
+                    .codec_params
+                    .channels
+                    .map(|channels| channels.count())
+                    .unwrap_or(2)
+                    .max(1);
+                return Ok((
+                    Vec::new(),
+                    fallback_rate,
+                    fallback_channels,
+                    0,
+                    true,
+                    declared_frames,
+                ));
+            }
             return Err(EngineError::Decode {
                 path: display,
                 detail: "stream produced no decodable packets".into(),

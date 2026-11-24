@@ -585,6 +585,13 @@ export function WaveformDock(props: Props) {
               <span class="dim">
                 {row().sampleRate} Hz · {channelLabel(row().channels)}
               </span>
+              <Show when={row().description}>
+                {(description) => (
+                  <span class="dock-description" title={description()}>
+                    {description()}
+                  </span>
+                )}
+              </Show>
               <Show when={props.selectionCount > 1}>
                 <span class="dim">{t('status.selected', { count: props.selectionCount })}</span>
               </Show>

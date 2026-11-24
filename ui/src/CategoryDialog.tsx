@@ -1,6 +1,6 @@
 import { For, Show, createMemo, createSignal } from 'solid-js'
 import { categoryName, t } from './i18n'
-import type { Facet } from './ipc'
+import type { Facet, UcsCategory } from './ipc'
 
 /**
  * Assign a category by hand to one or many sounds.
@@ -17,7 +17,9 @@ import type { Facet } from './ipc'
 interface Props {
   count: number
   facets: Facet[]
+  ucsCategories: UcsCategory[]
   onSave: (category: string, subcategory: string | null) => void
+  onSaveUcs: (value: UcsCategory) => void
   onClear: () => void
   onClose: () => void
 }
@@ -25,6 +27,7 @@ interface Props {
 export function CategoryDialog(props: Props) {
   const [category, setCategory] = createSignal('')
   const [subcategory, setSubcategory] = createSignal('')
+  const [ucsCatId, setUcsCatId] = createSignal('')
   let modal: (HTMLElement & { showModal: () => Promise<void>; closeModal: (r?: unknown) => Promise<void> }) | undefined
 
   const categories = createMemo(() => {
@@ -51,6 +54,8 @@ export function CategoryDialog(props: Props) {
     const sub = subcategory().trim()
     props.onSave(value, sub === '' ? null : sub)
   }
+
+  const selectedUcs = () => props.ucsCategories.find((entry) => entry.catId === ucsCatId())
 
   // iX modals are opened imperatively: the element is rendered, then `showModal`
   // moves it into the top layer and animates it in. A `queueMicrotask` is enough
@@ -100,6 +105,33 @@ export function CategoryDialog(props: Props) {
               }}
             />
           </label>
+
+          <label class="field">
+            <span class="field-label">{t('category.ucsLabel')}</span>
+            <ix-select
+              id="ucs-category-input"
+              value={ucsCatId()}
+              on:valueChange={(e: CustomEvent<string>) => setUcsCatId(e.detail)}
+            >
+              <ix-select-item value="" label={t('category.noUcsLabel')} />
+              <For each={props.ucsCategories}>
+                {(entry) => (
+                  <ix-select-item
+                    value={entry.catId}
+                    label={`${entry.catId} · ${entry.category}${entry.subcategory ? ` / ${entry.subcategory}` : ''}`}
+                  />
+                )}
+              </For>
+            </ix-select>
+          </label>
+          <Show when={selectedUcs()}>
+            {(entry) => (
+              <div class="setting-hint">
+                {entry().projectedCategory}
+                <Show when={entry().projectedSubcategory}> / {entry().projectedSubcategory}</Show>
+              </div>
+            )}
+          </Show>
 
           <label class="field">
             <span class="field-label">{t('category.subLabel')}</span>
@@ -168,7 +200,11 @@ export function CategoryDialog(props: Props) {
           <ix-button variant="secondary" onClick={() => close(props.onClose)}>
             {t('common.cancel')}
           </ix-button>
-          <ix-button variant="primary" disabled={!category().trim()} onClick={() => close(save)}>
+          <ix-button
+            variant="primary"
+            disabled={!category().trim() && !selectedUcs()}
+            onClick={() => close(selectedUcs() ? () => props.onSaveUcs(selectedUcs()!) : save)}
+          >
             {t('common.save')}
           </ix-button>
         </div>

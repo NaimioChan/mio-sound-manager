@@ -12,6 +12,12 @@ pub enum EngineError {
     Io(std::io::Error),
 }
 
+impl EngineError {
+    pub fn is_memory_budget(&self) -> bool {
+        matches!(self, Self::Decode { detail, .. } if detail.contains("safety budget"))
+    }
+}
+
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

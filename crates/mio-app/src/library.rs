@@ -234,6 +234,27 @@ impl Library {
             .set_category_matching(params, excluded, category, subcategory)?)
     }
 
+    pub fn set_ucs_category_matching(
+        &self,
+        params: &SearchParams,
+        excluded: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+        cat_id: &str,
+        projected_category: &str,
+        projected_subcategory: Option<&str>,
+    ) -> AppResult<(Vec<EditState>, u64)> {
+        Ok(self.db()?.set_ucs_category_matching(
+            params,
+            excluded,
+            category,
+            subcategory,
+            cat_id,
+            projected_category,
+            projected_subcategory,
+        )?)
+    }
+
     pub fn clear_category_matching(
         &self,
         params: &SearchParams,
@@ -248,6 +269,10 @@ impl Library {
 
     pub fn ucs_facets(&self) -> AppResult<Vec<mio_index::UcsFacet>> {
         Ok(self.db()?.ucs_facets()?)
+    }
+
+    pub fn ucs_cat_counts(&self) -> AppResult<std::collections::HashMap<String, u64>> {
+        Ok(self.db()?.ucs_cat_counts()?)
     }
 
     /// Favorite count and total, for the sidebar's two summary rows.
@@ -274,6 +299,25 @@ impl Library {
         Ok(self.db()?.set_category_many(paths, category, subcategory)?)
     }
 
+    pub fn set_ucs_category(
+        &self,
+        paths: &[String],
+        category: &str,
+        subcategory: Option<&str>,
+        cat_id: &str,
+        projected_category: &str,
+        projected_subcategory: Option<&str>,
+    ) -> AppResult<u64> {
+        Ok(self.db()?.set_ucs_category_many(
+            paths,
+            category,
+            subcategory,
+            cat_id,
+            projected_category,
+            projected_subcategory,
+        )?)
+    }
+
     /// Drop the manual category on many paths, letting the next pass reclassify.
     pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
         Ok(self.db()?.clear_category_many(paths)?)
@@ -294,6 +338,13 @@ impl Library {
         Ok(self
             .db()?
             .restore_category_many(paths, category, subcategory, manual)?)
+    }
+
+    pub fn restore_category_and_ucs(
+        &self,
+        states: &[EditState],
+    ) -> AppResult<u64> {
+        Ok(self.db()?.restore_category_and_ucs_many(states)?)
     }
 
     /// Folder tree with recursive counts. Built from indexed paths, never from
@@ -341,6 +392,7 @@ pub fn sort_column(name: &str) -> Option<SortColumn> {
         "sample_rate" => SortColumn::SampleRate,
         "filesize" => SortColumn::Filesize,
         "ucs_category" => SortColumn::UcsCategory,
+        "ucs_subcategory" => SortColumn::UcsSubcategory,
         _ => return None,
     })
 }

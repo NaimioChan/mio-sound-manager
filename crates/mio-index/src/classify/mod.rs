@@ -52,24 +52,12 @@
 //! `min(1, raw_score / 8)`. A single filename word reads as 0.375 — enough to
 //! show up as a guess, not enough to look certain.
 
-//! ## UCS as a second, weaker pass
+//! ## Complete UCS A
 //!
-//! `ucs.rs` carries a vocabulary derived from the Universal Category System
-//! (version 8.2.1, <https://www.universalcategorysystem.com/>), filtered by
-//! measurement against the same corpus. It is consulted **only when the curated
-//! pass above returns `Uncategorized`**, which makes "a UCS word never overrides
-//! a curated answer" a structural property instead of an argument about weights.
-//!
-//! The filter is in `tools/ucs_mapping.py` and `tools/import-ucs.py`: a UCS
-//! synonym is admitted only when the files that carry it in their *filename* are
-//! already classified the way the mapping says they should be. Words whose
-//! evidence disagrees (`trance` is a UCS synonym for MAGIC-SPELL and a genre in
-//! this library) are dropped. Measured effect on the 271,350-path reference
-//! corpus: 1,388 files gain a category, 0 already-classified files change.
-//!
-//! A filename that opens with a UCS CatID (`GORESrce_…`) is a special case: it
-//! has *declared* its category, so it is not a guess and is not filtered the same
-//! way, only checked for whether the mapping contradicts the corpus.
+//! The UCS vocabulary and CatIDs participate in one score table. A declared
+//! CatID is the strongest signal, then UCS phrases, filename words and directory
+//! words. The winning UCS target is projected onto the existing 22-category view;
+//! the native UCS fields remain the official CatID/category/subcategory values.
 
 mod dictionary;
 mod ucs;
@@ -78,7 +66,10 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use std::collections::HashMap;
 
 pub use dictionary::CATEGORY_DICTIONARY;
-pub use ucs::{UCS_CAT_ID_NATIVE, UCS_CAT_IDS, UCS_DICTIONARY, UCS_VERSION};
+pub use ucs::{
+    UCS_CAT_ID_NATIVE, UCS_CAT_IDS, UCS_DICTIONARY, UCS_NATIVE_KEYWORDS, UCS_NATIVE_PHRASES,
+    UCS_VERSION,
+};
 
 /// One row of the dictionary: a category, an optional subcategory, and the words
 /// that point at it. `subcategory == None` is the category-level entry (the words
@@ -190,6 +181,8 @@ pub struct Classifier {
     phrases: Vec<Phrase>,
     ucs_phrases: Vec<Phrase>,
     cat_id_to_target: HashMap<&'static str, Target>,
+    native_keywords: HashMap<&'static str, (String, Option<String>)>,
+    native_phrases: HashMap<&'static str, (String, Option<String>)>,
 }
 
 impl Default for Classifier {
@@ -231,6 +224,8 @@ impl Classifier {
             phrases,
             ucs_phrases,
             cat_id_to_target: build_cat_ids(),
+            native_keywords: build_native_keywords(),
+            native_phrases: build_native_phrases(),
         }
     }
 
@@ -261,10 +256,25 @@ impl Classifier {
         // scored wins, which keeps classification deterministic and single-pass.
         let mut scores: Vec<(Target, u32)> = Vec::new();
         let mut matched: Vec<String> = Vec::new();
+        let mut inferred_native: Vec<(Target, (String, Option<String>))> = Vec::new();
+
+        if let Some(cat_id) = cat_id_prefix(filename) {
+            if let Some(target) = self.cat_id_to_target.get(cat_id) {
+                add(&mut scores, &mut matched, target, 8, cat_id);
+            }
+        }
 
         for (order, phrase) in self.phrases.iter().enumerate() {
             if matches.phrases.contains(&(Vocabulary::Curated, order)) {
                 add(&mut scores, &mut matched, &phrase.target, 4, phrase.phrase);
+            }
+        }
+        for (order, phrase) in self.ucs_phrases.iter().enumerate() {
+            if matches.phrases.contains(&(Vocabulary::Ucs, order)) {
+                add(&mut scores, &mut matched, &phrase.target, 3, phrase.phrase);
+                if let Some(label) = self.native_phrases.get(phrase.phrase) {
+                    inferred_native.push((phrase.target.clone(), label.clone()));
+                }
             }
         }
 
@@ -294,6 +304,25 @@ impl Classifier {
             }
             dir_voted.push(target);
             add(&mut scores, &mut matched, target, 1, &token.text);
+        }
+
+        let mut ucs_dir_voted: Vec<&Target> = Vec::new();
+        for (index, token) in tokens.iter().enumerate() {
+            if !token.directory || BRAND_TOKENS.contains(&token.text.as_str()) {
+                continue;
+            }
+            let Some(pattern_index) = matches.ucs[index] else {
+                continue;
+            };
+            let target = &self.keyword_patterns[pattern_index].target;
+            if ucs_dir_voted.contains(&target) {
+                continue;
+            }
+            ucs_dir_voted.push(target);
+            add(&mut scores, &mut matched, target, 1, &token.text);
+            if let Some(label) = self.native_keyword_label(&token.text) {
+                inferred_native.push((target.clone(), label.clone()));
+            }
         }
 
         // 3. Filename: one vote per distinct word.
@@ -339,81 +368,21 @@ impl Classifier {
                 if token.description { 2 } else { 3 },
                 &token.text,
             );
-        }
-
-        // 4. Nothing above fired. Now — and only now — the UCS layers get a look:
-        //    a declared CatID first, then the UCS vocabulary. Doing this as a
-        //    second pass rather than as low-weight votes in the same score is what
-        //    makes "UCS never overrides the curated answer" true by construction
-        //    instead of by weight arithmetic.
-        if scores.is_empty() {
-            return self.classify_fallback(filename, &tokens, &matches, native_ucs);
-        }
-
-        finish(scores, matched, native_ucs)
-    }
-
-    /// The UCS pass: a declared CatID, then UCS words and phrases.
-    ///
-    /// Reached only from [`classify`](Self::classify) when the curated pass
-    /// produced no match at all, so every decision here is a decision the curated
-    /// dictionary abstained from.
-    ///
-    /// Directories vote here too, and for the same reason they do in the curated
-    /// pass: `VEH4 Slides & Scratch\VEH4 Slide Scratch 10.wav` has no UCS word in
-    /// its filename, and the folder is the only description it has. The cap is
-    /// what makes this safe — one vote per target, whatever the folder says.
-    fn classify_fallback(
-        &self,
-        filename: &str,
-        tokens: &[TokenSpan],
-        matches: &KeywordMatches,
-        native_ucs: Option<(String, Option<String>, String)>,
-    ) -> Classification {
-        let mut scores: Vec<(Target, u32)> = Vec::new();
-        let mut matched: Vec<String> = Vec::new();
-
-        // A filename opening with a UCS CatID has declared its category
-        // (`GORESrce_SMorph_Gore 2 - Builds Bash Impact Wet.wav`). That is not a
-        // guess, so it outranks any word in the same filename.
-        if let Some(cat_id) = cat_id_prefix(filename) {
-            if let Some(target) = self.cat_id_to_target.get(cat_id) {
-                add(&mut scores, &mut matched, target, 8, cat_id);
+            if let Some(label) = self.native_keyword_label(&token.text) {
+                inferred_native.push((target.clone(), label.clone()));
             }
         }
 
-        for (order, phrase) in self.ucs_phrases.iter().enumerate() {
-            if matches.phrases.contains(&(Vocabulary::Ucs, order)) {
-                add(&mut scores, &mut matched, &phrase.target, 3, phrase.phrase);
-            }
-        }
-
-        let mut dir_voted: Vec<&Target> = Vec::new();
+        let mut ucs_file_voted: Vec<&Target> = Vec::new();
+        let mut ucs_seen: Vec<String> = Vec::new();
+        let mut ucs_first = true;
         for (index, token) in tokens.iter().enumerate() {
-            if !token.directory || BRAND_TOKENS.contains(&token.text.as_str()) {
+            if token.directory || ucs_seen.contains(&token.text) {
                 continue;
             }
-            let Some(pattern_index) = matches.ucs[index] else {
-                continue;
-            };
-            let target = &self.keyword_patterns[pattern_index].target;
-            if dir_voted.contains(&target) {
-                continue;
-            }
-            dir_voted.push(target);
-            add(&mut scores, &mut matched, target, 1, &token.text);
-        }
-
-        let mut voted: Vec<&Target> = Vec::new();
-        let mut seen: Vec<String> = Vec::new();
-        let mut first = true;
-        for (index, token) in tokens.iter().enumerate() {
-            if token.directory || seen.contains(&token.text) {
-                continue;
-            }
-            seen.push(token.text.clone());
-            let is_first = first;
-            first = false;
+            ucs_seen.push(token.text.clone());
+            let is_first = ucs_first;
+            ucs_first = false;
             if is_first && BRAND_TOKENS.contains(&token.text.as_str()) {
                 continue;
             }
@@ -421,10 +390,10 @@ impl Classifier {
                 continue;
             };
             let target = &self.keyword_patterns[pattern_index].target;
-            if voted.contains(&target) {
+            if ucs_file_voted.contains(&target) {
                 continue;
             }
-            voted.push(target);
+            ucs_file_voted.push(target);
             add(
                 &mut scores,
                 &mut matched,
@@ -432,10 +401,20 @@ impl Classifier {
                 if token.description { 1 } else { 2 },
                 &token.text,
             );
+            if let Some(label) = self.native_keywords.get(token.text.as_str()) {
+                inferred_native.push((target.clone(), label.clone()));
+            }
         }
 
-        finish(scores, matched, native_ucs)
+        finish(scores, matched, native_ucs, inferred_native)
     }
+
+    fn native_keyword_label(&self, token: &str) -> Option<&(String, Option<String>)> {
+        self.native_keywords
+            .get(token)
+            .or_else(|| self.native_keywords.get(stem(token)))
+    }
+
 }
 
 /// Pick the winner from accumulated scores and package it as a [`Classification`].
@@ -446,6 +425,7 @@ fn finish(
     scores: Vec<(Target, u32)>,
     mut matched: Vec<String>,
     native_ucs: Option<(String, Option<String>, String)>,
+    inferred_native: Vec<(Target, (String, Option<String>))>,
 ) -> Classification {
     let mut best: Option<(Target, u32)> = None;
     for (target, score) in &scores {
@@ -484,17 +464,23 @@ fn finish(
     let mut seen_terms = std::collections::HashSet::new();
     matched.retain(|term| seen_terms.insert(term.clone()));
 
+    let inferred = native_ucs.clone().or_else(|| {
+        inferred_native
+            .into_iter()
+            .find(|(candidate, _)| candidate == &target)
+            .map(|(_, label)| (label.0, label.1, String::new()))
+    });
     Classification {
         category: target.category.to_string(),
         subcategory: target.subcategory.map(str::to_string),
         confidence,
         raw_score,
         matched_terms: matched,
-        ucs_category: native_ucs.as_ref().map(|(category, _, _)| category.clone()),
-        ucs_subcategory: native_ucs
+        ucs_category: inferred.as_ref().map(|(category, _, _)| category.clone()),
+        ucs_subcategory: inferred
             .as_ref()
             .and_then(|(_, subcategory, _)| subcategory.clone()),
-        ucs_cat_id: native_ucs.map(|(_, _, cat_id)| cat_id),
+        ucs_cat_id: inferred.and_then(|(_, _, cat_id)| (!cat_id.is_empty()).then_some(cat_id)),
     }
 }
 
@@ -546,6 +532,24 @@ fn build_cat_ids() -> HashMap<&'static str, Target> {
                     subcategory: *subcategory,
                 },
             )
+        })
+        .collect()
+}
+
+fn build_native_keywords() -> HashMap<&'static str, (String, Option<String>)> {
+    UCS_NATIVE_KEYWORDS
+        .iter()
+        .map(|(word, category, subcategory)| {
+            (*word, ((*category).to_string(), subcategory.map(str::to_string)))
+        })
+        .collect()
+}
+
+fn build_native_phrases() -> HashMap<&'static str, (String, Option<String>)> {
+    UCS_NATIVE_PHRASES
+        .iter()
+        .map(|(phrase, category, subcategory)| {
+            (*phrase, ((*category).to_string(), subcategory.map(str::to_string)))
         })
         .collect()
 }
@@ -656,7 +660,7 @@ fn tokenize_path_spans(path: &str, description: Option<&str>) -> (String, Vec<To
     let mut word = String::new();
     let mut word_start = 0;
     let mut word_raw_start = 0;
-    let mut last_separator = None;
+    let mut filename_raw_start = None;
 
     for (raw_offset, character) in path.char_indices() {
         if character.is_ascii_alphanumeric() {
@@ -679,7 +683,7 @@ fn tokenize_path_spans(path: &str, description: Option<&str>) -> (String, Vec<To
             false,
         );
         if character == '\\' || character == '/' {
-            last_separator = Some(raw_offset);
+            filename_raw_start = Some(raw_offset + character.len_utf8());
         }
         if character.is_alphanumeric() {
             haystack.push('\u{1}');
@@ -695,13 +699,13 @@ fn tokenize_path_spans(path: &str, description: Option<&str>) -> (String, Vec<To
         &mut tokens,
         false,
     );
-    let filename_start = last_separator.map(|offset| offset + 1).unwrap_or(0);
+    let filename_raw_start = filename_raw_start.unwrap_or(0);
     if let Some(description) = description {
         let base = path.len() + 1;
         haystack.push(' ');
         append_text_tokens(description, base, &mut haystack, &mut tokens);
     }
-    (haystack, tokens, filename_start)
+    (haystack, tokens, filename_raw_start)
 }
 
 fn append_text_tokens(
@@ -1146,6 +1150,14 @@ mod tests {
     }
 
     #[test]
+    fn a_unique_ucs_word_keeps_its_official_native_label_without_cat_id() {
+        let result = classify(r"C:\lib\x\barbershop_hair_dryer_idle.wav");
+        assert_eq!(result.ucs_cat_id, None);
+        assert!(result.ucs_category.is_some());
+        assert!(result.ucs_subcategory.is_some());
+    }
+
+    #[test]
     fn non_ascii_paths_do_not_panic_and_still_classify() {
         // The Chinese part is invisible; `pistol` is what decides.
         let c = classify(r"D:\音效库\枪声_pistol.wav");
@@ -1270,15 +1282,14 @@ mod tests {
     }
 
     #[test]
-    fn a_curated_word_beats_a_declared_cat_id() {
-        // The other half of the same rule: a CatID lives in the fallback pass, so
-        // it cannot override the curated dictionary. `liquid` and `drip` are both
-        // curated (Foley/Water Foley), and they win even though this filename
-        // declares GORE.
+    fn a_declared_cat_id_beats_a_curated_word() {
+        // Complete UCS A treats the CatID as a declaration, so it outranks
+        // otherwise plausible words in the same filename.
         let c = classify(r"D:\lib\x\GORESqsh_liquid drip 01.wav");
-        assert_eq!(c.category, "Foley");
-        assert_eq!(c.subcategory.as_deref(), Some("Water Foley"));
+        assert_eq!(c.category, "Creatures");
+        assert_eq!(c.subcategory.as_deref(), Some("Gore & Violence"));
     }
+
 
     #[test]
     fn a_cat_id_is_matched_with_its_case_intact() {

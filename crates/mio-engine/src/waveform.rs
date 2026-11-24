@@ -42,11 +42,85 @@ pub struct Waveform {
     pub decode_ms: f64,
 }
 
+struct WindowEnvelope {
+    start_frames: usize,
+    frames: usize,
+    sample_rate: u32,
+    channels: usize,
+    peaks: Vec<f32>,
+    lanes: Vec<Vec<f32>>,
+}
+
 impl Waveform {
     /// Decode `path` and reduce it to `buckets` peaks.
     pub fn scan<P: AsRef<Path>>(decoder: &Decoder, path: P, buckets: usize) -> Result<Self> {
-        let source = decoder.decode_source(path)?;
-        Ok(Self::from_source(&source, buckets))
+        let path = path.as_ref();
+        Self::scan_windows(decoder, path, buckets, None)
+    }
+
+    /// Scan a file a window at a time and merge each window into the global
+    /// envelope. This keeps waveform memory bounded even when playback must use
+    /// the window chain because the container did not declare a duration.
+    fn scan_windows(
+        decoder: &Decoder,
+        path: &Path,
+        buckets: usize,
+        declared_duration: Option<f64>,
+    ) -> Result<Self> {
+        const WINDOW_SECONDS: f64 = 15.0;
+        let mut windows = Vec::new();
+        let mut start = 0.0;
+        let mut duration_s = declared_duration.unwrap_or(0.0);
+        loop {
+            let source = decoder
+                .with_window(crate::decode::DecodeWindow::at(start, WINDOW_SECONDS))
+                .decode_source(path)?;
+            let frames = source.samples.len() / source.channels.max(1);
+            if frames == 0 {
+                break;
+            }
+            let next = source.window_start_frames as f64 / source.sample_rate.max(1) as f64
+                + frames as f64 / source.sample_rate.max(1) as f64;
+            duration_s = duration_s.max(
+                source.window_start_frames as f64 / source.sample_rate.max(1) as f64
+                    + frames as f64 / source.sample_rate.max(1) as f64,
+            );
+            windows.push(WindowEnvelope {
+                start_frames: source.window_start_frames,
+                frames,
+                sample_rate: source.sample_rate,
+                channels: source.channels,
+                peaks: bucket_peaks(&source.samples, source.channels, buckets),
+                lanes: if (1..=2).contains(&source.channels) {
+                    (0..source.channels)
+                        .map(|lane| {
+                            bucket_peaks_lane(&source.samples, source.channels, lane, buckets)
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            });
+            if next <= start + 0.001 || declared_duration.is_some_and(|end| next >= end) {
+                break;
+            }
+            start = next;
+        }
+        let sample_rate = windows.first().map(|source| source.sample_rate).unwrap_or(0);
+        let channels = windows.first().map(|source| source.channels).unwrap_or(0);
+        let mut peaks = vec![0.0; buckets];
+        let mut lanes = None;
+        for source in &windows {
+            merge_window_peaks(&mut peaks, &mut lanes, source, buckets, duration_s);
+        }
+        Ok(Self {
+            peaks,
+            lanes: lanes.unwrap_or_default(),
+            duration_s,
+            sample_rate,
+            channels,
+            decode_ms: 0.0,
+        })
     }
 
     /// Reduce an already-decoded clip to peaks.
@@ -73,6 +147,38 @@ impl Waveform {
             sample_rate: source.sample_rate,
             channels: source.channels,
             decode_ms: 0.0,
+        }
+    }
+}
+
+fn merge_window_peaks(
+    peaks: &mut [f32],
+    lanes: &mut Option<Vec<Vec<f32>>>,
+    source: &WindowEnvelope,
+    buckets: usize,
+    duration_s: f64,
+) {
+    let total_frames = (duration_s * source.sample_rate.max(1) as f64).ceil() as usize;
+    let offset = source.start_frames;
+    for (index, peak) in source.peaks.iter().copied().enumerate() {
+        let local_start = index * source.frames / buckets.max(1);
+        let global_frame = offset.saturating_add(local_start);
+        let bucket = global_frame.saturating_mul(buckets.max(1)) / total_frames.max(1);
+        if let Some(slot) = peaks.get_mut(bucket.min(peaks.len().saturating_sub(1))) {
+            *slot = slot.max(peak);
+        }
+    }
+    if (1..=2).contains(&source.channels) && !source.lanes.is_empty() {
+        let result = lanes.get_or_insert_with(|| vec![vec![0.0; buckets]; source.channels]);
+        for lane in 0..source.channels {
+            for (index, peak) in source.lanes[lane].iter().copied().enumerate() {
+                let local_start = index * source.frames / buckets.max(1);
+                let global_frame = offset.saturating_add(local_start);
+                let bucket = global_frame.saturating_mul(buckets.max(1)) / total_frames.max(1);
+                if let Some(slot) = result[lane].get_mut(bucket.min(buckets.saturating_sub(1))) {
+                    *slot = slot.max(peak);
+                }
+            }
         }
     }
 }
@@ -252,6 +358,7 @@ mod tests {
             channels: 1,
             sample_rate: 44_100,
             trimmed_leading_frames: 0,
+            window_start_frames: 0,
         };
         assert_eq!(Waveform::from_source(&mono, 4).lanes.len(), 1);
 
@@ -260,6 +367,7 @@ mod tests {
             channels: 2,
             sample_rate: 44_100,
             trimmed_leading_frames: 0,
+            window_start_frames: 0,
         };
         let wave = Waveform::from_source(&stereo, 4);
         assert_eq!(wave.lanes.len(), 2);
@@ -272,6 +380,7 @@ mod tests {
             channels: 6,
             sample_rate: 48_000,
             trimmed_leading_frames: 0,
+            window_start_frames: 0,
         };
         let wide = Waveform::from_source(&surround, 4);
         assert!(wide.lanes.is_empty());

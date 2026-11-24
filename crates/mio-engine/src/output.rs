@@ -383,6 +383,7 @@ impl Mixer {
                     if let Some(next_clip) = shared.take_queued() {
                         if next_clip.format == clip.format {
                             let next_frames = next_clip.frames;
+                            let next_total_frames = next_clip.total_frames.max(next_frames) as u64;
                             shared.slots[active].store(Some(Arc::clone(&next_clip)));
                             shared
                                 .active_buffer_frames
@@ -391,9 +392,14 @@ impl Mixer {
                                 window_start_device_frames(&next_clip, clip.format.sample_rate),
                                 Ordering::Release,
                             );
-                            // `active_frames` (the total duration the UI shows)
-                            // stays untouched: both segments report the whole
-                            // file's length.
+                            // Known-duration windows already carry the whole file
+                            // length. Unknown-duration containers grow this value
+                            // as EOF advances through the chain.
+                            let current_total = shared.active_frames.load(Ordering::Acquire);
+                            shared.active_frames.store(
+                                current_total.max(next_total_frames),
+                                Ordering::Release,
+                            );
                             shared.pos_frames.store(0, Ordering::Release);
                             cursor = 0;
                             buffer_end = next_frames;
