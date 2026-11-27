@@ -22,7 +22,7 @@ const pageErrors = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
 await page.evaluate(() => {
   localStorage.setItem('mio:locale', 'en')
-  localStorage.setItem('mio:settings', JSON.stringify({ autoPlay: true, showCategory: true }))
+  localStorage.setItem('mio:settings', JSON.stringify({ autoPlay: true }))
 })
 await page.reload()
 await page.waitForSelector('.row[data-path]', { timeout: 90_000 })

@@ -4,7 +4,11 @@
 //
 // 1. drag-out: a row is really draggable (the `draggable` attribute was rendering
 //    as `""`, so no DOM drag ever started and the handler never ran)
-// 2. auto-play: a fresh profile plays on the first row click
+// 2. auto-play: a row click auditions it. The *default* of the switch (a fresh
+//    profile starts on) is asserted in `check-interactions.mjs`; this script only
+//    depends on it, it does not prove it. A previous aborted run could leave the
+//    setting off in the real profile, so this script restores the blob on the way
+//    out — see the snapshot at the bottom.
 // 3. mute memory: mute then un-mute returns to the level the slider was at
 // 4. region: drag selects, the top third is the drag handle, a boundary drags,
 //    the loop switch looks on when it is on, and export_region writes a WAV

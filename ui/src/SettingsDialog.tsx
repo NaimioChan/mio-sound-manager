@@ -8,11 +8,12 @@ import {
 import { LOCALES, locale, setLocale, t, type Locale } from './i18n'
 import { THEMES, type Theme } from './theme'
 import { ZOOM_STEPS } from './zoom'
+import { COLUMNS, hiddenColumns, toggleColumn } from './columns'
 
 /**
- * Settings: device, library, behaviour, appearance.
+ * Settings: device, library, columns, behaviour, appearance.
  *
- * Four groups in one dialog rather than a settings tree, because there are a
+ * Five groups in one dialog rather than a settings tree, because there are a
  * dozen settings in total and a tree would be more navigation than content. The
  * library group edits the *active* library; per-library management (reindex,
  * close) is on the rail's right-click menu, which is where it can name which
@@ -26,15 +27,12 @@ import { ZOOM_STEPS } from './zoom'
 export interface Settings {
   /** Audition a row as soon as it is clicked. */
   autoPlay: boolean
-  /** Show the category column; the value is still filterable from the rail. */
-  showCategory: boolean
 }
 
 const STORAGE_KEY = 'mio:settings'
 
 const DEFAULTS: Settings = {
-  autoPlay: true,
-  showCategory: true
+  autoPlay: true
 }
 
 /**
@@ -49,9 +47,7 @@ export function loadSettings(): Settings {
   try {
     const parsed = JSON.parse(raw) as Partial<Settings>
     return {
-      autoPlay: typeof parsed.autoPlay === 'boolean' ? parsed.autoPlay : DEFAULTS.autoPlay,
-      showCategory:
-        typeof parsed.showCategory === 'boolean' ? parsed.showCategory : DEFAULTS.showCategory
+      autoPlay: typeof parsed.autoPlay === 'boolean' ? parsed.autoPlay : DEFAULTS.autoPlay
     }
   } catch {
     return { ...DEFAULTS }
@@ -72,6 +68,11 @@ interface Props {
   theme: string
   /** The applied interface scale, as a percentage. */
   zoom: number
+  /**
+   * A section to bring into view on open. The header menu's "Column settings…"
+   * is the only caller: it opens this dialog on an already-scrolled page.
+   */
+  focus?: 'columns'
   onChange: (patch: Partial<Settings>) => void
   /** Theme choice goes through its own callback: `theme.ts` owns that state. */
   onTheme: (id: string) => void
@@ -124,7 +125,17 @@ export function SettingsDialog(props: Props) {
 
   const open = (el: HTMLElement) => {
     modal = el as typeof modal
-    queueMicrotask(() => void modal?.showModal())
+    queueMicrotask(async () => {
+      await modal?.showModal()
+      // The header menu's "Column settings…" opens this dialog on the columns
+      // section; a fresh open would otherwise land on the audio group and the user
+      // has to find the section they asked for. The content is in the light DOM
+      // under `ix-modal`, and the query waits for `showModal` because the dialog
+      // renders its content when it opens.
+      if (props.focus === 'columns') {
+        document.getElementById('settings-columns')?.scrollIntoView({ block: 'nearest' })
+      }
+    })
   }
 
   /**
@@ -291,15 +302,28 @@ export function SettingsDialog(props: Props) {
                 {t('settings.openLibrary')}
               </ix-button>
             </div>
+          </section>
 
-            <div class="setting">
-              <span class="setting-label">{t('settings.showCategory')}</span>
-              <ix-toggle
-                checked={props.settings.showCategory}
-                on:checkedChange={(e: CustomEvent<boolean>) =>
-                  props.onChange({ showCategory: e.detail })
-                }
-              />
+          {/* -------------------------------------------------------- columns */}
+          <section class="settings-section" id="settings-columns">
+            <h3>{t('settings.columns')}</h3>
+            <div class="column-grid">
+              <For each={COLUMNS}>
+                {(column) => (
+                  // The key goes on a wrapper: Solid assigns an untyped `data-` prop
+                  // on a custom element as a property, and iX's host has no such
+                  // property, so `data-column` on the checkbox itself never reaches
+                  // the DOM. The wrapper also gives the two-column grid a cell.
+                  <div class="column-check" data-column={column.key}>
+                    <ix-checkbox
+                      label={column.label()}
+                      checked={!hiddenColumns().has(column.key)}
+                      disabled={column.pinned}
+                      on:checkedChange={() => toggleColumn(column.key)}
+                    />
+                  </div>
+                )}
+              </For>
             </div>
           </section>
 

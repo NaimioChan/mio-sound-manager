@@ -319,6 +319,50 @@ const clickInner = (selector) =>
     return 'ok'
   }, selector)
 
+// The defaults are a product promise, so check them before anything overrides the
+// blob: a fresh profile must audition on the first click. This used to be an
+// acceptance gap, not a bug — see the log — but the assertion is cheap and it is
+// the only place that proves the default.
+const settingsSnapshot = await page.evaluate(() => localStorage.getItem('mio:settings'))
+await page.evaluate(() => localStorage.removeItem('mio:settings'))
+await page.reload()
+await page.waitForSelector('.row[data-path]', { timeout: 90_000 })
+await page.waitForTimeout(700)
+const fresh = await page.evaluate(() => {
+  const host = document.querySelector('#auto-play')
+  return {
+    pressed: host?.pressed ?? null,
+    aria: host?.shadowRoot?.querySelector('button')?.getAttribute('aria-pressed') ?? null
+  }
+})
+check(
+  fresh.pressed === true && fresh.aria === 'true',
+  'AUTO PLAY defaults to on before any override',
+  JSON.stringify(fresh)
+)
+const invoke = (command, args) =>
+  page.evaluate(
+    ([command, args]) => window.__TAURI_INTERNALS__.invoke(command, args),
+    [command, args]
+  )
+await invoke('stop')
+await page.locator('.row[data-path]').first().click()
+await page.waitForFunction(
+  async () => (await window.__TAURI_INTERNALS__.invoke('get_playback_position')).playing,
+  undefined,
+  { timeout: 10_000 }
+)
+check(true, 'a fresh profile plays on the first row click')
+await invoke('stop')
+// Put the blob back exactly as it was, whatever the assertion above did.
+await page.evaluate((value) => {
+  if (value === null) localStorage.removeItem('mio:settings')
+  else localStorage.setItem('mio:settings', value)
+}, settingsSnapshot)
+await page.reload()
+await page.waitForSelector('.row[data-path]', { timeout: 90_000 })
+await page.waitForTimeout(700)
+
 const pressedBefore = await page.evaluate(() => document.querySelector('#auto-play').pressed)
 check((await clickInner('#auto-play')) === 'ok', 'AUTO PLAY has a clickable inner button')
 await page.waitForTimeout(400)
@@ -330,10 +374,7 @@ check(
 )
 check(
   (await page.evaluate(() => localStorage.getItem('mio:settings'))) ===
-    JSON.stringify({
-      autoPlay: pressedAfter,
-      showCategory: true
-    }),
+    JSON.stringify({ autoPlay: pressedAfter }),
   'the toggle is persisted'
 )
 // Put it back on, so the rest of the checks audition rows.
@@ -341,23 +382,34 @@ if (!pressedAfter) {
   await clickInner('#auto-play')
   await page.waitForTimeout(350)
 }
+// And restore the profile exactly as this script found it: an aborted run used to
+// leave `autoPlay: false` behind in the real window, which read as "the default is
+// off" the next time someone started the app by hand.
+await page.evaluate((value) => {
+  if (value === null) localStorage.removeItem('mio:settings')
+  else localStorage.setItem('mio:settings', value)
+}, settingsSnapshot)
 
 // --- transport. The playhead can only be watched on a clip long enough to
 // outlast two polls, so the longest loaded row is chosen from the rendered
 // durations rather than by hoping a sort put it first.
-// The sort checks above left Length ascending, which puts the shortest clips on
-// screen. Click it once more for descending, so the longest loaded row is visible.
-const lengthArrowNow = await page
-  .locator('.head-cell[data-sort-key="durationS"]')
-  .locator('.sort-arrow')
-  .textContent()
-if (lengthArrowNow === '▲') {
+//
+// The sort is set explicitly rather than assumed: the AUTO PLAY checks above
+// reload the page to prove the default, and a reload drops the sort back to Name.
+// Click Length until the arrow is descending, so the longest loaded row is visible.
+const lengthArrowNow = () =>
+  page.evaluate(
+    () => document.querySelector('.head-cell[data-sort-key="durationS"] .sort-arrow')?.textContent ?? ''
+  )
+for (let attempt = 0; attempt < 3 && (await lengthArrowNow()) !== '▼'; attempt++) {
   await page.locator('.head-cell[data-sort-key="durationS"]').click()
   await page.waitForFunction(() => {
     const table = document.querySelector('.table')
     return table?.dataset.querying === 'false' && table.dataset.epoch === table.dataset.segmentsEpoch
   }, undefined, { timeout: 20_000 })
+  await page.waitForTimeout(300)
 }
+check((await lengthArrowNow()) === '▼', 'Length can be sorted descending before the transport checks')
 const longestIndex = await page.evaluate(() => {
   const parse = (text) => {
     const m = /^(\d+):(\d+(?:\.\d+)?)$/.exec((text ?? '').trim())

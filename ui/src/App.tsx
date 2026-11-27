@@ -17,14 +17,19 @@ import {
 } from './ipc'
 import {
   SoundTable,
+  type EditScope,
+  type RowMenuRequest
+} from './SoundTable'
+import {
+  COLUMNS,
   DEFAULT_DIR,
   SORT_WIRE,
-  type EditScope,
-  type RowMenuRequest,
+  hiddenColumns,
+  toggleColumn,
   type SortKey
-} from './SoundTable'
+} from './columns'
 import { WaveformDock, type Region } from './WaveformDock'
-import { Sidebar } from './Sidebar'
+import { Sidebar, type SidebarMode } from './Sidebar'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
 import { SettingsDialog, loadSettings, saveSettings, type Settings } from './SettingsDialog'
@@ -135,6 +140,23 @@ const GAIN_KEY = 'mio:gain'
  */
 const UNMUTE_KEY = 'mio:unmute-gain'
 
+/**
+ * Which facet tree the rail shows, remembered per machine.
+ *
+ * The mode used to live in the rail while the filter-clearing lived here, so two
+ * copies of one fact had to agree. It is now read here once and the rail takes it
+ * as a prop. `mio:facet-mode` is the old two-value key: `mio` was Categories, and
+ * anything else was UCS, which is still the default.
+ */
+const SIDEBAR_MODE_KEY = 'mio:sidebar-mode'
+const SIDEBAR_MODES: SidebarMode[] = ['categories', 'ucs', 'folders']
+
+function loadSidebarMode(): SidebarMode {
+  const stored = localStorage.getItem(SIDEBAR_MODE_KEY)
+  if (stored && (SIDEBAR_MODES as string[]).includes(stored)) return stored as SidebarMode
+  return localStorage.getItem('mio:facet-mode') === 'mio' ? 'categories' : 'ucs'
+}
+
 const formatSampleRate = (rate: number | null): string => {
   if (rate === null) return '—'
   const decimals = rate % 1000 === 0 ? 0 : rate % 100 === 0 ? 1 : 2
@@ -214,9 +236,7 @@ export function App() {
   const [ucsCatIds, setUcsCatIds] = createSignal<string[]>([])
   const [folder, setFolder] = createSignal<string | null>(null)
   const [favoritesOnly, setFavoritesOnly] = createSignal(false)
-  const [facetMode, setFacetMode] = createSignal<'mio' | 'ucs'>(
-    localStorage.getItem('mio:facet-mode') === 'mio' ? 'mio' : 'ucs'
-  )
+  const [sidebarMode, setSidebarMode] = createSignal<SidebarMode>(loadSidebarMode())
 
   const [sortKey, setSortKey] = createSignal<SortKey>('filename')
   const [sortAsc, setSortAsc] = createSignal(true)
@@ -248,6 +268,8 @@ export function App() {
   )
   /** A folder row's right-click menu. Third target, same hand-drawn panel. */
   const [folderMenu, setFolderMenu] = createSignal<FolderMenuRequest | null>(null)
+  /** The header's right-click menu: show/hide columns, open column settings. */
+  const [headerMenu, setHeaderMenu] = createSignal<{ x: number; y: number } | null>(null)
   const [categoryDialog, setCategoryDialog] = createSignal<{
     targets: SoundRow[]
     scope: EditScope
@@ -255,6 +277,8 @@ export function App() {
   } | null>(null)
   const [ucsCatalog, setUcsCatalog] = createSignal<UcsCategory[]>([])
   const [settingsOpen, setSettingsOpen] = createSignal(false)
+  /** Which section the settings dialog should scroll to, when it was opened from a menu. */
+  const [settingsFocus, setSettingsFocus] = createSignal<'columns' | undefined>(undefined)
   const [history, setHistory] = createSignal<{ undo: EditKind | null; redo: EditKind | null }>({
     undo: null,
     redo: null
@@ -791,6 +815,19 @@ export function App() {
     void runSearch()
   }
 
+  /**
+   * Hiding the column the list is sorted by would leave it sorted by an invisible
+   * key, with no arrow to explain the order and no way to change it back except
+   * through the header menu. Fall back to the name, which is always visible.
+   */
+  createEffect(() => {
+    const hidden = hiddenColumns()
+    if (!hidden.has(sortKey())) return
+    setSortKey('filename')
+    setSortAsc(true)
+    void runSearch()
+  })
+
   const changeSelection = (count: number, nextActive: SoundRow | null) => {
     setSelectionCount(count)
     if (nextActive) setActive(nextActive)
@@ -959,9 +996,11 @@ export function App() {
     void runSearch()
   }
 
-  const changeFacetMode = (mode: 'mio' | 'ucs') => {
-    setFacetMode(mode)
-    localStorage.setItem('mio:facet-mode', mode)
+  const changeSidebarMode = (next: SidebarMode) => {
+    setSidebarMode(next)
+    localStorage.setItem(SIDEBAR_MODE_KEY, next)
+    // Switching trees clears the filters that belonged to the old tree. Folder and
+    // favourites are their own chips, independent of the tree, and stay lit.
     setCategories([])
     setSubcategories([])
     setUcsCategories([])
@@ -1246,6 +1285,36 @@ export function App() {
         onSelect: () => {
           void navigator.clipboard.writeText(current.path)
           setNotice(t('notice.pathCopied'))
+        }
+      }
+    ]
+  }
+
+  /**
+   * The header's right-click menu.
+   *
+   * One entry per column with a tick slot, then the way into the settings section
+   * for the same list. A ticked row toggles the column and closes the menu — the
+   * component's own semantics, deliberately not Explorer's keep-open behaviour:
+   * one menu should not have two closing rules.
+   */
+  const headerMenuItems = (): MenuItem[] => {
+    const hidden = hiddenColumns()
+    return [
+      ...COLUMNS.map((column) => ({
+        id: `column-${column.key}`,
+        label: column.label(),
+        checked: !hidden.has(column.key),
+        disabled: column.pinned,
+        onSelect: () => toggleColumn(column.key)
+      })),
+      { id: 'columns-divider', label: '', divider: true },
+      {
+        id: 'columns-settings',
+        label: t('colMenu.settings'),
+        onSelect: () => {
+          setSettingsFocus('columns')
+          setSettingsOpen(true)
         }
       }
     ]
@@ -1560,7 +1629,7 @@ export function App() {
             ucsCategories={ucsCategories()}
             ucsSubcategories={ucsSubcategories()}
             ucsCatIds={ucsCatIds()}
-            facetMode={facetMode()}
+            mode={sidebarMode()}
             folder={folder()}
             favoritesOnly={favoritesOnly()}
             onActivate={(root) => void switchLibrary(root)}
@@ -1568,7 +1637,7 @@ export function App() {
             onSubcategory={toggleSubcategory}
             onUcsCategory={toggleUcsCategory}
             onUcsSubcategory={toggleUcsSubcategory}
-            onFacetMode={changeFacetMode}
+            onMode={changeSidebarMode}
             onFolder={setFolderFilter}
             onFolderMenu={(request) => setFolderMenu(request)}
             onToggleFavorites={() => {
@@ -1655,7 +1724,6 @@ export function App() {
               active={active()}
               sortKey={sortKey()}
               sortAsc={sortAsc()}
-              showCategory={settings().showCategory}
               matching={matching()}
               querying={querying()}
               onSort={changeSort}
@@ -1664,6 +1732,7 @@ export function App() {
               onRowMenu={setMenu}
               onToggleFavorite={toggleFavorite}
               onSelectAll={onSelectAll}
+              onHeaderMenu={(x, y) => setHeaderMenu({ x, y })}
             />
           </Show>
 
@@ -1779,6 +1848,17 @@ export function App() {
         )}
       </Show>
 
+      <Show when={headerMenu()}>
+        {(current) => (
+          <ContextMenu
+            x={current().x}
+            y={current().y}
+            items={headerMenuItems()}
+            onClose={() => setHeaderMenu(null)}
+          />
+        )}
+      </Show>
+
       <Show when={categoryDialog()}>
         {(dialog) => (
           <CategoryDialog
@@ -1798,6 +1878,7 @@ export function App() {
           settings={settings()}
           theme={theme()}
           zoom={zoom()}
+          focus={settingsFocus()}
           onChange={changeSettings}
           onTheme={changeTheme}
           onZoom={changeZoom}
@@ -1811,7 +1892,10 @@ export function App() {
             setStatus(next)
           }}
           onAddLibrary={() => void addLibrary()}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false)
+            setSettingsFocus(undefined)
+          }}
         />
       </Show>
 

@@ -83,9 +83,9 @@ node tools/check-interactions.mjs   # 列表/选择/排序/搜索/菜单/modal/A
 node tools/check-themes.mjs         # 七套主题应用、重载保留、WCAG 对比度（每套都测）
 node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静音记忆，重载
 node tools/check-region.mjs         # 行可拖、框选、顶部拖出带、拖边界、循环外观、声道分道、导出 WAV
-node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
+node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐（含横向滚动后）、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
-node tools/check-tags.mjs           # 分段控件边框、设置弹窗重开、BPM 列、tag 多选、无副标题
+node tools/check-tags.mjs           # 侧栏模式下拉/旧键迁移、列宽拖动与显隐、表头菜单、横向滚动、库头无三角、BPM 列、tag 多选、无副标题
 node tools/check-shipped.mjs [port] # 打包产物：版本、ASIO、设备、新控件（跑解压出来的 exe）
 node tools/check-stress.mjs [port]  # 压力测试：仅在前后端数据结构/算法有破坏性改动时运行
 node tools/shot.mjs [out.png]       # 截图

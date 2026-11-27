@@ -14,6 +14,12 @@ import solid from 'vite-plugin-solid'
  * component means adding its tag here or it will silently stay an unknown
  * element.
  *
+ * **The failure is silent at runtime beyond one console line**: the loader's
+ * dynamic import is pointed at `data:text/javascript,`, the page's CSP blocks
+ * that, and every instance logs `Constructor for "ix-x#undefined" was not
+ * found` and never upgrades. A trimmed checkbox therefore renders as an empty
+ * inline element — a section that looks blank, not a missing control.
+ *
  * The dispatch switch is keyed by *bundle id*, not tag: a lazy bundle that
  * defines several tags (ix-icon-button + ix-spinner) has a `name_2` id, and
  * every tag a bundle contains must be listed or the whole bundle is trimmed.
@@ -23,6 +29,7 @@ import solid from 'vite-plugin-solid'
  */
 const IX_TAGS = [
   'ix-button',
+  'ix-checkbox',
   'ix-chip',
   'ix-icon',
   // bundle id of ix-icon-button + ix-spinner

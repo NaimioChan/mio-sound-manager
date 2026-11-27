@@ -44,7 +44,7 @@ node tools/check-volume.mjs         # 滑杆 → IPC → 引擎 → 回读，静
 node tools/check-region.mjs         # 行可拖、框选、循环跟随框选、区域导出 WAV、Esc 清除（跑完要重启）
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
-node tools/check-tags.mjs           # 分类/文件夹切换按钮的边框、设置弹窗重开、BPM 列与排序、tag 多选、文件夹右键菜单、无副标题
+node tools/check-tags.mjs           # 侧栏模式下拉/旧键迁移、列宽拖动与显隐、表头菜单、横向滚动、库头无三角、BPM 列、tag 多选、无副标题
 node tools/check-stress.mjs         # 压力测试：仅在前后端数据结构/算法有破坏性改动时运行
 node tools/check-shipped.mjs [port] # 对着打包产物验版本/ASIO/设备/新控件（解压 zip 后起那个 exe 再跑）
 node tools/shot.mjs [out.png]       # 截图（给人看）
@@ -83,6 +83,9 @@ The seven window-driving `check-*.mjs` assert on English copy and pin `mio:local
 - **Colours come from iX tokens, never from literals.** `ui/src/styles.css` holds geometry only; every colour is a `--theme-*` variable so the theme system repaints the iX components, our CSS and the waveform canvas from one override block. A literal hex in a component is a colour that will not follow the theme.
 - **The theme has one owner.** `ui/src/theme.ts` writes `mio:theme`; it must not also live in the settings blob — two writers made a reload fall back to the default.
 - **Volume is engine state, not renderer state.** `set_gain` writes one atomic the render callback reads; the slider's signal is a mirror. A volume control that only updated the UI would pass a DOM check and do nothing.
+- **列状态只有一个拥有者：`ui/src/columns.ts`。** `SortKey` / `COLUMNS` / `SORT_WIRE` / `DEFAULT_DIR` 与顺序、宽度、显隐都从那里读；`SoundTable` 不再导出它们，设置页和表头菜单也不另存一份。表头、骨架行、真实行必须继续用同一个 `gridTemplate()`，轨道全是像素（`fr` 会让拖出来的宽度随窗口变）。三个信号整体替换，原地改 `Set`/对象不会触发 Solid 通知。
+- **iX 组件上只用 `classList`，不要用 `class`。** Solid 把 `class={…}` 写成 `className` 的整体赋值，会抹掉 Stencil 的 `hydrated` 与 `sc-*` 类；iX 对 `:not(.hydrated)` 的 host 是 `visibility:hidden`，症状是「点一下就消失」而不是样式错。
+- **新增 `<ix-*>` 元素要同步 `ui/vite.config.ts` 的 `IX_TAGS`。** 漏了会被 `trimIxChunks` 裁成 `data:text/javascript,`，CSP 拒绝后元素永不升级——症状是一整块空白区域，控制台只有一行 `Constructor for "ix-x#undefined" was not found`。
 - **Nothing user-facing is written as a literal string.** Every label goes through `t()`; the backend sends *kinds* (`EditKind`), never English prose for the renderer to display — a string born in Rust can never be translated. Category names, file names and sample rates are data and stay untranslated; `Uncategorized` is the one exception, because it is a schema sentinel rather than a classifier guess.
 - **No subtitles.** Nothing under a heading, a brand, a modal title or a settings group. 标题本身就是完整信息；副标题是不承载信息的一行小字，只会把版式撑高。文案层面同理：不要为标题补一句解释性的第二行。要解释就写进正文或 `helperText`，那不是 subtitle。
 - **Gapless decoding is mandatory, not an optimisation.** With `FormatOptions::enable_gapless` off, MP3 keeps 25.1ms of LAME encoder delay at the head; MP4/AAC keeps 1024 priming frames (23.2ms) because symphonia's isomp4 parses `elst` but never surfaces it. Both are the same order of magnitude as the entire device path, so a missing trim is felt as a late trigger.
@@ -98,6 +101,7 @@ The seven window-driving `check-*.mjs` assert on English copy and pin `mio:local
 | 索引器（头探测、分类、schema、搜索、文件夹树） | `crates/mio-index/` |
 | Tauri 外壳（IPC 命令、应用状态、库生命周期） | `crates/mio-app/` |
 | 前端（SolidJS + Vite + @siemens/ix，构建产物编进 exe） | `ui/` |
+| 列定义、顺序、宽度、显隐（唯一拥有者） | `ui/src/columns.ts` |
 | 配色主题系统（八色调色板 → iX token 推导） | `ui/src/theme.ts` |
 | 多语言（语言信号 + `t()`，三语字典） | `ui/src/i18n.ts`、`ui/src/locales/` |
 | 图标资源（从 `@siemens/ix-icons` 复制，离线可用） | `ui/src/assets/icons/` |

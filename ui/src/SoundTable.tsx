@@ -2,6 +2,17 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { categoryName, channelLabel, t } from './i18n'
 import { api, startDrag, type SearchRequest, type SoundRow } from './ipc'
 import { focusedElement, isTextEntry } from './keyboard'
+import {
+  gridTemplate,
+  moveColumn,
+  saveColumnWidths,
+  setColumnWidth,
+  totalWidth,
+  visibleColumns,
+  widthOf,
+  type Column,
+  type SortKey
+} from './columns'
 
 /**
  * The sound list.
@@ -18,109 +29,6 @@ import { focusedElement, isTextEntry } from './keyboard'
  */
 const ROW_H = 28
 const OVERSCAN = 8
-
-export type SortKey =
-  | 'favorite'
-  | 'filename'
-  | 'category'
-  | 'ucsCategory'
-  | 'ucsSubcategory'
-  | 'durationS'
-  | 'bpm'
-  | 'channels'
-  | 'sampleRate'
-  | 'filesize'
-  | 'description'
-
-/**
- * Wire name per sort key.
- *
- * The renderer's keys are the row fields it sorts by in memory (`durationS`,
- * `sampleRate`), but the index whitelists its own column names (`duration`,
- * `sample_rate`). Sending the row field names straight through made `search` fail
- * with `unknown sort column durationS` — and because the failing request kept the
- * same sort in every later call, one click on Length broke category and folder
- * filtering too, until the user happened to sort by something else.
- *
- * `SORT_WIRE` is the single place that translation happens.
- */
-export const SORT_WIRE: Record<SortKey, string> = {
-  favorite: 'favorite',
-  filename: 'filename',
-  category: 'category',
-  ucsCategory: 'ucs_category',
-  ucsSubcategory: 'ucs_subcategory',
-  durationS: 'duration',
-  bpm: 'bpm',
-  channels: 'channels',
-  sampleRate: 'sample_rate',
-  filesize: 'filesize',
-  description: 'description'
-}
-
-interface Column {
-  key: SortKey
-  /** Resolved at render time: the header follows the locale. */
-  label: () => string
-  width: string
-  numeric?: boolean
-}
-
-const COLUMNS: Column[] = [
-  { key: 'favorite', label: () => '★', width: 'min(32px, 8%)' },
-  { key: 'filename', label: () => t('col.name'), width: 'minmax(0, 2fr)' },
-  { key: 'category', label: () => t('col.category'), width: 'minmax(0, 1fr)' },
-  { key: 'ucsCategory', label: () => t('col.ucsCategory'), width: 'minmax(0, 1fr)' },
-  { key: 'ucsSubcategory', label: () => t('col.ucsSubcategory'), width: 'minmax(0, 1fr)' },
-  { key: 'durationS', label: () => t('col.length'), width: 'min(84px, 14%)', numeric: true },
-  { key: 'bpm', label: () => t('col.bpm'), width: 'min(56px, 10%)', numeric: true },
-  { key: 'channels', label: () => t('col.channels'), width: 'min(64px, 11%)' },
-  { key: 'sampleRate', label: () => t('col.rate'), width: 'min(78px, 13%)', numeric: true },
-  { key: 'filesize', label: () => t('col.size'), width: 'min(84px, 14%)', numeric: true },
-  { key: 'description', label: () => t('col.description'), width: 'minmax(0, 2fr)' }
-]
-
-/**
- * Default direction per column, so the first click on a numeric column is the
- * useful one: nobody sorting by size wants the smallest file first.
- */
-export const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
-  favorite: 'desc',
-  filename: 'asc',
-  category: 'asc',
-  ucsCategory: 'asc',
-  ucsSubcategory: 'asc',
-  durationS: 'desc',
-  bpm: 'desc',
-  channels: 'desc',
-  sampleRate: 'desc',
-  filesize: 'desc',
-  description: 'asc'
-}
-
-/**
- * Where the columns sit, in the user's order.
- *
- * Stored as a plain list of keys rather than an index per column: a key that is
- * no longer in `COLUMNS` simply drops out on load, and a column added later
- * appears at the end instead of vanishing because it was not in a stale list.
- */
-const ORDER_KEY = 'mio:column-order'
-
-function loadColumnOrder(): SortKey[] {
-  const all = COLUMNS.map((c) => c.key)
-  let stored: unknown
-  try {
-    const raw = localStorage.getItem(ORDER_KEY)
-    if (!raw) return all
-    stored = JSON.parse(raw)
-  } catch {
-    return all
-  }
-  if (!Array.isArray(stored)) return all
-  const seen = [...new Set(stored.filter((k): k is SortKey => all.includes(k as SortKey)))]
-  return [...seen, ...all.filter((k) => !seen.includes(k))]
-}
 
 function formatBytes(bytes: number | null): string {
   if (bytes === null) return '—'
@@ -248,8 +156,6 @@ interface Props {
   active: SoundRow | null
   sortKey: SortKey
   sortAsc: boolean
-  /** Hide the category column; the value is still filterable from the rail. */
-  showCategory: boolean
   /** Total rows matching the filter; also determines the full scroll height. */
   matching: number
   /**
@@ -266,6 +172,8 @@ interface Props {
   onRowMenu: (request: RowMenuRequest) => void
   onToggleFavorite: (row: SoundRow) => void
   onSelectAll: (count: number) => void
+  /** Right-click on the header: show/hide columns, open column settings. */
+  onHeaderMenu: (x: number, y: number) => void
 }
 
 const SEGMENT_ROWS = 500
@@ -298,56 +206,34 @@ export function SoundTable(props: Props) {
   const [pendingIndex, setPendingIndex] = createSignal<number | null>(null)
   const [cursorIndex, setCursorIndex] = createSignal<number | null>(null)
   const [anchorIndex, setAnchorIndex] = createSignal<number | null>(null)
-  /** The user's column order, as keys. Persisted; see `ORDER_KEY`. */
-  const [order, setOrder] = createSignal<SortKey[]>(loadColumnOrder())
   /** The column being dragged, and the one it would land on. */
   const [dragging, setDragging] = createSignal<SortKey | null>(null)
   const [dropTarget, setDropTarget] = createSignal<{ key: SortKey; after: boolean } | null>(null)
-
   /**
-   * Columns actually drawn, which the header and every row must agree on.
-   *
-   * The favourite star is pinned first: it is one glyph wide and carries no label,
-   * so a user dragging it to the far right gets a column they cannot identify. The
-   * rest follow `order`.
+   * Horizontal scroll offset. The header lives outside the scrolling body, so it
+   * cannot scroll with it; it is translated by this instead. One signal, updated
+   * in the same scroll event as `scrollTop` — no frame of lag to design around.
    */
-  const columns = createMemo(() => {
-    const shown = COLUMNS.filter((c) => c.key !== 'category' || props.showCategory)
-    const rank = order()
-    const at = (key: SortKey) => {
-      const i = rank.indexOf(key)
-      return i < 0 ? rank.length : i
-    }
-    return shown.slice().sort((a, b) => {
-      if (a.key === 'favorite') return -1
-      if (b.key === 'favorite') return 1
-      return at(a.key) - at(b.key)
-    })
-  })
-  const template = createMemo(() => columns().map((c) => c.width).join(' '))
-
+  const [scrollLeft, setScrollLeft] = createSignal(0)
   /**
-   * Move `from` next to `to`.
-   *
-   * `after` comes from which half of the target header the pointer is over, so a
-   * column can be dropped at the far right by aiming at the right half of the last
-   * one. Inserting always-before would make that position unreachable.
+   * A resize drag is in progress. While true the header must not start a column
+   * reorder: the handle is a child of the header button, so a pointer move on it
+   * would otherwise satisfy the button's `draggable` and turn a width drag into a
+   * reorder. Both write localStorage, and the visible symptom is "the width did
+   * not save".
    */
-  const moveColumn = (from: SortKey, to: SortKey, after: boolean) => {
-    if (from === to || from === 'favorite' || to === 'favorite') return
-    const current = columns()
-      .map((c) => c.key)
-      .filter((k) => k !== from && k !== 'favorite')
-    const at = current.indexOf(to)
-    if (at < 0) return
-    current.splice(after ? at + 1 : at, 0, from)
-    setOrder([...current, ...COLUMNS.map((c) => c.key).filter((k) => !current.includes(k))])
-    try {
-      localStorage.setItem(ORDER_KEY, JSON.stringify(current))
-    } catch {
-      // A locked profile costs the arrangement, not the session.
-    }
-  }
+  const [resizing, setResizing] = createSignal(false)
+  /**
+   * Swallow the one click a released resize drag leaves behind. Without it, every
+   * width change also sorts by that column, because the handle sits inside the
+   * header's sort button.
+   */
+  let suppressClick = false
+
+  /** Columns actually drawn, which the header and every row must agree on. */
+  const columns = createMemo<Column[]>(() => visibleColumns())
+  const template = createMemo(() => gridTemplate())
+  const contentWidth = createMemo(() => totalWidth())
 
   /** Whether the pointer is in the right half of the header, for `after`. */
   const dropAfter = (event: DragEvent): boolean => {
@@ -363,6 +249,48 @@ export function SoundTable(props: Props) {
     const t = dropTarget()
     return t?.key === key && t.after
   }
+
+  /**
+   * Drag a column's right edge.
+   *
+   * The listeners live on `window`, like the rail's and the waveform's: the pointer
+   * leaves the 5px handle immediately, and a lost pointer would leave the table in
+   * resize mode forever. `pointercancel` gets the same cleanup as `pointerup`,
+   * because Escape and a window losing focus can end a drag without a release.
+   */
+  const startColumnResize = (event: PointerEvent, key: SortKey) => {
+    const column = columns().find((c) => c.key === key)
+    if (!column || !column.resizable) return
+    event.preventDefault()
+    event.stopPropagation()
+    setResizing(true)
+    const startX = event.clientX
+    const startWidth = widthOf(key)
+    let moved = false
+    const move = (e: PointerEvent) => {
+      const next = startWidth + (e.clientX - startX)
+      if (Math.abs(e.clientX - startX) > 2) moved = true
+      setColumnWidth(key, next)
+    }
+    const finish = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+      endResize = null
+      setResizing(false)
+      if (moved) {
+        suppressClick = true
+        saveColumnWidths()
+      }
+    }
+    endResize = finish
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+  }
+  /** The cleanup of the drag in flight, so unmounting cannot leave listeners behind. */
+  let endResize: (() => void) | null = null
+  onCleanup(() => endResize?.())
 
   let body: HTMLDivElement | undefined
 
@@ -914,63 +842,105 @@ export function SoundTable(props: Props) {
       data-epoch={props.epoch}
       data-segments-epoch={segmentsEpoch()}
     >
-      <div
-        class="table-head"
-        style={{
-          'grid-template-columns': template(),
-          width: `calc(100% - ${scrollbarW()}px)`
-        }}
-      >
-        <For each={columns()}>
-          {(col) => (
-            <button
-              class={col.numeric ? 'head-cell numeric' : 'head-cell'}
-              data-sort-key={col.key}
-              data-drop={isDropBefore(col.key) ? 'before' : isDropAfter(col.key) ? 'after' : undefined}
-              draggable={col.key !== 'favorite'}
-              onClick={() => props.onSort(col.key)}
-              onDragStart={(e) => {
-                setDragging(col.key)
-                // The drag stays inside the header, but a payload is what makes
-                // WebView2 start it at all; with an empty DataTransfer no `dragover`
-                // fires on the other headers and nothing can be dropped.
-                e.dataTransfer?.setData('text/plain', col.key)
-                if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
-              }}
-              onDragOver={(e) => {
-                const from = dragging()
-                if (!from || from === col.key || col.key === 'favorite') return
-                e.preventDefault()
-                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-                setDropTarget({ key: col.key, after: dropAfter(e) })
-              }}
-              onDragLeave={() => {
-                if (dropTarget()?.key === col.key) setDropTarget(null)
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                const from = dragging()
-                setDropTarget(null)
-                setDragging(null)
-                if (from) moveColumn(from, col.key, dropAfter(e))
-              }}
-              onDragEnd={() => {
-                setDragging(null)
-                setDropTarget(null)
-              }}
-              title={
-                col.key === 'favorite'
-                  ? t('col.sortBy', { column: col.label() })
-                  : `${t('col.sortBy', { column: col.label() })} · ${t('col.reorder')}`
-              }
-            >
-              {col.label()}
-              <Show when={props.sortKey === col.key}>
-                <span class="sort-arrow">{props.sortAsc ? '▲' : '▼'}</span>
-              </Show>
-            </button>
-          )}
-        </For>
+      <div class="table-head-wrap">
+        <div
+          class="table-head"
+          style={{
+            'grid-template-columns': template(),
+            // `max(...)` so a narrow window still paints a full-width header, while
+            // a wide table can exceed the viewport. The rows use the same
+            // expression on their spacer, so both right edges stay on top of each
+            // other at any scroll offset.
+            width: `max(${contentWidth()}px, calc(100% - ${scrollbarW()}px))`,
+            transform: `translateX(-${scrollLeft()}px)`
+          }}
+          onContextMenu={(e) => {
+            // One delegated handler on the header rather than one per cell: the
+            // buttons' own `contextmenu` would otherwise have to be prevented
+            // eleven times, and a header with no visible columns still opens a
+            // menu that can bring them back.
+            e.preventDefault()
+            props.onHeaderMenu(e.clientX, e.clientY)
+          }}
+        >
+          <For each={columns()}>
+            {(col) => (
+              <button
+                class={col.numeric ? 'head-cell numeric' : 'head-cell'}
+                data-sort-key={col.key}
+                data-drop={isDropBefore(col.key) ? 'before' : isDropAfter(col.key) ? 'after' : undefined}
+                draggable={!resizing() && !col.pinned}
+                onClick={() => {
+                  // A finished width drag leaves a click behind; it must not also
+                  // sort. The flag is cleared on the very next click, whatever it
+                  // was, so a stray click can never eat a real one later.
+                  if (suppressClick) {
+                    suppressClick = false
+                    return
+                  }
+                  props.onSort(col.key)
+                }}
+                onDragStart={(e) => {
+                  if (resizing()) {
+                    e.preventDefault()
+                    return
+                  }
+                  setDragging(col.key)
+                  // The drag stays inside the header, but a payload is what makes
+                  // WebView2 start it at all; with an empty DataTransfer no `dragover`
+                  // fires on the other headers and nothing can be dropped.
+                  e.dataTransfer?.setData('text/plain', col.key)
+                  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragOver={(e) => {
+                  const from = dragging()
+                  if (!from || from === col.key || col.pinned) return
+                  e.preventDefault()
+                  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+                  setDropTarget({ key: col.key, after: dropAfter(e) })
+                }}
+                onDragLeave={() => {
+                  if (dropTarget()?.key === col.key) setDropTarget(null)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const from = dragging()
+                  setDropTarget(null)
+                  setDragging(null)
+                  if (from) moveColumn(from, col.key, dropAfter(e))
+                }}
+                onDragEnd={() => {
+                  setDragging(null)
+                  setDropTarget(null)
+                }}
+                title={
+                  col.pinned
+                    ? t('col.sortBy', { column: col.label() })
+                    : `${t('col.sortBy', { column: col.label() })} · ${t('col.reorder')}`
+                }
+              >
+                {col.label()}
+                <Show when={props.sortKey === col.key}>
+                  <span class="sort-arrow">{props.sortAsc ? '▲' : '▼'}</span>
+                </Show>
+                <Show when={col.resizable}>
+                  <span
+                    class="head-resize"
+                    aria-hidden="true"
+                    onPointerDown={(e) => startColumnResize(e, col.key)}
+                    // Double-click restores the designed width: the cheapest way
+                    // back from a column dragged too narrow to read.
+                    onDblClick={(e) => {
+                      e.stopPropagation()
+                      setColumnWidth(col.key, col.defaultWidth)
+                      saveColumnWidths()
+                    }}
+                  />
+                </Show>
+              </button>
+            )}
+          </For>
+        </div>
       </div>
 
       <div
@@ -994,11 +964,23 @@ export function SoundTable(props: Props) {
          onScroll={(e) => {
            const el = e.currentTarget
            setScrollTop(el.scrollTop)
+           setScrollLeft(el.scrollLeft)
            setScrollRevision((revision) => revision + 1)
            requestViewport()
          }}
       >
-        <div role="list" style={{ height: `${props.matching * ROW_H}px`, position: 'relative' }}>
+        <div
+          role="list"
+          style={{
+            height: `${props.matching * ROW_H}px`,
+            // The rows are absolutely positioned with `left/right: 0`, so this
+            // spacer is their containing block. Without a min-width it is exactly
+            // the body's client width and a wide table has nowhere to scroll to:
+            // rows would stay one viewport wide while the header is not.
+            'min-width': `${contentWidth()}px`,
+            position: 'relative'
+          }}
+        >
           <For each={visibleIndices()}>
             {(absoluteIndex) => {
               const row = () => rowAt(absoluteIndex)

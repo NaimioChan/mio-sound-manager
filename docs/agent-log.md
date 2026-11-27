@@ -8,6 +8,14 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 ## 当前占用
 
+## 2026-11-27 12:40 · opencode · 侧栏下拉、列宽/显隐/横向滚动、AUTO PLAY 对比度、库头
+
+- 改：侧栏 Categories/UCS/Folders 由三段按钮改为 `#sidebar-mode`（`ix-select`），模式只由 `App.tsx` 持有，保留 `mio:facet-mode` 一次性迁移，切换后 `blur()` 把焦点还给表格；库头删掉从未生效的折叠三角，活跃态换成 `ghost--selected` + 2px inset 强调条。新增 `ui/src/columns.ts` 作列定义/顺序/宽度/显隐的唯一拥有者：全部像素轨道、表头把手拖动（掐掉 dragstart 与泄漏的 click）、双击复位、设置页 Columns 一节、表头右键菜单（`ContextMenu` 增加 `checked`，行高改 32px 并夹住视口高度）、隐藏排序列回退 Name、`.table-body` 改 `overflow:auto` + 表头 `translateX` 跟随。AUTO PLAY 的 `on`/关态用实心 accent 与描边两套 token 覆盖二级按钮全状态。`settings.showCategory` 从设置、类型与三语字典删除。
+- 修（同轮用户反馈两个 bug）：**Columns 一节空白** —— `ui/vite.config.ts` 的 `IX_TAGS` 白名单漏了 `ix-checkbox`，`trimIxChunks` 把它的 entry 换成 `data:text/javascript,`，CSP 拒绝后 `Constructor for "ix-checkbox#undefined" was not found`，11 个复选框从未升级。**AUTO PLAY 点一次就消失** —— 用 `class={…}` 写 on 态，Solid 整体赋值 `className`，把 Stencil 的 `hydrated` / `sc-*` 一起抹掉，iX 对 `:not(.hydrated)` 的 host 是 `visibility:hidden`；改成 `classList={{…}}`（循环按钮一直是这么写的）。
+- 验证：`(cd ui && npm run build)`、`node tools/check-i18n.mjs`（175 键）通过。桌面 CDP：`check-interactions`（含「未覆盖设置前默认开」与首次行点击出声）、`check-tags`（下拉/迁移/键盘、库头、列宽拖动与重载、显隐两路、表头菜单、横向滚动对齐、无副标题；新增「11/11 checkbox hydrated」与「AUTO PLAY 连点三次仍 hydrated 且有渲染尺寸、开/关背景不同」两条回归）、`check-layout`（含 scrollLeft=120 后的表头/行右边界）、`check-themes`（七套主题 + AUTO PLAY 开态对比度）、`check-volume`、`check-region`（单独跑，跑完重启）、`check-scroll-deep` 全部通过；`check-responsive-layout` 在 1280/900/720/600 通过（横向溢出改为断言表头/行一致、dock 与状态栏不越界）。`cargo build --release` 干净。
+- 已知坑：Solid 把未知 `data-*` prop 写在自定义元素上当 property，`data-column` 必须放在包装元素上才会进 DOM；`.row` 也会匹配骨架行，取单元格要用 `.row[data-path]`；**iX 组件上永远用 `classList`，不要用 `class`** —— 后者会抹掉 Stencil 的 hydration 类；**新增 `<ix-*>` 必须同步 `vite.config.ts` 的 `IX_TAGS`**，漏了是「整块空白」而不是报错。
+- 未做：`check-shipped.mjs` 的新控件断言已加（`#sidebar-mode`、10 个 `.head-resize`），但未打安装包/便携包实测；`check-indexing-feedback` 未用大库重跑。
+
 ## 2026-11-27 18:40 · opencode · 修完一轮只读审计（A1–A18、B1–B5）
 
 - 改：按当轮审计清单逐条修。P0：双槽发布改为一次 `SlotState` 发布 + 带 tag 的播放头（`output.rs`）；UCS 补 `WEAPONS` 与 `DROPPED`/`WITHHELD_CAT_IDS` 并让 `import-ucs.py` 拒绝静默漏条目；M4A priming 只裁流头。P1：长文件区域循环按链回绕、`IX-*` 键盘判据抽到 `ui/src/keyboard.ts`、三个重 IPC 命令改 async、设备切换只在成功时持久化且保留 ASIO 帧数、`AppError::Superseded`。P2：`tauri-plugin-log`、稳定 FNV-1a 锁键、metadata 增加 `deferred` 计数、`close()` 竞态用 `AtomicBool` 关住、ASIO `try_lock` 与 `scratch.get`。文档与工具链一并修正。

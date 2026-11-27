@@ -641,7 +641,13 @@ export function WaveformDock(props: Props) {
         */}
         <ix-toggle-button
           id="auto-play"
-          class="slim-button"
+          // `classList`, never `class`: Solid's `class` assignment writes
+          // `className` wholesale, which wipes Stencil's `hydrated` and `sc-*`
+          // classes. iX hides `.not(.hydrated)` hosts, so the button vanished on
+          // the first toggle and never came back — the state was remembered, the
+          // element was invisible. `ix-icon-toggle-button` below uses the same
+          // form for the same reason.
+          classList={{ 'slim-button': true, on: props.autoPlay }}
           variant="secondary"
           pressed={props.autoPlay}
           title={`${props.autoPlay ? t('dock.autoPlayOn') : t('dock.autoPlayOff')} — ${t('dock.autoPlayHint')}`}

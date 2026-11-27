@@ -1,6 +1,7 @@
-// Checks for the P9 batch: the segmented toggle's left edge, the settings dialog
+// Checks for the P9 batch: the rail's mode dropdown, the settings dialog
 // reopening after the × closes it, the BPM column and sort, multi-select tags, the
-// folder row's own menu, and the absence of subtitles.
+// folder row's own menu, column widths/visibility/header menu, and the absence of
+// subtitles.
 //
 //   node tools/check-tags.mjs [port]
 //
@@ -19,7 +20,22 @@ if (!page) {
   console.error('no page on the debugger')
   process.exit(1)
 }
-await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
+
+// A previous run that failed mid-way can leave a hidden column or a dragged width
+// behind, and every test after this one indexes `.row .cell` by the header order.
+// Column state is per machine, not per library, so it has to be cleared here and
+// restored at the end: a profile with a deliberately hidden column should survive a
+// test run unchanged.
+const COLUMN_KEYS = ['mio:column-hidden', 'mio:column-widths', 'mio:column-order']
+const columnSnapshot = await page.evaluate((keys) => {
+  const saved = {}
+  for (const key of keys) saved[key] = localStorage.getItem(key)
+  return saved
+}, COLUMN_KEYS)
+await page.evaluate((keys) => {
+  localStorage.setItem('mio:locale', 'en')
+  for (const key of keys) localStorage.removeItem(key)
+}, COLUMN_KEYS)
 await page.reload()
 await page.waitForSelector('.row', { timeout: 90_000 })
 await page.waitForTimeout(1000)
@@ -32,71 +48,153 @@ const check = (ok, label, detail = '') => {
 
 const rowCount = () => page.locator('.row').count()
 
-/** The rail remembers its mode; start from Categories so the seam check is stable. */
+/**
+ * Drive the rail's mode select the way the search field is driven: set the host's
+ * property and dispatch the event iX would. Clicking an option inside the shadow
+ * root needs the list to open and scroll first, which is flaky on CI machines.
+ */
+const pickMode = async (mode) => {
+  await page.evaluate((mode) => {
+    const host = document.querySelector('#sidebar-mode')
+    if (!host) return
+    host.value = mode
+    host.dispatchEvent(new CustomEvent('valueChange', { detail: mode, bubbles: true }))
+  }, mode)
+  await page.waitForTimeout(800)
+}
+
+const modeState = () =>
+  page.evaluate(() => ({
+    value: document.querySelector('#sidebar-mode')?.value ?? null,
+    attr: document.querySelector('.sidebar')?.dataset.sidebarMode ?? null,
+    stored: localStorage.getItem('mio:sidebar-mode')
+  }))
+
+// ------------------------------------------------------ 1. the rail's mode select
+// The rail remembers its mode; start from Categories so the next checks are stable.
 await page.evaluate(() => localStorage.setItem('mio:sidebar-mode', 'categories'))
-await page.evaluate(() => {
-  const [cats] = document.querySelectorAll('.side-mode')
-  if (!cats.classList.contains('on')) cats.click()
-})
-await page.waitForTimeout(500)
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
 
-// ---------------------------------------------------------------- 1. toggle seam
-// Both halves must paint a 1px border on all four sides while lit. The failure
-// being checked for is a lit *second* half with no left border, which is what a
-// shared seam with `border-left: none` produces.
-const seam = await page.evaluate(() => {
-  const cats = document.querySelector('[data-sidebar-mode="categories"]')
-  const folders = document.querySelector('[data-sidebar-mode="folders"]')
-  const lit = (el) => el.classList.contains('on')
-  const borders = (el) => {
-    const s = getComputedStyle(el)
-    return [s.borderTopWidth, s.borderRightWidth, s.borderBottomWidth, s.borderLeftWidth].join(' ')
-  }
-  return {
-    catLit: lit(cats),
-    folderLit: lit(folders),
-    catBorders: borders(cats),
-    folderBorders: borders(folders),
-    catRight: Math.round(cats.getBoundingClientRect().right),
-    folderLeft: Math.round(folders.getBoundingClientRect().left)
-  }
-})
-check(seam.catLit && !seam.folderLit, 'Categories starts lit in categories mode', JSON.stringify(seam))
-
-// Switch to Folders: the second half lights, and it must have a left border.
-await page.locator('[data-sidebar-mode="folders"]').click()
-await page.waitForTimeout(300)
-const folded = await page.evaluate(() => {
-  const el = document.querySelector('[data-sidebar-mode="folders"]')
-  const s = getComputedStyle(el)
-  return {
-    lit: el.classList.contains('on'),
-    left: s.borderLeftWidth,
-    right: s.borderRightWidth,
-    color: s.borderTopColor
-  }
-})
-check(folded.lit, 'clicking Folders lights the second half')
-check(folded.left !== '0px', 'the lit second half keeps its left border', folded.left)
-check(folded.right !== '0px', 'and its right border', folded.right)
-// Light is the accent colour, so a missing edge is visible as a break in the box.
-const accentBorder = await page.evaluate(() => {
-  const el = document.querySelector('[data-sidebar-mode="folders"]')
-  return getComputedStyle(el).borderTopColor
-})
+const initial = await modeState()
+check(initial.value === 'categories', 'the rail opens in the stored mode', String(initial.value))
 check(
-  folded.color === accentBorder,
-  'all four borders are the accent colour',
-  folded.color
+  initial.attr === 'categories',
+  'the sidebar reports its mode without reaching into the select shadow root',
+  String(initial.attr)
+)
+check(
+  (await page.locator('.side-mode').count()) === 0,
+  'the segmented control is gone; the mode is one dropdown'
+)
+check(
+  (await page.locator('.side-gear').count()) === 1,
+  'the settings gear still sits beside the mode select'
 )
 
-// The folder rail must be showing, and a folder row must exist for the next check.
-// `.folder-node > .folder` is a real folder under the root. The bare `.folder`
-// selector also matches the "All folders" row, which is the whole library and has
-// no menu of its own.
+// Folders: real folder rows, and the choice is remembered.
+await pickMode('folders')
 await page.waitForSelector('.folder-node > .folder', { timeout: 20_000 })
+const foldersState = await modeState()
+check(
+  foldersState.attr === 'folders' && foldersState.stored === 'folders',
+  'picking Folders switches the rail and stores the choice',
+  `${foldersState.attr} / ${foldersState.stored}`
+)
+
+// Categories: category rows replace the folder tree.
+await pickMode('categories')
+await page.waitForSelector('.facet', { timeout: 20_000 })
+const categoriesState = await modeState()
+check(
+  categoriesState.attr === 'categories' && categoriesState.stored === 'categories',
+  'picking Categories switches back and stores it',
+  String(categoriesState.stored)
+)
+check(
+  (await page.locator('.folder-node').count()) === 0,
+  'the folder tree is gone in categories mode'
+)
+
+// UCS: the tree is built from the native UCS catalog rather than the 22 classes.
+await pickMode('ucs')
+const ucsFacets = await page.locator('.facet[data-category]').count()
+const ucsState = await modeState()
+check(ucsState.attr === 'ucs', 'picking UCS selects the UCS tree', String(ucsState.attr))
+if (ucsFacets > 0) {
+  check(true, 'the UCS tree lists category rows', `${ucsFacets}`)
+} else {
+  console.log('note: the open library has no UCS rows; the UCS tree is empty for it')
+}
+
+// The old key migrated in: a profile from before the dropdown that had Categories
+// selected must not fall back to UCS just because the new key is missing.
+await page.evaluate(() => {
+  localStorage.removeItem('mio:sidebar-mode')
+  localStorage.setItem('mio:facet-mode', 'mio')
+})
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+const migrated = await modeState()
+check(
+  migrated.attr === 'categories',
+  'the old mio:facet-mode=mio profile migrates to Categories',
+  String(migrated.attr)
+)
+
+// Selecting a mode must hand focus back to the window, or the table's arrow keys
+// stay inside the select's filter input. The synthetic event cannot reproduce the
+// focus iX sets on a real click, so this only guards the path after it.
+await pickMode('ucs')
+await pickMode('categories')
+await page.waitForSelector('.facet', { timeout: 20_000 })
+await page.keyboard.press('Home')
+await page.keyboard.press('ArrowDown')
+await page.waitForFunction(
+  () => Number(document.querySelector('.row.active[data-path]')?.getAttribute('aria-posinset')) === 2,
+  undefined,
+  { timeout: 10_000 }
+)
+check(true, 'arrow keys move the list right after a mode change')
+
+// The library header is a title, not a tree node: the twisty slot survives for
+// indentation, but nothing in it can be clicked.
+const libHeads = await page.evaluate(() => {
+  const active = document.querySelector('.lib-group.active .lib-head')
+  const defaultHead = document.querySelector('.lib-group:not(.active) .lib-head')
+  const style = active ? getComputedStyle(active) : null
+  return {
+    clickableTwisties: document.querySelectorAll('.lib-head .twisty:not(.spacer)').length,
+    spacer: document.querySelectorAll('.lib-head .twisty.spacer').length,
+    shadow: style?.boxShadow ?? '',
+    background: style?.backgroundColor ?? '',
+    plainBackground: defaultHead ? getComputedStyle(defaultHead).backgroundColor : ''
+  }
+})
+check(
+  libHeads.clickableTwisties === 0,
+  'the library header has no collapsible twisty',
+  String(libHeads.clickableTwisties)
+)
+check(libHeads.spacer >= 1, 'the spacer keeps library names on the facet indent')
+check(
+  libHeads.shadow.includes('inset'),
+  'the active library header carries its accent bar',
+  libHeads.shadow
+)
+check(
+  libHeads.background !== libHeads.plainBackground,
+  'the active library header is a real selected state',
+  `${libHeads.background} vs ${libHeads.plainBackground}`
+)
 
 // -------------------------------------------------- 2. folder row's own menu
+// The rail is in Categories mode at this point; the folder tree only mounts under
+// Folders.
+await pickMode('folders')
+await page.waitForSelector('.folder-node > .folder', { timeout: 20_000 })
 const folderRows = page.locator('.folder-node > .folder')
 const folderName = await folderRows.first().locator('.folder-name').textContent()
 await folderRows.first().click({ button: 'right' })
@@ -142,8 +240,7 @@ await page.locator('.filter-chip').first().click()
 await page.waitForTimeout(600)
 
 // Back to Categories for the tag checks.
-await page.locator('.side-mode').nth(0).click()
-await page.waitForTimeout(600)
+await pickMode('categories')
 await page.waitForSelector('.facet', { timeout: 20_000 })
 
 // ----------------------------------------------------------- 3. multi-select tags
@@ -328,12 +425,26 @@ check(
 )
 
 // The value under a moved header has to move with it, or the drag would relabel
-// every column after it.
+// every column after it. The row's cells are read after the table settles: a
+// reload or re-query can leave the row mounted with its cells not yet filled, and
+// an empty read looks like a misalignment.
+await page.waitForFunction(
+  () => {
+    const at = [...document.querySelectorAll('.head-cell')].findIndex(
+      (el) => el.dataset.sortKey === 'durationS'
+    )
+    const cell = document.querySelectorAll('.row[data-path] .cell')[at]
+    return /^\d+:\d\d/.test(cell?.textContent.trim() ?? '')
+  },
+  undefined,
+  { timeout: 20_000 }
+)
 const movedCell = await page.evaluate(() => {
   const at = [...document.querySelectorAll('.head-cell')].findIndex(
     (el) => el.dataset.sortKey === 'durationS'
   )
-  const cells = [...document.querySelectorAll('.row .cell')]
+  // `.row` alone also matches a skeleton row, which has no cells at all.
+  const cells = [...document.querySelectorAll('.row[data-path] .cell')]
   return { at, text: cells[at]?.textContent.trim() ?? '', star: cells[0]?.textContent.trim() ?? '' }
 })
 check(
@@ -368,8 +479,372 @@ const sortableAfterDrag = await page.evaluate(
 )
 check(sortableAfterDrag === '▼', 'a moved header still sorts on click', sortableAfterDrag)
 
+// --------------------------------------- 4b. AUTO PLAY survives its own toggle
+// The on/off state used to be written with `class={…}`, which Solid assigns to
+// `className` wholesale — that wiped Stencil's `hydrated` class, iX hides
+// un-hydrated hosts, and the button disappeared on the first click and never came
+// back. Assert on the marker plus a measured box, on and off, more than once.
+const autoPlayLook = () =>
+  page.evaluate(() => {
+    const host = document.querySelector('#auto-play')
+    const inner = host?.shadowRoot?.querySelector('button')
+    const rect = host?.getBoundingClientRect()
+    return {
+      hydrated: !!host?.classList.contains('hydrated'),
+      pressed: host?.pressed ?? null,
+      width: Math.round(rect?.width ?? 0),
+      visible: inner ? getComputedStyle(inner).visibility !== 'hidden' : false,
+      background: inner ? getComputedStyle(inner).backgroundColor : null
+    }
+  })
+const clickAutoPlay = async () => {
+  await page.evaluate(() => {
+    document.querySelector('#auto-play')?.shadowRoot?.querySelector('button')?.click()
+  })
+  await page.waitForTimeout(450)
+}
+
+const autoStart = await autoPlayLook()
+const looks = [autoStart]
+for (let i = 0; i < 3; i++) {
+  await clickAutoPlay()
+  looks.push(await autoPlayLook())
+}
+check(
+  looks.every((look) => look.hydrated && look.visible && look.width > 20),
+  'AUTO PLAY stays hydrated and visible through repeated toggles',
+  JSON.stringify(looks.map((l) => `${l.pressed ? 'on' : 'off'}:${l.width}px`))
+)
+check(
+  looks[0].pressed !== looks[1].pressed,
+  'the toggle still changes state',
+  `${looks[0].pressed} → ${looks[1].pressed}`
+)
+const onLook = looks.find((look) => look.pressed) ?? null
+const offLook = looks.find((look) => !look.pressed) ?? null
+check(
+  onLook !== null && offLook !== null && onLook.background !== offLook.background,
+  'the on and off states paint different backgrounds',
+  `${onLook?.background} vs ${offLook?.background}`
+)
+// Put it back to the state the profile had, so a later check is not surprised.
+if ((await autoPlayLook()).pressed !== autoStart.pressed) await clickAutoPlay()
+
 // Back to the shipped order so the rest of the run and the next script see default.
 await page.evaluate(() => localStorage.removeItem('mio:column-order'))
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+
+// ------------------------------------------------------- 4c. column widths
+// Drag the BPM header's grip 60px to the right. The header and the rows must agree
+// on every track afterwards: the three grids share one template, and a mismatch is
+// values sitting under the wrong labels.
+//
+// The sort is parked on Name first, so a click that leaks out of the drag gesture
+// shows up as the arrow appearing on BPM rather than as an ambiguous change.
+const gridOf = (selector) =>
+  page.evaluate((selector) => {
+    const el = document.querySelector(selector)
+    if (!el) return null
+    return getComputedStyle(el).gridTemplateColumns.split(' ').map(Number.parseFloat)
+  }, selector)
+const sameTracks = (a, b, tolerance = 1) =>
+  Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+  a.every((width, i) => Math.abs(width - b[i]) <= tolerance)
+
+await page.locator('.head-cell[data-sort-key="filename"]').click()
+await page.waitForTimeout(700)
+
+const grip = await page.locator('.head-cell[data-sort-key="bpm"] .head-resize').boundingBox()
+check(grip !== null, 'a resizable column has a grip in its header', String(grip))
+if (grip) {
+  const headBefore = await gridOf('.table-head')
+  const rowBefore = await gridOf('.row[data-path]')
+  check(sameTracks(headBefore, rowBefore), 'header and rows start on the same tracks')
+  const bpmBefore = headBefore?.[
+    await page.evaluate(() =>
+      [...document.querySelectorAll('.head-cell')].findIndex((el) => el.dataset.sortKey === 'bpm')
+    )
+  ]
+
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(grip.x + grip.width / 2 + 60, grip.y + grip.height / 2, { steps: 8 })
+  await page.mouse.up()
+  await page.waitForTimeout(500)
+
+  const headAfter = await gridOf('.table-head')
+  const rowAfter = await gridOf('.row[data-path]')
+  const bpmAt = await page.evaluate(() =>
+    [...document.querySelectorAll('.head-cell')].findIndex((el) => el.dataset.sortKey === 'bpm')
+  )
+  check(
+    bpmAt >= 0 && headAfter && bpmBefore !== undefined && headAfter[bpmAt] > bpmBefore + 40,
+    'dragging the grip widens the column',
+    `${bpmBefore} → ${headAfter?.[bpmAt]}`
+  )
+  check(
+    sameTracks(headAfter, rowAfter),
+    'the rows follow the resized header track for track',
+    JSON.stringify({ head: headAfter, row: rowAfter })
+  )
+  const storedWidths = await page.evaluate(() => localStorage.getItem('mio:column-widths'))
+  check(
+    typeof storedWidths === 'string' && storedWidths.includes('bpm'),
+    'the dragged width is stored',
+    String(storedWidths)
+  )
+  // A released grip leaves a click behind; it must have been swallowed, not used
+  // as a sort.
+  const leakedSort = await page.evaluate(
+    () =>
+      document.querySelector('.head-cell[data-sort-key="bpm"] .sort-arrow') !== null ||
+      document.querySelector('.head-cell[data-sort-key="filename"] .sort-arrow') === null
+  )
+  check(!leakedSort, 'the click a finished resize leaves behind does not sort the column')
+
+  await page.locator('.head-cell[data-sort-key="bpm"]').click()
+  await page.waitForTimeout(700)
+  const bpmSort = await page.evaluate(
+    () => document.querySelector('.head-cell[data-sort-key="bpm"] .sort-arrow')?.textContent ?? 'none'
+  )
+  check(bpmSort === '▼', 'the column still sorts once the drag is over', bpmSort)
+
+  await page.reload()
+  await page.waitForSelector('.row', { timeout: 90_000 })
+  await page.waitForTimeout(900)
+  const reloadedBpm = await page.evaluate(() => {
+    const head = document.querySelector('.table-head')
+    const at = [...document.querySelectorAll('.head-cell')].findIndex(
+      (el) => el.dataset.sortKey === 'bpm'
+    )
+    return at < 0
+      ? null
+      : Number.parseFloat(getComputedStyle(head).gridTemplateColumns.split(' ')[at])
+  })
+  check(
+    reloadedBpm !== null && reloadedBpm > 100,
+    'the width survives a reload',
+    String(reloadedBpm)
+  )
+}
+
+// ------------------------------------------------ 4d. hiding a column
+// Through the settings dialog, which is the discoverable route. Unchecking BPM must
+// remove its header and its cell, persist, and leave the sort on a visible column.
+await page.evaluate(() => localStorage.removeItem('mio:column-widths'))
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+
+const openSettingsFromGear = async () => {
+  await page.evaluate(() => {
+    const host = document.querySelector('#settings-button')
+    host?.shadowRoot?.querySelector('button')?.click()
+  })
+  await page.waitForTimeout(900)
+}
+
+await openSettingsFromGear()
+const columnsSection = await page.evaluate(() => {
+  const section = document.querySelector('#settings-columns')
+  if (!section) return null
+  const boxes = [...section.querySelectorAll('ix-checkbox')]
+  return {
+    visible: section.getBoundingClientRect().height > 0,
+    boxes: boxes.length,
+    // A trimmed iX bundle leaves the host un-upgraded: an empty inline element
+    // that looks like a blank section. `hydrated` is Stencil's own marker, so it
+    // is the one fact that separates "the control shipped" from "the tag is here".
+    hydrated: boxes.filter((el) => el.classList.contains('hydrated')).length,
+    boxHeights: boxes.map((el) => Math.round(el.getBoundingClientRect().height)),
+    disabled: [...section.querySelectorAll('.column-check')]
+      .filter((el) => el.querySelector('ix-checkbox')?.disabled)
+      .map((el) => el.dataset.column ?? '')
+  }
+})
+check(columnsSection !== null && columnsSection.visible, 'settings has a Columns section')
+check(columnsSection?.boxes === 11, 'the section has one checkbox per column', String(columnsSection?.boxes))
+check(
+  columnsSection?.hydrated === 11,
+  'every column checkbox is a real iX control, not an unupgraded tag',
+  `${columnsSection?.hydrated}/11 hydrated`
+)
+check(
+  columnsSection?.boxHeights.every((height) => height > 8),
+  'the checkboxes have a rendered height',
+  JSON.stringify(columnsSection?.boxHeights)
+)
+check((columnsSection?.disabled.length ?? 0) === 1, 'the pinned star cannot be hidden', JSON.stringify(columnsSection?.disabled))
+
+// Toggle BPM off through the component's own event, the way iX would. `label` is
+// set as a property by Solid, not an attribute, so the column is addressed by its
+// own `data-column` instead.
+await page.evaluate(() => {
+  const section = document.querySelector('#settings-columns')
+  const bpm = section?.querySelector('.column-check[data-column="bpm"] ix-checkbox')
+  bpm?.dispatchEvent(new CustomEvent('checkedChange', { detail: false, bubbles: true }))
+})
+await page.waitForTimeout(500)
+const hiddenNow = await page.evaluate(() => ({
+  heads: document.querySelectorAll('.head-cell[data-sort-key="bpm"]').length,
+  cells: document.querySelector('.row[data-path]')?.querySelectorAll('.cell').length ?? 0,
+  stored: localStorage.getItem('mio:column-hidden')
+}))
+check(hiddenNow.heads === 0, 'unchecking BPM removes its header')
+check(hiddenNow.cells === 10, 'and its cell from every row', String(hiddenNow.cells))
+check(
+  typeof hiddenNow.stored === 'string' && hiddenNow.stored.includes('bpm'),
+  'the hidden set is stored',
+  String(hiddenNow.stored)
+)
+
+// Closing the dialog and reloading must keep the column hidden.
+await page.keyboard.press('Escape')
+await page.waitForTimeout(600)
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+check(
+  (await page.locator('.head-cell[data-sort-key="bpm"]').count()) === 0,
+  'a hidden column stays hidden after a reload'
+)
+
+// Hiding the sorted column has to move the sort to something visible, or the list
+// is ordered by a key with no arrow and no way back.
+await page.evaluate(() => localStorage.setItem('mio:column-hidden', '["bpm","sampleRate"]'))
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+const hiddenHeads = await page.evaluate(() => ({
+  bpm: document.querySelectorAll('.head-cell[data-sort-key="bpm"]').length,
+  rate: document.querySelectorAll('.head-cell[data-sort-key="sampleRate"]').length
+}))
+check(hiddenHeads.bpm === 0 && hiddenHeads.rate === 0, 'several columns can be hidden at once')
+
+// ---------------------------------------------- 4e. header right-click menu
+await page.evaluate(() => localStorage.removeItem('mio:column-hidden'))
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+
+await page.locator('.head-cell[data-sort-key="filename"]').click({ button: 'right' })
+await page.waitForTimeout(300)
+const headerMenu = await page.evaluate(() => ({
+  ids: [...document.querySelectorAll('.menu-item')].map((el) => el.dataset.menuId),
+  checked: [...document.querySelectorAll('.menu-item')].filter(
+    (el) => el.querySelector('.menu-check')?.textContent?.trim() === '✓'
+  ).length,
+  disabled: [...document.querySelectorAll('.menu-item')].filter((el) => el.disabled).length
+}))
+check(
+  headerMenu.ids.length === 12,
+  'the header menu lists every column plus the settings entry',
+  `${headerMenu.ids.length} items`
+)
+check(
+  headerMenu.ids[headerMenu.ids.length - 1] === 'columns-settings',
+  'the last entry opens column settings',
+  headerMenu.ids.join(',')
+)
+check(headerMenu.checked === 11, 'every visible column is ticked', String(headerMenu.checked))
+
+// Clicking a column entry toggles it and closes the menu.
+await page.locator('.menu-item[data-menu-id="column-bpm"]').click()
+await page.waitForTimeout(600)
+const afterMenuToggle = await page.evaluate(() => ({
+  bpm: document.querySelectorAll('.head-cell[data-sort-key="bpm"]').length,
+  menus: document.querySelectorAll('.menu').length
+}))
+check(afterMenuToggle.bpm === 0, 'the menu entry hides the column it names')
+check(afterMenuToggle.menus === 0, 'and the menu closes on selection')
+
+// "Column settings…" opens the dialog already scrolled to the section.
+await page.evaluate(() => localStorage.removeItem('mio:column-hidden'))
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+await page.locator('.head-cell[data-sort-key="filename"]').click({ button: 'right' })
+await page.waitForTimeout(300)
+await page.locator('.menu-item[data-menu-id="columns-settings"]').click()
+await page.waitForTimeout(1200)
+const focusState = await page.evaluate(() => {
+  const modal = [...document.querySelectorAll('ix-modal')].find((el) =>
+    el.querySelector('.theme-card')
+  )
+  const dlg = modal?.shadowRoot?.querySelector('dialog')
+  const section = document.querySelector('#settings-columns')
+  if (!section) return { open: !!dlg?.open, inView: false, top: null }
+  const rect = section.getBoundingClientRect()
+  return {
+    open: !!dlg?.open,
+    inView: rect.top >= 0 && rect.bottom <= window.innerHeight + 2,
+    top: Math.round(rect.top)
+  }
+})
+check(focusState.open, 'the header menu opens the settings dialog')
+check(focusState.inView, 'and it lands on the Columns section', `${focusState.top}px`)
+await page.keyboard.press('Escape')
+await page.waitForTimeout(600)
+
+// ------------------------------------------------------ 4f. horizontal scroll
+// Preset one very wide column, reload, and check the table really overflows and
+// that the header follows the rows when scrolled — a header that stays put is the
+// failure mode the translate is there to prevent.
+await page.evaluate(() =>
+  localStorage.setItem('mio:column-widths', JSON.stringify({ filename: 900 }))
+)
+await page.reload()
+await page.waitForSelector('.row', { timeout: 90_000 })
+await page.waitForTimeout(900)
+const overflow = await page.evaluate(() => {
+  const body = document.querySelector('.table-body')
+  return {
+    scrollWidth: body?.scrollWidth ?? 0,
+    clientWidth: body?.clientWidth ?? 0,
+    tracks: Number.parseFloat(
+      getComputedStyle(document.querySelector('.table-head')).gridTemplateColumns.split(' ')[1]
+    )
+  }
+})
+check(
+  overflow.scrollWidth > overflow.clientWidth,
+  'a wide table gets a horizontal scrollbar',
+  `${overflow.scrollWidth} > ${overflow.clientWidth}`
+)
+check(overflow.tracks > 500, 'the preset width reached the grid', String(overflow.tracks))
+
+await page.evaluate(() => {
+  document.querySelector('.table-body').scrollLeft = 120
+})
+await page.waitForTimeout(300)
+const aligned = await page.evaluate(() => {
+  const head = document.querySelector('.head-cell[data-sort-key="filename"]')
+  const row = document.querySelector('.row[data-path] .cell.name')
+  const headAt = head?.getBoundingClientRect().left ?? 0
+  const rowAt = row?.getBoundingClientRect().left ?? 0
+  return {
+    delta: Math.abs(headAt - rowAt),
+    headAt: Math.round(headAt),
+    rowAt: Math.round(rowAt)
+  }
+})
+check(aligned.delta <= 1, 'the header follows the rows at a scrolled offset', JSON.stringify(aligned))
+
+// Restore the defaults the rest of the run expects, and leave nothing behind for
+// the next script.
+await page.evaluate(
+  ([keys, saved]) => {
+    for (const key of keys) {
+      if (saved[key] === null) localStorage.removeItem(key)
+      else localStorage.setItem(key, saved[key])
+    }
+  },
+  [COLUMN_KEYS, columnSnapshot]
+)
+// Settings and the settings blob are not touched by this script; only the three
+// column keys are restored, exactly as the profile had them (or absent).
 await page.reload()
 await page.waitForSelector('.row', { timeout: 90_000 })
 await page.waitForTimeout(900)

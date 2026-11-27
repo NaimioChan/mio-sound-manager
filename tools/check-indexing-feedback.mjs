@@ -36,6 +36,14 @@ try {
     }
   }
   await page.evaluate(() => localStorage.setItem('mio:locale', 'zh'))
+  // This script assumes all eleven columns are visible to index header cells by key
+  // position; a hidden column from an earlier run would make the failures look like
+  // an index bug.
+  await page.evaluate(() => {
+    localStorage.removeItem('mio:column-hidden')
+    localStorage.removeItem('mio:column-widths')
+    localStorage.removeItem('mio:column-order')
+  })
   await page.reload()
   await page.waitForSelector('.row[data-path]', { timeout: 30_000 })
   await page.setViewportSize({ width: 1280, height: 760 })

@@ -123,12 +123,14 @@ export const en = {
   'col.description': 'Description',
   'col.sortBy': 'Sort by {column}',
   'col.reorder': 'drag to reorder columns',
+  'colMenu.settings': 'Column settings…',
   'row.addFavorite': 'Add to favorites',
   'row.removeFavorite': 'Remove from favorites',
   'table.noMatch': 'No sounds match.',
   'table.searching': 'searching…',
 
   // ----------------------------------------------------------------- sidebar
+  'side.view': 'View',
   'side.categories': 'Categories',
   'side.ucs': 'UCS',
   'side.ucsPrefix': 'UCS / {name}',
@@ -189,7 +191,7 @@ export const en = {
   'settings.reveal': 'Reveal',
   'settings.addLibrary': 'Add another library',
   'settings.openLibrary': 'Open library…',
-  'settings.showCategory': 'Show the category column',
+  'settings.columns': 'Columns',
   'settings.behaviour': 'Behaviour',
   'settings.autoPlay': 'Auto-play on select',
   'settings.appearance': 'Appearance',

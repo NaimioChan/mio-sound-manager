@@ -175,17 +175,19 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 **顶栏左侧是产品标记加产品名。** 标记是 `ui/src/assets/brand.svg`，`App.tsx` 用 `import brandLogo from './assets/brand.svg'` 交给 Vite——它会带上 hash 进 `dist/assets/`，被 CSP 的 `img-src 'self'` 覆盖，也不会在组件里再抄一份路径。用 `<img alt="" aria-hidden="true">`：产品名就在旁边，读屏再念一遍标记是噪音。高度 26px、宽度自适应（原图 1000×829），`flex: none` 让名字在窄窗口下压不到它。**标记不跟着主题换色**：那两组蓝是品牌色，不是界面色，`--theme-*` 换成 Tokyo Night 的紫时 logo 保持原样才对。
 
-**库条目在视觉上高于它下面的树。** 库头部是 650 字重、带底色块、顶部一条分隔线，活跃库另有左侧强调条；树行是 400 字重、无底色。这不是装饰：库条目带自己的右键菜单，看起来像树的一行会让人想不到那里能右键。
+**库条目在视觉上高于它下面的树。** 库头部是 650 字重、带底色块、顶部一条分隔线，活跃库的背景是 `ghost--selected` 并带左侧 2px 强调条（与选中分类行、选中文件行同一组 token）；树行是 400 字重、无底色。这不是装饰：库条目带自己的右键菜单，看起来像树的一行会让人想不到那里能右键。库头**没有折叠三角**——库不是树节点，把正在看的库折起来正好是设计拒绝的状态；行首留一个 `.twisty spacer` 只为保持名字缩进。折叠整条侧栏是另一个功能，会有自己的入口。
 
-**设置页四节：Audio / Library / Behaviour / Appearance。** Audio 是输出设备选择（WASAPI 端点与 ASIO 驱动合成一个下拉）加一行当前格式与周期。Library 是当前库、显示索引、添加库、每页行数、分类列。Behaviour 是选中即播放与无限滚动。Appearance 是主题卡片、界面缩放与语言。库的管理动作（切库、重建索引、关闭）不在这里——见「多库」。
+**设置页五节：Audio / Library / Columns / Behaviour / Appearance。** Audio 是输出设备选择（WASAPI 端点与 ASIO 驱动合成一个下拉）加一行当前格式与周期。Library 是当前库、显示索引、添加库、每页行数。Columns 是逐列的显隐复选框（两列排布，收藏星禁用）。Behaviour 是选中即播放与无限滚动。Appearance 是主题卡片、界面缩放与语言。库的管理动作（切库、重建索引、关闭）不在这里——见「多库」。
 
 **设置项不解释自己。** 一行就是标签加控件；唯一的第二行文字是控件说不出来的状态：设备打不开的原因、当前实际打开的格式与周期、某个动作会作用到多少条。主题卡片只保留名字与色板，原来那六句「适合长时间使用」之类的说明删掉了，`Theme` 上也不再带 `hintKey`。产品名下面那句 `samples`、设置弹窗标题下的 `Device, library, appearance`、分类弹窗的 `N sounds` 同样删掉了；`N sounds` 改到正文第一行，因为它说的是这次操作的范围，不是标题的注解。
 
 **界面缩放走 webview 的 zoom factor，不是 CSS。** `zoom.ts` 调 `getCurrentWebview().setZoom(0.8…1.5)`，WebView2 的 `SetZoomFactor` 把布局、文字、图片一起重排，命中区域和波形画布都跟着变；换成 CSS `zoom` 或 `rem` 倍率会让画布留在设备像素上、表格那套 px 几何也留在原处。该能力不在 `core:default` 里，`capabilities/default.json` 必须显式加 `core:webview:allow-set-webview-zoom`，否则命令被 ACL 拒绝而界面上只表现为「选了没反应」。存储键 `mio:zoom`，取值就是百分比，选择器显示什么就存什么。
 
-**排序名和行字段名是两套。** 渲染层按行字段排序（`durationS`、`sampleRate`），索引层白名单用的是 SQL 列名（`duration`、`sample_rate`）。`SORT_WIRE`（`SoundTable.tsx`）是唯一做这个翻译的地方。第一版把行字段名直接当 `sortBy` 发出去，`search` 报 `unknown sort column durationS`；而且因为失败那次之后排序值没变，后续每次搜索都带着同一个坏名字，于是点一次 Length 之后分类和文件夹筛选也一起失效——直到用户改去点 Name。
+**排序名和行字段名是两套。** 渲染层按行字段排序（`durationS`、`sampleRate`），索引层白名单用的是 SQL 列名（`duration`、`sample_rate`）。`SORT_WIRE`（`ui/src/columns.ts`）是唯一做这个翻译的地方。第一版把行字段名直接当 `sortBy` 发出去，`search` 报 `unknown sort column durationS`；而且因为失败那次之后排序值没变，后续每次搜索都带着同一个坏名字，于是点一次 Length 之后分类和文件夹筛选也一起失效——直到用户改去点 Name。
 
-**列顺序可以拖，表头与单元格是同一份列表生成的。** 列头 `draggable`，拖到另一列的左半或右半分别插到它前面或后面；顺序存在 `mio:column-order`（键的数组，缺的键自动补到末尾，删掉的键自动丢弃）。两处约束不是装饰：收藏星钉在最前（一格宽、无文字，拖到别处就认不出是什么列），拖动顺序**不改排序**（点表头仍然是排序）。单元格从定序的 `<span>` 改成 `Cell` 组件、按列键渲染——不同源就会在拖动后把「Length」的标签压在采样率上，这种错 CSS 抓不到。判据在 `check-tags.mjs`：拖动后表头顺序、单元格数值、`localStorage`、重载后顺序、以及拖动过的列头仍能点排序，五项都断言。
+**列宽可拖、列可显隐、宽表横向滚动。** 列定义、顺序、显隐与宽度只有一个拥有者：`ui/src/columns.ts`（`SortKey`、`COLUMNS`、`SORT_WIRE`、`DEFAULT_DIR` 都在那里，`SoundTable` 不再导出）。表头、骨架行、真实行三处用同一个 `gridTemplate()`，并且**全部是像素轨道**——`fr` 会随窗口重算，用户拖出来的宽度换一个窗口尺寸就变成另一个值。代价是窗口收窄或界面缩放时会出现横向滚动条，这是有意的取舍（Explorer 同理），不要为了消灭滚动条把 `fr` 加回来。宽度存 `mio:column-widths`、显隐存 `mio:column-hidden`、顺序存 `mio:column-order`，各自容错、各自整体替换（原地改 `Set` / 对象不会触发 Solid 通知）。表头每列右侧有 5px 的 `.head-resize` 把手：拖动时窗口级监听、`pointercancel` 也收尾、`pointerup` 时落盘；拖宽期间必须把表头的 `draggable` 关掉（把手是排序按钮的子元素，不关就会把拖宽变成拖列序），松手后还要吞掉一次 click（否则顺手排了个序）。双击把手恢复默认宽。隐藏排序列时回退到 Name 排序，否则列表按一个看不见的列排序、箭头也消失。设置页的 Columns 一节与表头右键菜单都能切换显隐；`favorite` / `filename` 不可隐藏、不可拖、不可缩放。
+
+**横向滚动时表头被 `translateX` 平移跟随，不做 `sticky`。** 表头在滚动容器之外，`sticky` 会让它占掉 28px 滚动内容高度，于是 `viewportSegments`、`scrollToRow`、spacer 高度全部要改；包装层（`.table-head-wrap` 裁切 + 表头 `translateX(-scrollLeft)`）只多一个平移量。表头宽 `max(totalWidth, 100% - scrollbar)`，行的占位 div 用同一个 `min-width`，所以溢出与否两边右边界都对得上——`check-layout` 会在 `scrollLeft=120` 时再断言一次，因为不滚动的表头在偏移 0 处看不出问题。
 
 **第一页查询在进行中时 `data-querying="true"`。** 列表不阻塞：旧行还在、还能点，但查询落地时要整批换掉。这个标志既是表尾的 `searching…`，也是 `tools/` 里 CDP 脚本等待的信号——之前脚本靠 sleep 猜，猜早了点在即将被卸载的行上，选中跟着丢，看起来像点击处理器坏了。
 
@@ -193,7 +195,7 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 **分类与子分类可多选。** 点击替换、Ctrl+点击增删、再点唯一已选中的那行则清空。两侧的筛选语义不同：分类之间是 `IN (…)`（或），分类与子分类之间是 AND。这也是为什么点一个子分类会同时点亮它的父分类——只亮子行而不亮父行，两个筛选条件相交就是空集，界面上却看不出原因。行上带 `data-category` / `data-subcategory` / `data-folder`，选择器不依赖翻译过的文案。
 
-**分类/文件夹切换按钮是拼接的分段控件。** 两半共用一条边（第二个 `margin-left: -1px`，不是 `border-left: none`）。去掉左边框的写法让选中态缺一条边：`on` 把边框刷成强调色，缺的那条就是半个高亮框。`on` 另外加 `position: relative; z-index: 1`，否则邻边的边框会盖住共用的那条。
+**侧栏模式是一个下拉，不是一个分段控件。** Categories / UCS / Folders 三选一，控件是 `ix-select`：三个标签在 232px 的侧栏里排成一行会挤到看不清，而设置页已经用同一套下拉做同类选择。模式只由 `App.tsx` 持有（`mio:sidebar-mode`，旧键 `mio:facet-mode` 做一次性迁移），因为切换模式同时要清空分类侧的五个筛选数组——同一个事实有两个拥有者就会互相打架。切模式**不清** `folder` 和 `favoritesOnly`：它们是独立筛选，各自有 chip，用户没点就不该消失。选完模式后焦点要还给窗口：`ix-select` 的内部输入框会留住焦点，而 `keyboard.ts` 把 `IX-SELECT` 判作文本输入，不 blur 的话方向键在下拉里移光标而不是移列表。
 
 **文件夹行有自己的右键菜单。** 面板与行菜单、库菜单是同一个 `ContextMenu`；条目是「在文件管理器中显示」「只看此文件夹」「复制文件夹路径」。根行（All folders）没有菜单——它代表整个库，三个动作都无从谈起。
 
@@ -221,21 +223,25 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 **循环按钮必须是 `ix-icon-toggle-button`，不是 `ix-icon-button`。** iX 5 的 `ix-icon-button` 在 `render()` 里把 `selected` 硬写成 `false`，所以传 `selected={props.looping}` 什么也没发生——循环开着和关着在像素上完全一样，这就是「开关指示不明确」的真正原因。`ix-icon-toggle-button` 把 `pressed` 转成同一个 `.selected` 类，并且补上 `aria-pressed`。它的 `secondary` 按下态是 accent 的 16%，在深色 dock 上仍然太淡，所以 `#transport-loop.on` 用 `--theme-btn-tertiary--*` 一组 token 把它覆盖成实心 accent + 对比色文字，并且覆盖 hover/active/pressed 全状态，避免按下的一瞬间闪回淡色。开关之外，标题与 `aria-label` 会说出当前循环的是什么（`整个文件` 或时间区间），因为「开」本身不区分 400ms 选区与三分钟整曲。
 
+**AUTO PLAY 的开关态用同一套解法：`#auto-play.on` 覆盖 `--theme-btn-secondary--*`。** 它的 `secondary` 按下态是 `--theme-color-component-7`（accent 16%），未按下态是 accent 14%，两者在 dock 的 `--theme-color-2` 上几乎同色——开和关在像素上分不出来，正是循环按钮当初的问题。开态是实心 `--theme-color-primary` + `--theme-color-primary--contrast` 文字与边框；关态是透明底 + `--theme-color-4` 描边 + soft 文字，`hover` 时升到 3 号边与普通文字。hover/active/pressed/pressed-hover/pressed-active 与 disabled 全部覆盖，缺一个就在某个交互态闪回 16%。**这个类必须用 `classList={{ on }}` 写**：`class={…}` 会被 Solid 整体赋给 `className`，把 Stencil 的 `hydrated` 抹掉，iX 于是把按钮隐藏——表现是「点一下就消失」。`check-themes.mjs` 对七套主题各测一次 primary/contrast 对比度（≥4.5），`check-interactions.mjs` 断言默认值为开并在结束时还原 profile，`check-tags.mjs` 连点三次断言它仍 hydrated、仍有渲染尺寸。
+
 **静音是临时静音，不是把音量改成 0。** 取消静音必须回到用户调的那个值，所以「回到哪个值」存在独立的 `mio:unmute-gain`，只在滑杆离开 0 或按下静音时写入。这里有个真 bug：`Number(localStorage.getItem(k)) || 1` 会把存着的 `0` 当成「没存」——静音后重载显示 100%，下一次取消静音又把这个 100% 覆盖掉记忆值。`readStoredGain` 只对缺失或非数值回落。
 
 **类名不要用 `.empty`。** 它是整窗空状态（`padding: 40px`、`height: 100%`），任何 `.foo.empty` 都会连带命中。叶子节点那个占位 twisty 因此叫 `.twisty.spacer`。
 
 ## 西门子 iX 设计系统
 
-前端用 `@siemens/ix` 5.3 的 web components 重写，布局与交互不变。组件层面用到的：`ix-button`、`ix-icon-button`、`ix-toggle-button`、`ix-slider`、`ix-input`、`ix-toggle`、`ix-select`、`ix-chip`、`ix-pill`、`ix-modal`、`ix-progress-indicator`、`ix-icon`。表格、侧栏、右键菜单、波形 dock 仍是自己的 DOM——iX 没有虚拟化表格，而 27 万行的列表不能交给一个每行都建组件的实现。
+前端用 `@siemens/ix` 5.3 的 web components 重写，布局与交互不变。组件层面用到的：`ix-button`、`ix-checkbox`、`ix-icon-button`、`ix-toggle-button`、`ix-slider`、`ix-input`、`ix-toggle`、`ix-select`、`ix-chip`、`ix-pill`、`ix-modal`、`ix-progress-indicator`、`ix-icon`。表格、侧栏、右键菜单、波形 dock 仍是自己的 DOM——iX 没有虚拟化表格，而 27 万行的列表不能交给一个每行都建组件的实现。
 
 **颜色一律来自 `--theme-*`。** `styles.css` 里没有一个字面色值（只有几何尺寸）。这是主题系统能工作的前提：主题改一次 token，iX 组件、自有 CSS、canvas 三处一起变。
 
-**Solid 与 iX 的接线有三处要注意：**
+**Solid 与 iX 的接线有五处要注意：**
 
-1. **普通属性绑定就够。** `value={signal()}` 会写成 property，signal 变化时 iX 组件跟着更新（浏览器里验过，不需要 `prop:` 前缀）。
+1. **普通属性绑定就够。** `value={signal()}` 会写成 property，signal 变化时 iX 组件跟着更新（浏览器里验过，不需要 `prop:` 前缀），但 `data-*` 不是——Solid 把它当 property 赋值，自定义元素没有那个 property，属性就不会出现在 DOM 里。要断言用的键写在包装元素上，别写在 iX host 上。
 2. **CustomEvent 用 `on:` 前缀。** `on:valueChange`、`on:checkedChange`、`on:pressedChange`、`on:closeChip`。Solid 走 `addEventListener`，`detail` 在 `event.detail` 上。
 3. **`aria-label` 会被 iX 搬走。** iX 的 `InheritAriaAttributesMixin` 把 host 上的 `aria-*` 移到 shadow root 内的 `<button>` 上并**从 host 删除**。所以 CDP 脚本读标签要读内层按钮，读 host 会拿到 `null`。
+4. **类名用 `classList`，绝不用 `class`。** Solid 的 `class={…}` 是 `className` 的整体赋值，会把 Stencil 的 `hydrated` / `sc-*` 一起覆盖掉；iX 对 `:not(.hydrated)` 的 host 是 `visibility:hidden`，症状是控件「用一下就消失」。
+5. **`vite.config.ts` 的 `IX_TAGS` 是这个项目的 iX 白名单。** 构建后 `trimIxChunks` 把不在名单里的 entry 换成 `data:text/javascript,`，CSP 拒绝加载，标签永不升级：设置页那块区域就是一片空白，控制台只有 `Constructor for "ix-x#undefined" was not found`。新增任何 `<ix-*>` 都要同步那里，并先在 `ix-elements.d.ts` 补类型。
 
 **iX 元素在 Solid 里需要类型声明。** `src/ix-elements.d.ts` 给用到的每个标签声明了属性；基础类型继承 `JSX.DOMAttributes<HTMLElement>`，否则连 `onClick` 都不认。`children` 也要显式声明——Solid 的 JSX 不自动加。
 
@@ -360,12 +366,12 @@ node ui/node_modules/@tauri-apps/cli/tauri.js icon logo/app-icon-1024.png -o cra
 
 **窗口内交互用 CDP 驱动真实窗口验证，不靠人看**（先 `./tools/run-app.sh` 起窗口，再跑脚本）：
 
-- `tools/check-interactions.mjs`——列表渲染、点击选中与激活、Ctrl/Shift 多选、状态栏计数、点列头排序并翻转方向、搜索过滤与空结果、右键菜单、分类 modal 打开/尺寸/Escape 关闭、`AUTO PLAY` 文字与切换并持久化、播放头推进/暂停冻结/Stop 归零、波形点击 seek、设置 modal 与主题卡片。
+- `tools/check-interactions.mjs`——列表渲染、点击选中与激活、Ctrl/Shift 多选、状态栏计数、点列头排序并翻转方向、搜索过滤与空结果、右键菜单、分类 modal 打开/尺寸/Escape 关闭、`AUTO PLAY` 文字与切换并持久化（含「未覆盖设置前默认是开」的回归断言，脚本结束把 profile 还原）、播放头推进/暂停冻结/Stop 归零、波形点击 seek、设置 modal 与主题卡片。
 - `tools/check-region.mjs`——行真的可拖（`row.draggable === true` 且 `draggable="true"`）、波形拖拽选出区域、循环开关读到引擎且带选区、Esc 清选区后循环回落到整个文件、`export_region` 写出 WAV 并返回路径、最后真派发一次 `dragstart`。**这一份跑完 webview 会因原生 OLE 拖拽而不再响应 IPC**，必须单独跑、跑完重启应用。
-- `tools/check-themes.mjs`——七套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、背景与文字的高低关系符合该主题的 schema（按 `data-ix-color-schema` 判，不按 id 猜）、覆盖块真的注入了且不是空块、**存着已删除的 `classic-dark` 时回退到默认**、重载后主题仍在，每套主题各自跑一遍十处文本元素的 WCAG 对比度。
+- `tools/check-themes.mjs`——七套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、背景与文字的高低关系符合该主题的 schema（按 `data-ix-color-schema` 判，不按 id 猜）、覆盖块真的注入了且不是空块、**存着已删除的 `classic-dark` 时回退到默认**、重载后主题仍在，每套主题各自跑一遍十处文本元素的 WCAG 对比度，以及 AUTO PLAY 开态的 primary/contrast 对比度。
 - `tools/check-volume.mjs`——滑杆经 `valueChange` 改值后读**引擎的** `get_gain`（另一条命令，只改前端状态的实现过不了这一项）、静音→取消静音回到设定值（不是 100%）、静音后重载仍回到那个值、重载后电平仍在且被推回引擎。
 - `tools/check-layout.mjs`——五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、dock 控件簇的**顺序**（音量 → AUTO PLAY → 循环 → 暂停 → 停止）与间距、音量滑杆宽度、无元素逃出视口（滚动容器内的不算）。
-- `tools/check-tags.mjs`——分类/文件夹切换按钮的边框、设置弹窗反复重开、BPM 列与排序、列顺序拖动（表头与单元格同源、持久化、重载后保留、拖动后仍能排序、收藏星不可拖）、索引卡片无解释小字、tag 多选、文件夹右键菜单、界面缩放在 `innerWidth` 上真的生效、设置页无解释小字/无副标题。
+- `tools/check-tags.mjs`——侧栏模式下拉（存储、旧键迁移、切模式后的键盘导航）、库头无折叠三角与活跃态、文件夹行右键菜单、分类多选、BPM 列与排序、列拖动重排（表头与单元格同源、持久化、拖动后仍能排序、收藏星不可拖）、列宽拖动与重载保留、设置页与表头菜单的列显隐、表头右键菜单内容、横向滚动后的表头/行对齐、索引卡片无解释小字、界面缩放在 `innerWidth` 上真的生效、设置页无解释小字/无副标题。
 - `tools/check-i18n.mjs`——三语字典的键集与占位符一致性（`tsc` 管不到的那部分）。
 - `tools/check-shipped.mjs`——对着**打包产物**而不是 `target/release`：解压 zip、用调试端口起那个 exe，断言窗口标题、`asio_compiled=true`、引擎开到设备、`#transport-loop` / `#volume-mute` / `.dock-hints` 存在、`get_loop` 有应答。对着开发目录跑它会漏掉打包环节的问题。
 - `tools/shot.mjs` / `shot-themes.mjs`——截图，给人看，不做断言。

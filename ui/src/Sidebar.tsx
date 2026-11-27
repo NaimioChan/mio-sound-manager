@@ -29,9 +29,8 @@ import { ICON } from './icons'
  * clears the filter. The index ORs categories and intersects them with
  * subcategories, so several lit rows are one query.
  */
-type Mode = 'categories' | 'ucs' | 'folders'
+export type SidebarMode = 'categories' | 'ucs' | 'folders'
 
-const MODE_KEY = 'mio:sidebar-mode'
 /** Expanded folders, remembered per library root. */
 const EXPANDED_PREFIX = 'mio:folders-expanded:'
 
@@ -71,7 +70,12 @@ interface Props {
   ucsCategories: string[]
   ucsSubcategories: { category: string; sub: string }[]
   ucsCatIds: string[]
-  facetMode: 'mio' | 'ucs'
+  /**
+   * Which facet tree the rail shows. Owned by `App` so that switching modes and
+   * clearing the filters that mode applied happen in one place; the rail only
+   * renders it.
+   */
+  mode: SidebarMode
   folder: string | null
   favoritesOnly: boolean
   onActivate: (root: string) => void
@@ -80,7 +84,7 @@ interface Props {
   onSubcategory: (category: string, subcategory: string, additive: boolean) => void
   onUcsCategory: (category: string | null, additive: boolean) => void
   onUcsSubcategory: (category: string, subcategory: string, additive: boolean, catId?: string) => void
-  onFacetMode: (mode: 'mio' | 'ucs') => void
+  onMode: (mode: SidebarMode) => void
   onFolder: (folder: string | null) => void
   onToggleFavorites: () => void
   onOpenSettings: () => void
@@ -103,22 +107,7 @@ function additiveOf(event: MouseEvent): boolean {
 }
 
 export function Sidebar(props: Props) {
-  const [mode, setMode] = createSignal<Mode>(
-    localStorage.getItem(MODE_KEY) === 'folders'
-      ? 'folders'
-      : localStorage.getItem(MODE_KEY) === 'categories'
-        ? 'categories'
-        : localStorage.getItem('mio:facet-mode') === 'mio'
-          ? 'categories'
-          : 'ucs'
-  )
   const [expandedCats, setExpandedCats] = createSignal<Set<string>>(new Set())
-  /**
-   * Which library groups are collapsed. The active library always expands: a rail
-   * where the library you are looking at is folded shut is a rail that hides its
-   * own contents.
-   */
-  const [collapsedLibs, setCollapsedLibs] = createSignal<Set<string>>(new Set())
   /**
    * Folders whose children are open, by path.
    *
@@ -149,9 +138,13 @@ export function Sidebar(props: Props) {
     saveExpanded(activeRoot(), next)
   }
 
-  const changeMode = (next: Mode) => {
-    setMode(next)
-    localStorage.setItem(MODE_KEY, next)
+  const changeMode = (next: SidebarMode) => {
+    props.onMode(next)
+    // `keyboard.ts` counts IX-SELECT as a text field, so after picking a mode the
+    // inner input keeps focus and the arrow keys move a text caret instead of the
+    // list. Handing focus back to the body makes the table navigable again; the
+    // select must stay in that set or typing into its filter would steer the table.
+    ;(document.activeElement as HTMLElement | null)?.blur()
   }
 
   const toggleCat = (name: string) => {
@@ -160,16 +153,6 @@ export function Sidebar(props: Props) {
     else next.add(name)
     setExpandedCats(next)
   }
-
-  const toggleLib = (root: string) => {
-    const next = new Set(collapsedLibs())
-    if (next.has(root)) next.delete(root)
-    else next.add(root)
-    setCollapsedLibs(next)
-  }
-
-  const isOpen = (library: LibraryStatus) =>
-    library.active || !collapsedLibs().has(library.root)
 
   /**
    * The index returns one row per `(category, subcategory)`. The rail wants
@@ -310,40 +293,21 @@ export function Sidebar(props: Props) {
   }
 
   return (
-    <aside class="sidebar">
+    <aside class="sidebar" data-sidebar-mode={props.mode}>
       <div class="side-modes">
-        <button
-          class={mode() === 'categories' ? 'side-mode on' : 'side-mode'}
-          data-sidebar-mode="categories"
-          onClick={() => {
-            changeMode('categories')
-            props.onFacetMode('mio')
-          }}
+        <ix-select
+          id="sidebar-mode"
+          value={props.mode}
+          allowClear={false}
+          aria-label={t('side.view')}
+          on:valueChange={(e: CustomEvent<string>) => changeMode(e.detail as SidebarMode)}
         >
-          {t('side.categories')}
-        </button>
+          <ix-select-item value="categories" label={t('side.categories')} />
+          <ix-select-item value="ucs" label={t('side.ucs')} />
+          <ix-select-item value="folders" label={t('side.folders')} />
+        </ix-select>
         <button
-          class={mode() === 'ucs' ? 'side-mode on' : 'side-mode'}
-          data-sidebar-mode="ucs"
-          onClick={() => {
-            changeMode('ucs')
-            props.onFacetMode('ucs')
-          }}
-        >
-          {t('side.ucs')}
-        </button>
-        <button
-          class={mode() === 'folders' ? 'side-mode on' : 'side-mode'}
-          data-sidebar-mode="folders"
-          onClick={() => {
-            changeMode('folders')
-            props.onFacetMode('mio')
-          }}
-        >
-          {t('side.folders')}
-        </button>
-        <button
-          class="side-mode gear"
+          class="side-gear"
           onClick={props.onOpenSettings}
           title={t('topbar.settings')}
           aria-label={t('topbar.settingsLabel')}
@@ -372,131 +336,121 @@ export function Sidebar(props: Props) {
                   }}
                   title={library.root}
                 >
-                  <span
-                    class="twisty"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      toggleLib(library.root)
-                    }}
-                  >
-                    {isOpen(library) ? '▾' : '▸'}
-                  </span>
+                  <span class="twisty spacer" aria-hidden="true" />
                   <span class="lib-name">{library.name}</span>
                   <span class="count">{library.count.toLocaleString()}</span>
                 </button>
 
-                <Show when={isOpen(library)}>
-                  <Show when={library.active}>
-                    <Show when={mode() === 'categories' || mode() === 'ucs'}>
-                      <button
-                        class={props.favoritesOnly ? 'facet selected' : 'facet'}
-                        onClick={props.onToggleFavorites}
-                        title={t('side.favoritesOnly')}
-                      >
-                        <span class="facet-name">★ {t('side.favorites')}</span>
-                        <span class="count">{props.favorites.toLocaleString()}</span>
-                      </button>
-                      <button
-                        class={
-                          (mode() === 'ucs' ? props.ucsCategories.length === 0 : props.categories.length === 0) &&
-                          !props.favoritesOnly
-                            ? 'facet selected'
-                            : 'facet'
-                        }
-                        data-category=""
-                         onClick={() =>
-                           mode() === 'ucs'
-                             ? props.onUcsCategory(null, false)
-                             : props.onCategory(null, false)}
-                        title={t('side.allSounds')}
-                      >
-                        <span class="facet-name">{t('side.allSounds')}</span>
-                        <span class="count">{props.total.toLocaleString()}</span>
-                      </button>
+                <Show when={library.active}>
+                  <Show when={props.mode === 'categories' || props.mode === 'ucs'}>
+                    <button
+                      class={props.favoritesOnly ? 'facet selected' : 'facet'}
+                      onClick={props.onToggleFavorites}
+                      title={t('side.favoritesOnly')}
+                    >
+                      <span class="facet-name">★ {t('side.favorites')}</span>
+                      <span class="count">{props.favorites.toLocaleString()}</span>
+                    </button>
+                    <button
+                      class={
+                        (props.mode === 'ucs' ? props.ucsCategories.length === 0 : props.categories.length === 0) &&
+                        !props.favoritesOnly
+                          ? 'facet selected'
+                          : 'facet'
+                      }
+                      data-category=""
+                      onClick={() =>
+                         props.mode === 'ucs'
+                           ? props.onUcsCategory(null, false)
+                           : props.onCategory(null, false)}
+                      title={t('side.allSounds')}
+                    >
+                      <span class="facet-name">{t('side.allSounds')}</span>
+                      <span class="count">{props.total.toLocaleString()}</span>
+                    </button>
 
-                      <For each={mode() === 'ucs' ? (props.ucsCatalog.length > 0 ? ucsCatalogGroups() : ucsGroups()) : groups()}>
-                        {(group) => (
-                          <>
-                            <button
-                              class={(mode() === 'ucs' ? ucsCategoryLit(group.name) : categoryLit(group.name)) ? 'facet selected' : 'facet'}
-                              data-category={group.name}
-                              onClick={(event) =>
-                                mode() === 'ucs'
-                                  ? props.onUcsCategory(group.name, additiveOf(event))
-                                  : props.onCategory(group.name, additiveOf(event))}
-                              title={`${group.name} (${group.count.toLocaleString()})`}
+                    <For each={props.mode === 'ucs' ? (props.ucsCatalog.length > 0 ? ucsCatalogGroups() : ucsGroups()) : groups()}>
+                      {(group) => (
+                        <>
+                          <button
+                            class={(props.mode === 'ucs' ? ucsCategoryLit(group.name) : categoryLit(group.name)) ? 'facet selected' : 'facet'}
+                            data-category={group.name}
+                            onClick={(event) =>
+                              props.mode === 'ucs'
+                                ? props.onUcsCategory(group.name, additiveOf(event))
+                                : props.onCategory(group.name, additiveOf(event))}
+                            title={`${group.name} (${group.count.toLocaleString()})`}
+                          >
+                            <span
+                              class="twisty"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                toggleCat(group.name)
+                              }}
                             >
-                              <span
-                                class="twisty"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  toggleCat(group.name)
-                                }}
+                              <Show
+                                when={group.children.length > 0}
+                                fallback={<span class="twisty-spacer" />}
                               >
-                                <Show
-                                  when={group.children.length > 0}
-                                  fallback={<span class="twisty-spacer" />}
+                                {expandedCats().has(group.name) ? '▾' : '▸'}
+                              </Show>
+                            </span>
+                            <span class="facet-name">{categoryName(group.name)}</span>
+                            <span class="count">{group.count.toLocaleString()}</span>
+                          </button>
+
+                          <Show when={expandedCats().has(group.name)}>
+                            <For each={group.children}>
+                              {(child) => (
+                                <button
+                                  class={
+                                    (props.mode === 'ucs'
+                                       ? ucsSubcategoryLit(group.name, child.filterName ?? child.name)
+                                       : subcategoryLit(group.name, child.name))
+                                      ? 'facet sub selected'
+                                      : 'facet sub'
+                                  }
+                                  data-category={group.name}
+                                  data-subcategory={child.filterName ?? child.name}
+                                  data-ucs-cat-id={child.catId}
+                                  onClick={(event) =>
+                                     props.mode === 'ucs'
+                                        ? props.onUcsSubcategory(group.name, child.filterName ?? child.name, additiveOf(event), child.catId)
+                                       : props.onSubcategory(group.name, child.name, additiveOf(event))}
+                                  title={`${group.name} / ${child.name}`}
                                 >
-                                  {expandedCats().has(group.name) ? '▾' : '▸'}
-                                </Show>
-                              </span>
-                              <span class="facet-name">{categoryName(group.name)}</span>
-                              <span class="count">{group.count.toLocaleString()}</span>
-                            </button>
+                                  <span class="facet-name">{categoryName(child.name)}</span>
+                                  <span class="count">{child.count.toLocaleString()}</span>
+                                </button>
+                              )}
+                            </For>
+                          </Show>
+                        </>
+                      )}
+                    </For>
+                  </Show>
 
-                            <Show when={expandedCats().has(group.name)}>
-                              <For each={group.children}>
-                                {(child) => (
-                                  <button
-                                    class={
-                                       (mode() === 'ucs'
-                                         ? ucsSubcategoryLit(group.name, child.filterName ?? child.name)
-                                         : subcategoryLit(group.name, child.name))
-                                        ? 'facet sub selected'
-                                        : 'facet sub'
-                                    }
-                                    data-category={group.name}
-                                    data-subcategory={child.filterName ?? child.name}
-                                    data-ucs-cat-id={child.catId}
-                                     onClick={(event) =>
-                                       mode() === 'ucs'
-                                          ? props.onUcsSubcategory(group.name, child.filterName ?? child.name, additiveOf(event), child.catId)
-                                         : props.onSubcategory(group.name, child.name, additiveOf(event))}
-                                    title={`${group.name} / ${child.name}`}
-                                  >
-                                    <span class="facet-name">{categoryName(child.name)}</span>
-                                    <span class="count">{child.count.toLocaleString()}</span>
-                                  </button>
-                                )}
-                              </For>
-                            </Show>
-                          </>
-                        )}
-                      </For>
-                    </Show>
-
-                    <Show when={mode() === 'folders'}>
-                      {/* The empty twisty slot keeps this row's name on the same
-                          left edge as the folder rows below it. Without it the
-                          root sits 16px to the left of every child, which reads
-                          as a different kind of thing rather than the top of the
-                          same tree. */}
-                      <button
-                        class={props.folder === null ? 'folder selected' : 'folder'}
-                        style={{ 'padding-left': '4px' }}
-                        onClick={() => props.onFolder(null)}
-                      >
-                        <span class="twisty spacer" />
-                        <span class="folder-name">{t('side.allFolders')}</span>
-                        <span class="count">{library.count.toLocaleString()}</span>
-                      </button>
-                      <Show when={props.folders} fallback={<div class="side-empty">…</div>}>
-                        {(root) => (
-                          <For each={root().children}>
-                            {(child) => renderFolder(child, 0)}
-                          </For>
-                        )}
-                      </Show>
+                  <Show when={props.mode === 'folders'}>
+                    {/* The empty twisty slot keeps this row's name on the same
+                        left edge as the folder rows below it. Without it the
+                        root sits 16px to the left of every child, which reads
+                        as a different kind of thing rather than the top of the
+                        same tree. */}
+                    <button
+                      class={props.folder === null ? 'folder selected' : 'folder'}
+                      style={{ 'padding-left': '4px' }}
+                      onClick={() => props.onFolder(null)}
+                    >
+                      <span class="twisty spacer" />
+                      <span class="folder-name">{t('side.allFolders')}</span>
+                      <span class="count">{library.count.toLocaleString()}</span>
+                    </button>
+                    <Show when={props.folders} fallback={<div class="side-empty">…</div>}>
+                      {(root) => (
+                        <For each={root().children}>
+                          {(child) => renderFolder(child, 0)}
+                        </For>
+                      )}
                     </Show>
                   </Show>
 

@@ -228,6 +228,41 @@ for (const id of THEMES) {
   for (const c of contrast) {
     if (!c.ok) problems.push(`${id}: contrast ${c.label} is ${c.ratio}:1, needs ${c.floor}:1`)
   }
+
+  // AUTO PLAY's on state is the accent filled with contrast text. The button's
+  // token overrides are per-theme, so a light theme (white contrast text) and a
+  // dark one (near-black) both have to clear 4.5:1. `contrastProbe` above measures
+  // fixed selectors, so this is its own small probe against the live tokens.
+  const autoPlay = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement)
+    const parse = (color) => {
+      const m = color.trim().match(/^#([0-9a-f]{6})$/i)
+      if (m) {
+        const n = Number.parseInt(m[1], 16)
+        return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
+      }
+      const d = color.match(/[\d.]+/g)
+      return d ? { r: Number(d[0]), g: Number(d[1]), b: Number(d[2]) } : null
+    }
+    const luminance = (c) => {
+      const channel = (v) => {
+        const s = v / 255
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+      }
+      return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+    }
+    const bg = parse(root.getPropertyValue('--theme-color-primary'))
+    const fg = parse(root.getPropertyValue('--theme-color-primary--contrast'))
+    if (!bg || !fg) return null
+    const la = luminance(bg)
+    const lb = luminance(fg)
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+  })
+  if (autoPlay === null) {
+    problems.push(`${id}: AUTO PLAY tokens are missing`)
+  } else if (autoPlay < 4.5) {
+    problems.push(`${id}: AUTO PLAY on-state text is ${autoPlay.toFixed(2)}:1, needs 4.5:1`)
+  }
 }
 
 // The two Classic themes were removed. A profile that still has one stored has to

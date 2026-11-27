@@ -19,6 +19,8 @@ export interface MenuItem {
   disabled?: boolean
   /** Renders a separator instead of a row. */
   divider?: boolean
+  /** Draws a tick in the leading slot: a menu item that toggles a visible state. */
+  checked?: boolean
   onSelect?: () => void
 }
 
@@ -30,16 +32,29 @@ interface Props {
 }
 
 const MENU_W = 248
-/** iX's dropdown row height, 2.5rem, plus the panel's own padding. */
-const ROW_H = 40
+/** `.menu-item`'s height in `styles.css`. iX's 40px is not what this panel draws. */
+const ROW_H = 32
+/** A separator: 1px plus its 4px margins, top and bottom. */
+const DIVIDER_H = 9
 const PAD = 8
 
 export function ContextMenu(props: Props) {
   let el: HTMLDivElement | undefined
 
-  /** Keep the menu inside the window; a right-click near the edge would clip it. */
+  /**
+   * Keep the menu inside the window; a right-click near the edge would clip it.
+   *
+   * The height is summed rather than `items.length * ROW_H`: the column menu has a
+   * separator, and counting it as a full row pushed the panel up by 23px for no
+   * reason. The estimate is also clamped to the window: when the menu genuinely
+   * does not fit at any offset, `.menu` scrolls, and pretending it is shorter than
+   * it is would leave the last entries outside the viewport.
+   */
   const position = () => {
-    const height = props.items.length * ROW_H + PAD * 2
+    const height = Math.min(
+      window.innerHeight - 16,
+      props.items.reduce((sum, item) => sum + (item.divider ? DIVIDER_H : ROW_H), PAD * 2)
+    )
     const left = Math.min(props.x, window.innerWidth - MENU_W - 8)
     const top = Math.min(props.y, window.innerHeight - height - 8)
     return { left: `${Math.max(8, left)}px`, top: `${Math.max(8, top)}px`, width: `${MENU_W}px` }
@@ -92,6 +107,11 @@ export function ContextMenu(props: Props) {
                 item.onSelect?.()
               }}
             >
+              {/* A fixed leading slot, so labels stay on one left edge whether or
+                  not a row is ticked. `menu-label` keeps its `flex: 1`. */}
+              <span class="menu-check" aria-hidden="true">
+                {item.checked ? '✓' : ''}
+              </span>
               <span class="menu-label">{item.label}</span>
               <Show when={item.shortcut}>
                 <span class="menu-shortcut">{item.shortcut}</span>

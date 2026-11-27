@@ -304,73 +304,39 @@ button {
   overflow-y: auto;
 }
 
-/* Two views of the same rail. Switching is a mode rather than a pair of panels
-   because browsing by kind and by origin each want the full height. Drawn as a
-   segmented control: two halves sharing one border. */
+/* One view of the rail at a time. Switching is a mode rather than a pair of panels
+   because browsing by kind and by origin each want the full height. A select rather
+   than a segmented control: three labels do not fit a 232px rail without shrinking
+   to the edge of legible, and the settings dialog already uses iX selects for the
+   same kind of choice. */
 .side-modes {
   display: flex;
-  gap: 0;
+  align-items: center;
+  gap: 4px;
   padding: 8px 8px 4px;
 }
 
-.side-mode {
+/* iX's host is inline-block and shrinks to its widest option; the rail's own width
+   is what should decide it. */
+.side-modes ix-select {
   flex: 1;
   min-width: 0;
-  height: 28px;
-  padding: 0 4px;
-  border: 1px solid var(--theme-color-3);
-  color: var(--theme-color-soft-text);
-  font-size: var(--mio-ms--2);
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  background: transparent;
+  display: block;
 }
 
-.side-mode:first-of-type {
-  border-radius: var(--mio-radius-sm) 0 0 var(--mio-radius-sm);
-}
-
-/* The two halves share one seam. Dropping the second half's left border is what
-   makes them read as one control — but the *selected* state paints its border in
-   the accent colour, so a lit second half lost its left edge and the highlight
-   looked cut off. `margin-left: -1px` moves the shared edge onto the first
-   half's border instead: the pair still has one seam, and either half can light
-   up without a gap. */
-.side-mode:nth-of-type(2) {
-  margin-left: -1px;
-  border-radius: 0 var(--mio-radius-sm) var(--mio-radius-sm) 0;
-}
-
-.side-mode:hover {
-  color: var(--theme-color-std-text);
-  background: var(--theme-color-ghost--hover);
-}
-
-/* The lit half has to sit above its neighbour, or the neighbour's border paints
-   over the shared edge and the highlight loses the seam again. */
-.side-mode.on {
-  position: relative;
-  z-index: 1;
-  color: var(--theme-color-primary);
-  border-color: var(--theme-color-primary);
-  background: var(--theme-color-ghost--selected);
-}
-
-.side-mode.gear {
+.side-gear {
   flex: none;
-  width: 28px;
-  margin-left: 4px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid transparent;
   border-radius: var(--mio-radius-sm);
-  font-size: var(--mio-ms-0);
   color: var(--theme-color-soft-text);
 }
 
-.side-mode.gear:hover {
+.side-gear:hover {
   color: var(--theme-color-std-text);
   border-color: var(--theme-color-3);
 }
@@ -406,7 +372,18 @@ button {
 
 .lib-group.active .lib-head {
   color: var(--theme-color-std-text);
-  background: var(--theme-color-ghost-alt);
+  background: var(--theme-color-ghost--selected);
+  /* The accent bar `docs/app.md` promised and the CSS never drew. Same pair the
+     selected facet, folder and row use, so one selection reads the same
+     everywhere. */
+  box-shadow: inset 2px 0 0 var(--theme-color-primary);
+}
+
+/* More specific than `.lib-head:hover`, so without this the active header — the
+   one that is actually a target in a multi-library rail — is the only header
+   that does not react to the pointer. */
+.lib-group.active .lib-head:hover {
+  background: var(--theme-color-ghost--selected-hover);
 }
 
 .lib-name {
@@ -545,23 +522,37 @@ button {
   pointer-events: none;
 }
 
-/* The header is outside the scrolling body, so its tracks have to be told how
-   much width the scrollbar took. Padding does not work: on a grid with
-   `box-sizing: border-box` the padding shrinks the content box and the `fr`
-   tracks absorb the difference proportionally, leaving the two grids misaligned
-   by roughly twice the scrollbar. An inline width does the right thing. */
+/* The header sits outside the scrolling body, so it cannot scroll with the rows.
+   A wrapper clips it to the table's width and the header itself is translated by
+   the body's `scrollLeft`. The other option — making the header sticky inside the
+   body — would add a 28px row of scrollable content and change every piece of
+   virtualisation maths that divides by `ROW_H`. */
+.table-head-wrap {
+  flex: none;
+  overflow: hidden;
+  height: var(--mio-head-h);
+}
+
+/* Tracks are fixed pixels (see `columns.ts`), so the header and the rows resolve
+   to the same widths. `width` is set inline to `max(total, viewport - scrollbar)`;
+   padding must not be used, because it shrinks the content box and the tracks
+   would no longer add up to what the rows get. */
 .table-head {
   height: var(--mio-head-h);
   border-bottom: 1px solid var(--theme-color-3);
   background: var(--theme-color-1);
-  flex: none;
+  will-change: transform;
 }
 
 .head-cell {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 8px;
+  /* Room for the resize handle, which lives inside the cell: the header wrapper
+     clips, so a handle hanging outside the last cell's right edge would be cut in
+     half and unclickable. */
+  padding: 0 12px 0 8px;
   height: 100%;
   /* Soft rather than weak: a column header is a label, and at 42% alpha it fell
      under 3:1 on the mid-tone surfaces a theme derives. */
@@ -575,6 +566,24 @@ button {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* The column's resize grip. Inside the cell and absolutely positioned so it never
+   takes a grid track; the 1px line is drawn on hover and while dragging, which is
+   the whole affordance and needs no frame. */
+.head-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.head-resize:hover,
+.head-resize:active {
+  background: var(--theme-color-primary);
 }
 
 .head-cell.numeric {
@@ -628,8 +637,7 @@ button {
 
 .table-body {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
   min-height: 0;
 }
 
@@ -637,7 +645,9 @@ button {
    is what makes windowing cheap. `left/right: 0` is required: without it an
    absolutely positioned box shrink-to-fits its content, so the grid tracks were
    computed from the text width instead of the container and the columns drifted
-   away from the header. */
+   away from the header. Do not add `width: 100%` here: on an absolutely
+   positioned box that means the containing block's width, which would pull every
+   row back to the viewport and out from under a scrolled header. */
 .row {
   left: 0;
   right: 0;
@@ -874,6 +884,61 @@ button {
   --theme-btn-tertiary--color--pressed: var(--theme-color-primary--contrast);
   --theme-btn-tertiary--color--pressed-hover: var(--theme-color-primary--contrast);
   --theme-btn-tertiary--color--pressed-active: var(--theme-color-primary--contrast);
+}
+
+/* AUTO PLAY's secondary variant paints its pressed state with
+   `--theme-color-component-7` — accent at 16% — on the dock's `--theme-color-2`,
+   while the unpressed state is accent at 14%. On and off were the same pixel
+   colour. Same fix as the loop button above: the on state is the accent itself
+   with contrast text, the one filled control in the transport row, and every
+   hover/press token is overridden so it never flickers back through 16%.
+   Secondary, not tertiary: this button's variant is secondary. */
+#auto-play.on {
+  --theme-btn-secondary--background: var(--theme-color-primary);
+  --theme-btn-secondary--background--hover: var(--theme-color-primary--hover);
+  --theme-btn-secondary--background--active: var(--theme-color-primary--active);
+  --theme-btn-secondary--background--pressed: var(--theme-color-primary);
+  --theme-btn-secondary--background--pressed-hover: var(--theme-color-primary--hover);
+  --theme-btn-secondary--background--pressed-active: var(--theme-color-primary--active);
+  --theme-btn-secondary--color: var(--theme-color-primary--contrast);
+  --theme-btn-secondary--color--hover: var(--theme-color-primary--contrast);
+  --theme-btn-secondary--color--active: var(--theme-color-primary--contrast);
+  --theme-btn-secondary--color--pressed: var(--theme-color-primary--contrast);
+  --theme-btn-secondary--color--pressed-hover: var(--theme-color-primary--contrast);
+  --theme-btn-secondary--color--pressed-active: var(--theme-color-primary--contrast);
+  --theme-btn-secondary--border-color: var(--theme-color-primary);
+  --theme-btn-secondary--border-color--hover: var(--theme-color-primary--hover);
+  --theme-btn-secondary--border-color--active: var(--theme-color-primary--active);
+  --theme-btn-secondary--border-color--pressed: var(--theme-color-primary);
+  --theme-btn-secondary--border-color--pressed-hover: var(--theme-color-primary--hover);
+  --theme-btn-secondary--border-color--pressed-active: var(--theme-color-primary--active);
+  --theme-btn-secondary--background--disabled: var(--theme-color-ghost--selected);
+  --theme-btn-secondary--color--disabled: var(--theme-color-weak-text);
+  --theme-btn-secondary--border-color--disabled: var(--theme-color-4);
+}
+
+/* Off is a plain outline with soft text, not the accent at 14%: that faint tint
+   is what made "off" read as a pressed state of its own. The accent outline now
+   belongs to the on state alone. */
+#auto-play:not(.on) {
+  --theme-btn-secondary--background: transparent;
+  --theme-btn-secondary--background--hover: var(--theme-color-ghost--hover);
+  --theme-btn-secondary--background--active: var(--theme-color-ghost--active);
+  --theme-btn-secondary--background--pressed: transparent;
+  --theme-btn-secondary--background--pressed-hover: var(--theme-color-ghost--hover);
+  --theme-btn-secondary--background--pressed-active: var(--theme-color-ghost--active);
+  --theme-btn-secondary--color: var(--theme-color-soft-text);
+  --theme-btn-secondary--color--hover: var(--theme-color-std-text);
+  --theme-btn-secondary--color--active: var(--theme-color-std-text);
+  --theme-btn-secondary--color--pressed: var(--theme-color-soft-text);
+  --theme-btn-secondary--color--pressed-hover: var(--theme-color-std-text);
+  --theme-btn-secondary--color--pressed-active: var(--theme-color-std-text);
+  --theme-btn-secondary--border-color: var(--theme-color-4);
+  --theme-btn-secondary--border-color--hover: var(--theme-color-3);
+  --theme-btn-secondary--border-color--active: var(--theme-color-3);
+  --theme-btn-secondary--border-color--pressed: var(--theme-color-4);
+  --theme-btn-secondary--border-color--pressed-hover: var(--theme-color-3);
+  --theme-btn-secondary--border-color--pressed-active: var(--theme-color-3);
 }
 
 .wave-wrap {
@@ -1201,6 +1266,21 @@ button {
   text-transform: uppercase;
 }
 
+/* Eleven column checkboxes. One per row pushed Appearance below the fold in a
+   720px dialog, so they go two across; each label is short enough to share a row.
+   The wrapper is a grid cell and carries the column key: Solid writes an untyped
+   `data-` prop on a custom element as a property, and iX's host has no such
+   property, so the attribute has to live one level up. */
+.column-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+}
+
+.column-check {
+  min-width: 0;
+}
+
 .setting {
   display: flex;
   align-items: center;
@@ -1292,6 +1372,11 @@ button {
   background: var(--theme-color-2);
   box-shadow: var(--theme-shadow-4);
   opacity: 0;
+  /* A 13-row menu (every column plus the settings entry) is taller than a 150%
+     scaled window. Instead of hoping it fits, let it scroll: without this the
+     last entry sat below the viewport and could not be clicked at all. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 
 .menu-item {
@@ -1303,6 +1388,14 @@ button {
   color: var(--theme-color-std-text);
   font-size: var(--mio-ms-0);
   text-align: left;
+}
+
+/* The tick's slot exists on every row, ticked or not, so labels share one left
+   edge and a toggle does not shift the text sideways. */
+.menu-check {
+  flex: none;
+  width: 12px;
+  color: var(--theme-color-primary);
 }
 
 .menu-item:hover:not(:disabled) {

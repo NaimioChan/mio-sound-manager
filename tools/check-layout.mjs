@@ -84,11 +84,25 @@ const report = await page.evaluate(() => {
     ) {
       problems.push('match count and Add Library are not aligned with the title/settings row')
     }
-    const modeStyle = getComputedStyle(document.querySelector('.side-mode'))
-    const buttonStyle = getComputedStyle(addLibrary)
-    if (Number.parseFloat(modeStyle.fontSize) >= 12 || modeStyle.fontWeight === '700') {
-      problems.push(`sidebar mode button is not slim (${modeStyle.fontSize}, ${modeStyle.fontWeight})`)
+    // The rail's mode is an iX select now, not a row of small buttons: assert its
+    // own geometry instead. It should be 32px tall (the same height as the gear
+    // beside it) and end before the gear starts.
+    const modeSelect = document.querySelector('#sidebar-mode')?.getBoundingClientRect()
+    const gear = document.querySelector('.side-gear')?.getBoundingClientRect()
+    if (!modeSelect || !gear) {
+      problems.push('sidebar mode select or its gear is missing')
+    } else {
+      facts.modeSelect = `${Math.round(modeSelect.left)}..${Math.round(modeSelect.right)} ${Math.round(modeSelect.height)}px`
+      if (Math.round(modeSelect.height) !== 32) {
+        problems.push(`sidebar mode select is ${Math.round(modeSelect.height)}px tall, expected 32`)
+      }
+      if (modeSelect.right > gear.left + 1) {
+        problems.push(
+          `sidebar mode select overlaps the gear (${Math.round(modeSelect.right)} > ${Math.round(gear.left)})`
+        )
+      }
     }
+    const buttonStyle = getComputedStyle(addLibrary)
     if (Number.parseFloat(buttonStyle.fontSize) >= 12 || buttonStyle.fontWeight === '700') {
       problems.push(`Add Library button is not slim (${buttonStyle.fontSize}, ${buttonStyle.fontWeight})`)
     }
@@ -136,13 +150,44 @@ const report = await page.evaluate(() => {
       }
     }
     facts.columns = getComputedStyle(head).gridTemplateColumns
-    // Header right edge vs row right edge: the scrollbar allowance.
-    const hr = head.getBoundingClientRect()
-    const rr = row.getBoundingClientRect()
-    facts.headRight = Math.round(hr.right)
-    facts.rowRight = Math.round(rr.right)
-    if (Math.abs(hr.right - rr.right) > 9) {
-      problems.push(`header right edge off by ${Math.round(hr.right - rr.right)}px`)
+    // Header right edge vs row right edge: the scrollbar allowance. The header is
+    // sized `max(total, viewport - scrollbar)`, the rows fill a spacer with the same
+    // min-width, so both edges follow the same expression even when the table
+    // overflows. This is checked again after a scroll below, because a header that
+    // fails to follow `scrollLeft` still passes at offset zero.
+    const edgeDelta = () => {
+      const hr = head.getBoundingClientRect()
+      const rr = row.getBoundingClientRect()
+      return { delta: hr.right - rr.right, hr: Math.round(hr.right), rr: Math.round(rr.right) }
+    }
+    const atRest = edgeDelta()
+    facts.headRight = atRest.hr
+    facts.rowRight = atRest.rr
+    if (Math.abs(atRest.delta) > 9) {
+      problems.push(`header right edge off by ${Math.round(atRest.delta)}px`)
+    }
+
+    const body = document.querySelector('.table-body')
+    if (body) {
+      facts.overflow = `${body.scrollWidth} > ${body.clientWidth}`
+      const saved = body.scrollLeft
+      body.scrollLeft = 120
+      const scrolledAt = edgeDelta()
+      if (body.scrollLeft > 0 && Math.abs(scrolledAt.delta) > 9) {
+        problems.push(
+          `header right edge off by ${Math.round(scrolledAt.delta)}px after scrolling to ${body.scrollLeft}`
+        )
+      }
+      if (body.scrollLeft > 0) {
+        const firstHead = head.querySelector('.head-cell')?.getBoundingClientRect()
+        const firstCell = row.querySelector('.cell')?.getBoundingClientRect()
+        if (firstHead && firstCell && Math.abs(firstHead.left - firstCell.left) > 1) {
+          problems.push(
+            `header does not follow horizontal scroll: head ${Math.round(firstHead.left)}, cell ${Math.round(firstCell.left)}`
+          )
+        }
+      }
+      body.scrollLeft = saved
     }
   } else {
     problems.push('no table header or row to compare')

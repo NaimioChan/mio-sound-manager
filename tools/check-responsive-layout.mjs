@@ -25,7 +25,7 @@ try {
     let library = {
       root, name: 'layout-fixture', count: rows.length, active: true, indexing: false, skippedDirs: [],
       metadataIndexing: true, metadataStatus: 'indexing', metadataIndexed: 12345, metadataTotal: 271350,
-      metadataFailed: 0,
+      metadataFailed: 0, metadataDeferred: 0,
     }
     window.finishLayoutFixture = () => { library = { ...library, metadataIndexing: false, metadataStatus: 'done' } }
     const values = {
@@ -72,8 +72,32 @@ try {
     await rows.last().locator('.cell.name').click()
     await page.waitForSelector('.dock-description')
     const long = await geometry()
+    // A wide table is allowed to overflow its column now: the tracks are fixed
+    // pixels so a dragged width means the same thing at every window size, and the
+    // price is a horizontal scrollbar (Explorer does the same). What must hold is
+    // that the header and the rows are clipped together, and that the controls
+    // outside the scrolling body stay inside the window.
+    const body = await page.evaluate(() => {
+      const el = document.querySelector('.table-body')
+      const main = document.querySelector('.main')
+      return {
+        scrollWidth: el?.scrollWidth ?? 0,
+        clientWidth: el?.clientWidth ?? 0,
+        mainWidth: main?.clientWidth ?? 0
+      }
+    })
+    if (body.scrollWidth < body.mainWidth) {
+      problems.push(`${width}px: table is narrower than its own container (${body.scrollWidth} < ${body.mainWidth})`)
+    }
     for (const [key, value] of Object.entries(long)) {
-      if (key.endsWith('Right') && value > width + 1) problems.push(`${width}px: ${key}=${value}`)
+      if (key === 'dockRight' || key === 'versionRight') {
+        if (value > width + 1) problems.push(`${width}px: ${key}=${value}`)
+      }
+    }
+    if (Math.abs(long.headerRight - long.rowRight) > 9) {
+      problems.push(
+        `${width}px: header right ${long.headerRight} vs row right ${long.rowRight}`
+      )
     }
     if (short.tracks !== long.tracks) problems.push(`${width}px: tracks changed ${short.tracks} → ${long.tracks}`)
     if (long.tracks !== long.rowTracks) problems.push(`${width}px: header and row tracks differ`)

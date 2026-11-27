@@ -55,6 +55,33 @@ const hints = await page.evaluate(
 )
 check(hints >= 5, 'the mouse legend shipped', `${hints} entries`)
 
+// The rail's mode is one dropdown now, and every resizable column carries a grip.
+// Both are DOM facts a build from before this release does not have.
+const modeSelect = await page.evaluate(() => {
+  const host = document.querySelector('#sidebar-mode')
+  return host
+    ? {
+        items: [...host.querySelectorAll('ix-select-item')].map((el) => el.value),
+        mode: document.querySelector('.sidebar')?.dataset.sidebarMode ?? null
+      }
+    : null
+})
+check(modeSelect !== null, 'the rail mode select shipped')
+check(
+  (modeSelect?.items ?? []).join(',') === 'categories,ucs,folders',
+  'the mode select offers the three views',
+  (modeSelect?.items ?? []).join(',')
+)
+check(
+  (modeSelect?.mode ?? '') !== '',
+  'the sidebar reports its mode for the scripts',
+  String(modeSelect?.mode)
+)
+const grips = await page.evaluate(
+  () => document.querySelectorAll('.head-cell .head-resize').length
+)
+check(grips === 10, 'every resizable column carries a resize grip', String(grips))
+
 // The product mark next to the name. A build from before this release has the
 // name alone, so the element existing is a fact about the shipped code.
 const brandMark = await page.evaluate(() => {
