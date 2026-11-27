@@ -379,7 +379,13 @@ fn open_stream(
     let hardware_latency = driver.latencies().map(|l| l.output.max(0) as u32).ok();
 
     let callback_id = driver.add_callback(move |info| {
-        let Ok(streams) = streams_for_cb.lock() else {
+        // There is already a lock in this path that this engine does not own:
+        // `asio-sys` runs every buffer callback while holding its global
+        // `BUFFER_CALLBACK` mutex. Adding a second, blocking lock here only made
+        // the audio thread wait on a control thread that happened to be holding
+        // `streams` (starting, preparing, disposing). `try_lock` turns that wait
+        // into one silent buffer instead of a priority inversion.
+        let Ok(streams) = streams_for_cb.try_lock() else {
             return;
         };
         let Some(stream) = streams.output.as_ref() else {
@@ -403,6 +409,10 @@ fn open_stream(
         // Interleaved bytes -> one plane per channel. `scratch` is already
         // silence past `filled_bytes`, so the driver gets a fully written buffer
         // on every callback, which is what stops a stale buffer from clicking.
+        // Every load uses `scratch.get(..)`: if the driver asks for more frames
+        // than the buffer was prepared for, `Mixer::fill` has already chosen
+        // silence and returned 0, and the reads past its end must degrade to
+        // silence instead of panicking the audio thread.
         for ch in 0..stream.buffer_infos.len().min(wanted_channels) {
             // The struct is `packed`, so the field cannot be referenced; copy the
             // pointer out first.
@@ -417,7 +427,7 @@ fn open_stream(
                         for i in 0..frames {
                             let off = (i * wanted_channels + ch) * bytes_per_sample;
                             let v = f32::from_le_bytes(
-                                scratch[off..off + 4].try_into().unwrap_or([0; 4]),
+                                scratch.get(off..off + 4).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]),
                             );
                             *dst.add(i) = v;
                         }
@@ -427,7 +437,7 @@ fn open_stream(
                         for i in 0..frames {
                             let off = (i * wanted_channels + ch) * bytes_per_sample;
                             let v = f32::from_le_bytes(
-                                scratch[off..off + 4].try_into().unwrap_or([0; 4]),
+                                scratch.get(off..off + 4).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]),
                             );
                             *dst.add(i) = f32::from_bits(v.to_bits().swap_bytes());
                         }
@@ -437,7 +447,7 @@ fn open_stream(
                         for i in 0..frames {
                             let off = (i * wanted_channels + ch) * bytes_per_sample;
                             let v = i16::from_le_bytes(
-                                scratch[off..off + 2].try_into().unwrap_or([0; 2]),
+                                scratch.get(off..off + 2).and_then(|s| s.try_into().ok()).unwrap_or([0; 2]),
                             );
                             *dst.add(i) = v;
                         }
@@ -447,7 +457,7 @@ fn open_stream(
                         for i in 0..frames {
                             let off = (i * wanted_channels + ch) * bytes_per_sample;
                             let v = i16::from_le_bytes(
-                                scratch[off..off + 2].try_into().unwrap_or([0; 2]),
+                                scratch.get(off..off + 2).and_then(|s| s.try_into().ok()).unwrap_or([0; 2]),
                             );
                             *dst.add(i) = v.swap_bytes();
                         }
@@ -457,7 +467,7 @@ fn open_stream(
                         for i in 0..frames {
                             let off = (i * wanted_channels + ch) * bytes_per_sample;
                             let v = i32::from_le_bytes(
-                                scratch[off..off + 4].try_into().unwrap_or([0; 4]),
+                                scratch.get(off..off + 4).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]),
                             );
                             *dst.add(i) = v;
                         }
@@ -467,7 +477,7 @@ fn open_stream(
                         for i in 0..frames {
                             let off = (i * wanted_channels + ch) * bytes_per_sample;
                             let v = i32::from_le_bytes(
-                                scratch[off..off + 4].try_into().unwrap_or([0; 4]),
+                                scratch.get(off..off + 4).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]),
                             );
                             *dst.add(i) = v.swap_bytes();
                         }

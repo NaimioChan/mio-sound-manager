@@ -675,20 +675,28 @@ impl Decoder {
         }
 
         // MP4/AAC carries AAC's 1024-sample encoder priming at the head of the
-        // stream, declared only in the `elst` edit list. Symphonia parses `elst`
-        // but does not surface it as `codec_params.delay`, so gapless trimming
-        // never happens for M4A and the clip starts 1024 frames early. Measured
-        // at 23.2ms on the reference machine — larger than the entire device
-        // path, so a sample trigger would feel late by that much.
+        // *stream*, declared only in the `elst` edit list. Symphonia parses
+        // `elst` but does not surface it as `codec_params.delay`, so gapless
+        // trimming never happens for M4A and the clip starts 1024 frames early.
+        // Measured at 23.2ms on the reference machine — larger than the entire
+        // device path, so a sample trigger would feel late by that much.
         //
         // Rather than hand-parse the atom, use the fact that an AAC stream's
         // first packet is always priming. This matches what ffprobe reports as
         // `initial_padding` for these files.
+        //
+        // Only for a decode from the head: a window starting at 90s begins on
+        // real audio, and an AAC window's first packet is that window's first
+        // packet, not the container's priming. Trimming it there would drop
+        // 21ms of music and shift `window_start_frames` back by 1024 frames, so
+        // every following window in a long-file chain would be misaligned.
+        let at_stream_head = window.is_none_or(|window| window.start_s <= 0.0);
         let mut trimmed = 0usize;
-        if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("m4a") || e.eq_ignore_ascii_case("mp4"))
+        if at_stream_head
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("m4a") || e.eq_ignore_ascii_case("mp4"))
             && src_channels > 0
             && out.len() > 1024 * src_channels
             && leading_is_priming(&out, src_channels, 1024)
@@ -954,9 +962,89 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// AAC priming belongs to the head of the stream, not to every window.
+    ///
+    /// The old trim ran on *any* M4A decode, so a window starting at 40s could
+    /// be shortened by 1024 frames (21ms) whenever its first frames were quiet
+    /// enough to look like priming — a pad, an ambience bed, a decay tail. That
+    /// also moved `window_start_frames` back by 1024, so a long-file chain
+    /// drifted one frame-count per window.
+    ///
+    /// Needs ffmpeg to build the fixture; skipped with a message when it is not
+    /// installed, because the engine has no encoder of its own (and should not
+    /// grow one for a test).
     #[test]
-    fn a_window_past_the_end_of_the_file_decodes_nothing_and_stays_safe() {
-        let rate = 48_000u32;
+    fn an_m4a_window_is_not_priming_trimmed() {
+        let Some(path) = make_quiet_m4a() else {
+            eprintln!("skipping an_m4a_window_is_not_priming_trimmed: ffmpeg not found");
+            return;
+        };
+        let decoder = Decoder::new(OutputFormat {
+            sample_rate: 48_000,
+            channels: 2,
+            sample: DeviceSample::F32,
+        });
+
+        let (full, _) = decoder.decode_with_source(&path).unwrap();
+        assert!(full.complete);
+        let source = full.source.as_ref().unwrap();
+        // The head trim is still expected for a full decode.
+        assert_eq!(
+            full.trimmed_leading_frames, 1024,
+            "a full M4A decode must still drop AAC priming"
+        );
+
+        // A quiet second right in the middle. Before the fix this window's first
+        // 1024 frames passed `leading_is_priming` and were dropped.
+        let start_s = 40.0;
+        let (window, _) = decoder
+            .with_window(DecodeWindow::at(start_s, 1.0))
+            .decode_with_source(&path)
+            .unwrap();
+        assert_eq!(
+            window.trimmed_leading_frames, 0,
+            "a window that does not start at the head has no priming to trim"
+        );
+        let expected_start = (start_s * window.source_rate as f64).round() as usize;
+        assert_eq!(
+            window.window_start_frames, expected_start,
+            "the window origin must be the requested position, not shifted by a trim"
+        );
+
+        // Sample-alignment against the full decode: a window that dropped 1024
+        // frames would be off by exactly that much here.
+        let full_samples = &source.samples;
+        let window_samples = &window.source.as_ref().unwrap().samples;
+        let channels = source.channels;
+        let offset = expected_start * channels;
+        assert!(!window_samples.is_empty() && full_samples.len() > offset);
+        for i in 0..64 * channels {
+            let a = window_samples[i];
+            let b = full_samples[offset + i];
+            assert!(
+                (a - b).abs() < 1e-3,
+                "window sample {i} = {a}, full decode at the same frame = {b}"
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A 60s M4A whose middle is a quiet, slowly varying pad: the shape of audio
+    /// that used to be mistaken for encoder priming.
+    fn make_quiet_m4a() -> Option<std::path::PathBuf> {
+        let path = std::env::temp_dir().join("mio-window-priming.m4a");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("sine=frequency=90:sample_rate=48000:duration=60,volume=0.004")
+            .args(["-c:a", "aac", "-b:a", "96k"])
+            .arg(&path)
+            .status()
+            .ok()?;
+        status.success().then_some(path)
+    }
+
+    #[test]
+    fn a_window_past_the_end_of_the_file_decodes_nothing_and_stays_safe() {        let rate = 48_000u32;
         let frames = rate; // one second
         let pcm = vec![0.25f32; frames as usize];
         let path = std::env::temp_dir().join("mio-window-past-end.wav");
