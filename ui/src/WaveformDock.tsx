@@ -571,35 +571,35 @@ export function WaveformDock(props: Props) {
       <div class="dock-resize" onPointerDown={startResize} />
 
       <div class="dock-head">
-        <Show when={props.row} fallback={<span class="dim">—</span>}>
-          {(row) => (
-            <>
-              <span class="dock-name" title={row().path}>
-                {row().filename}
-              </span>
-              <span class="dim">
-                {categoryName(row().category)}
-                <Show when={row().subcategory}> / {row().subcategory}</Show>
-              </span>
-              <span class="dim">{row().durationLabel}</span>
-              <span class="dim">
-                {row().sampleRate} Hz · {channelLabel(row().channels)}
-              </span>
-              <Show when={row().description}>
-                {(description) => (
-                  <span class="dock-description" title={description()}>
-                    {description()}
-                  </span>
-                )}
-              </Show>
-              <Show when={props.selectionCount > 1}>
-                <span class="dim">{t('status.selected', { count: props.selectionCount })}</span>
-              </Show>
-            </>
-          )}
-        </Show>
-
-        <div class="spacer" />
+        <div class="dock-info">
+          <Show when={props.row} fallback={<span class="dim">—</span>}>
+            {(row) => (
+              <>
+                <span class="dock-name" title={row().path}>
+                  {row().filename}
+                </span>
+                <span class="dim">
+                  {categoryName(row().category)}
+                  <Show when={row().subcategory}> / {row().subcategory}</Show>
+                </span>
+                <span class="dim">{row().durationLabel}</span>
+                <span class="dim">
+                  {row().sampleRate} Hz · {channelLabel(row().channels)}
+                </span>
+                <Show when={row().description}>
+                  {(description) => (
+                    <span class="dock-description" title={description()}>
+                      {description()}
+                    </span>
+                  )}
+                </Show>
+                <Show when={props.selectionCount > 1}>
+                  <span class="dim">{t('status.selected', { count: props.selectionCount })}</span>
+                </Show>
+              </>
+            )}
+          </Show>
+        </div>
 
         {/*
           Volume, immediately left of AUTO PLAY. A mute toggle plus the short

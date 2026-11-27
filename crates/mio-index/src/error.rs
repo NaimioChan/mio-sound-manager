@@ -15,6 +15,8 @@ pub enum IndexError {
         path: String,
         detail: String,
     },
+    /// The caller requested cancellation at a file boundary.
+    Cancelled,
 }
 
 impl fmt::Display for IndexError {
@@ -25,6 +27,7 @@ impl fmt::Display for IndexError {
             IndexError::Io(e) => write!(f, "io: {e}"),
             IndexError::BadRoot(p) => write!(f, "not a directory: {p}"),
             IndexError::Walk { path, detail } => write!(f, "could not scan {path}: {detail}"),
+            IndexError::Cancelled => write!(f, "index cancelled"),
         }
     }
 }

@@ -140,7 +140,10 @@ const auditionCount = Math.min(20, await auditionRows.count())
 let lastName = ''
 for (let i = 0; i < auditionCount; i++) {
   const row = auditionRows.nth(i)
-  lastName = ((await row.locator('.cell.name').textContent()) ?? '').trim()
+  // The name cell may append a shared-description count (for example `x428`),
+  // while the dock intentionally shows only the real filename.
+  const path = await row.getAttribute('data-path')
+  lastName = path?.split(/[\\/]/).pop()?.trim() ?? ''
   await row.click()
 }
 await page.waitForFunction((name) => document.querySelector('.dock-name')?.textContent?.trim() === name, lastName, { timeout: 20_000 })

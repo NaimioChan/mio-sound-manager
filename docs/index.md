@@ -148,13 +148,16 @@ UCS 词汇会与 curated 词汇共同参与评分。
 同一条链，否则新映射没有证据支撑。
 
 当前数据库已保存官方 native category/subcategory、22 类投影字段和 UCS category/subcategory
-的 FTS 搜索；唯一、证据筛选通过的 UCS 同义词可以写入 native category/subcategory，但不会
+的 FTS 搜索。UCS 信息有两条来源：文件名开头的 CatID，以及 WAV iXML
+`MusicalCategory` metadata；后者没有 CatID 时仍保存官方 category/subcategory，并投影到
+22 类（能映射时）。唯一、证据筛选通过的 UCS 同义词可以写入 native category/subcategory，但不会
 凭空生成 `ucs_cat_id`。`ucs_cat_id` 只表示文件名显式声明的 CatID；CLI 的 `index-stats`
 同时报告 native category 覆盖和 explicit CatID 覆盖，避免混淆两个口径。
 
 WAV 的 `bext`、`iXML`、尾部 `LIST/INFO`、内嵌 `ID3 ` 与 MP3 ID3v2 的文本描述会进入
-`description`，并加入 FTS5。解析只收可打印文本，APIC 图片丢弃；旧库首次打开时按
-`metadata_rule` 一次性回填。描述以较低权重参与分类，文件名仍优先。
+`description`，并加入 FTS5；主表也提供 Description 列，支持查看和排序。解析会滤掉技术字段和 APIC 图片。
+桌面端完成基础索引后，由后台任务按 `metadata_rule` 补充未完成的行；关闭后再次打开可从待补充行继续。
+描述以较低权重参与分类，文件名仍优先。
 
 **`tools/classify-mirror.py` 是测量的脚手架，必须与产品对等。** 每个候选规则都在这个
 Python 镜像上跑，因为改一次 Rust 重编太慢。但它会漂移——本轮开发中它就漂过一次（
@@ -223,6 +226,6 @@ walk  →  probe（并行）  →  classify（同一 worker）  →  write（批
 
 **线程数默认取逻辑核数，不设上限。** 架构文档的 8 线程上限来自 NVMe 上的合成库。真实 28 万库在无 DRAM 的 SSD 上，8 → 16 线程还有 22% 收益（4,347 → 5,331 文件/s）：探测是随机读延迟受限，不是 CPU 受限，更多在途请求让盘能重排。没有实测不要往下调。
 
-**`stat` 只做一次。** Windows 上 `DirEntry::metadata()` 直接取自 `FindNextFileW` 的结果，不额外系统调用。之前 `walkdir`、`probe_file`、增量检查各 stat 一次，实测 8.2s 浪费在重复 stat 上。
+**基础索引复用遍历阶段的文件信息。** Windows 上 `DirEntry::metadata()` 直接取自 `FindNextFileW` 的结果。之前 `walkdir`、`probe_file`、增量检查各 stat 一次，实测 8.2s 浪费在重复 stat 上。后台 metadata 读取发生在基础索引之后，需在打开的文件句柄上核对 size 和 mtime，避免将已变化文件的描述写到旧行。
 
 **增量索引是稳态的主要路径。** `(mtime)` 匹配就跳过探测。28 万文件第二次运行：5.4s，探测 0 个文件。

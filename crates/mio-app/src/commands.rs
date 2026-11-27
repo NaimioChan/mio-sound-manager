@@ -10,11 +10,12 @@
 
 use mio_index::Sound;
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
 use crate::history::EditKind;
-use crate::library::{self, Library};
+use crate::library::{self, Library, MetadataStatus};
 use crate::state::{AppState, LoopState};
 
 /// Everything the window needs at startup, in one round trip.
@@ -75,6 +76,15 @@ pub struct LibraryStatus {
     pub indexing: bool,
     pub indexed: usize,
     pub total: usize,
+    pub phase: mio_index::IndexPhase,
+    pub files_seen: usize,
+    pub files_changed: usize,
+    pub files_written: usize,
+    pub metadata_indexing: bool,
+    pub metadata_indexed: usize,
+    pub metadata_total: usize,
+    pub metadata_failed: usize,
+    pub metadata_status: MetadataStatus,
     /// Whether the window is currently showing this library.
     pub active: bool,
     pub skipped_dirs: Vec<SkippedDirDto>,
@@ -332,6 +342,7 @@ pub fn duration_label(duration_s: Option<f64>) -> String {
 /// Current library status, or `NoLibrary` when none is open.
 pub fn library_status(library: &Library) -> AppResult<LibraryStatus> {
     let progress = library.progress();
+    let metadata = library.metadata_progress();
     let root = library.root();
     Ok(LibraryStatus {
         root: root.display().to_string(),
@@ -343,6 +354,15 @@ pub fn library_status(library: &Library) -> AppResult<LibraryStatus> {
         indexing: progress.running,
         indexed: progress.done,
         total: progress.total,
+        phase: progress.phase,
+        files_seen: progress.files_seen,
+        files_changed: progress.files_changed,
+        files_written: progress.files_written,
+        metadata_indexing: metadata.indexing,
+        metadata_indexed: metadata.indexed,
+        metadata_total: metadata.total,
+        metadata_failed: metadata.failed,
+        metadata_status: metadata.status,
         active: false,
         skipped_dirs: library
             .skipped_dirs()
@@ -521,8 +541,49 @@ pub fn prefetch_neighbors(state: State<'_, AppState>, paths: Vec<String>) {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexProgress {
+    pub phase: mio_index::IndexPhase,
     pub done: usize,
     pub total: usize,
+    pub files_seen: usize,
+    pub files_changed: usize,
+    pub files_written: usize,
+}
+
+/// Forward index events without flooding WebView2 during a directory walk.
+///
+/// The indexer reports every discovered file so non-IPC callers can measure
+/// scanning progress. A Channel send performs a synchronous `webview.eval`, so
+/// forwarding every one of those events can queue hundreds of thousands of JS
+/// callbacks and delay the later phase transitions. Phase changes are always
+/// sent immediately; repeated updates within a phase are coalesced to 100 ms.
+struct ProgressForwarder {
+    last_phase: Option<mio_index::IndexPhase>,
+    last_sent: Option<Instant>,
+}
+
+impl ProgressForwarder {
+    const INTERVAL: Duration = Duration::from_millis(100);
+
+    fn new() -> Self {
+        Self {
+            last_phase: None,
+            last_sent: None,
+        }
+    }
+
+    fn should_send(&mut self, progress: &IndexProgress) -> bool {
+        let phase_changed = self.last_phase != Some(progress.phase);
+        let due = self
+            .last_sent
+            .is_none_or(|last| last.elapsed() >= Self::INTERVAL);
+        if phase_changed || due || matches!(progress.phase, mio_index::IndexPhase::Ready | mio_index::IndexPhase::Failed) {
+            self.last_phase = Some(progress.phase);
+            self.last_sent = Some(Instant::now());
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Add a library folder and index it before returning.
@@ -549,10 +610,19 @@ pub async fn add_library(
         // `State` borrows the command's stack frame and cannot cross into a
         // blocking task, so the handle is used to reach the managed state instead.
         let state = app.state::<AppState>();
-        state.add_library(&root, full, |done, total| {
-            // A dropped receiver means the window closed; the pass still has to
-            // finish so the database is consistent.
-            let _ = on_progress.send(IndexProgress { done, total });
+        let mut forwarder = ProgressForwarder::new();
+        state.add_library_with_events(&root, full, |progress| {
+            let wire = IndexProgress {
+                phase: progress.phase,
+                done: progress.done,
+                total: progress.total,
+                files_seen: progress.files_seen,
+                files_changed: progress.files_changed,
+                files_written: progress.files_written,
+            };
+            if forwarder.should_send(&wire) {
+                let _ = on_progress.send(wire);
+            }
         })
     })
     .await
@@ -598,8 +668,19 @@ pub async fn reindex_library(
     let full = full.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        state.reindex_library(root.as_deref(), full, |done, total| {
-            let _ = on_progress.send(IndexProgress { done, total });
+        let mut forwarder = ProgressForwarder::new();
+        state.reindex_library_with_events(root.as_deref(), full, |progress| {
+            let wire = IndexProgress {
+                phase: progress.phase,
+                done: progress.done,
+                total: progress.total,
+                files_seen: progress.files_seen,
+                files_changed: progress.files_changed,
+                files_written: progress.files_written,
+            };
+            if forwarder.should_send(&wire) {
+                let _ = on_progress.send(wire);
+            }
         })
     })
     .await
@@ -923,5 +1004,28 @@ mod tests {
         .into_params()
         .unwrap();
         assert_eq!(params.limit, 1);
+    }
+
+    #[test]
+    fn progress_forwarder_sends_phase_changes_and_coalesces_ticks() {
+        let mut forwarder = ProgressForwarder::new();
+        let scanning = IndexProgress {
+            phase: mio_index::IndexPhase::Scanning,
+            done: 1,
+            total: 0,
+            files_seen: 1,
+            files_changed: 0,
+            files_written: 0,
+        };
+        assert!(forwarder.should_send(&scanning));
+        assert!(!forwarder.should_send(&IndexProgress { done: 2, ..scanning }));
+        assert!(forwarder.should_send(&IndexProgress {
+            phase: mio_index::IndexPhase::Comparing,
+            ..scanning
+        }));
+        assert!(forwarder.should_send(&IndexProgress {
+            phase: mio_index::IndexPhase::Ready,
+            ..scanning
+        }));
     }
 }

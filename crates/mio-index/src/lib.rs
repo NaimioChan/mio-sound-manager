@@ -30,13 +30,18 @@ pub mod wav_header;
 
 pub use classify::{Classification, Classifier};
 pub use db::{
-    CategoryFacet, EditState, IndexDb, SearchParams, SortColumn, SortDir, Sound, SoundRow,
-    UcsFacet,
+    CategoryFacet, EditState, IndexDb, MetadataCandidate, MetadataUpdate, SearchParams,
+    SortColumn, SortDir, Sound, SoundRow, UcsFacet,
 };
 pub use error::{IndexError, Result};
 pub use folders::{FolderNode, build_folder_tree, folder_range, relative_folder};
-pub use indexer::{IndexOptions, IndexReport, StageTimings, index_folder};
+pub use indexer::{
+    IndexMessageKind, IndexOptions, IndexPhase, IndexProgress, IndexReport, StageTimings,
+    index_folder, index_folder_with_events,
+};
 pub use probe::{
-    AudioMeta, FileEntry, SkippedDir, WalkReport, is_audio_path, probe_file, probe_with_meta,
-    walk_audio_entries, walk_audio_entries_with_report, walk_audio_files,
+    AudioMeta, EmbeddedMetadata, FileEntry, SkippedDir, WalkReport, is_audio_path,
+    metadata_only_with_meta, metadata_only_with_meta_checked, probe_basic_with_meta, probe_file,
+    probe_with_meta, walk_audio_entries,
+    walk_audio_entries_with_report, walk_audio_files,
 };

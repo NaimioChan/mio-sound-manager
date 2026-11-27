@@ -1468,9 +1468,25 @@ impl AppState {
     /// On a 280k library that is 64 seconds for a first pass and ~5s incremental,
     /// both measured (`docs/index.md`). A pass that is already running for this
     /// folder is not started twice.
-    pub fn add_library<F>(&self, root: &str, full: bool, progress: F) -> AppResult<LibraryStatus>
+    pub fn add_library<F>(&self, root: &str, full: bool, mut progress: F) -> AppResult<LibraryStatus>
     where
         F: FnMut(usize, usize),
+    {
+        self.add_library_with_events(root, full, |event| {
+            if matches!(event.phase, mio_index::IndexPhase::Indexing | mio_index::IndexPhase::Ready) {
+                progress(event.done, event.total);
+            }
+        })
+    }
+
+    pub fn add_library_with_events<F>(
+        &self,
+        root: &str,
+        full: bool,
+        progress: F,
+    ) -> AppResult<LibraryStatus>
+    where
+        F: FnMut(crate::library::IndexProgress),
     {
         let path = PathBuf::from(root);
         if !path.is_dir() {
@@ -1479,31 +1495,29 @@ impl AppState {
 
         // Re-adding a folder that is already open just reindexes it: the user
         // means "refresh", not "open a second copy".
-        let existing = self
-            .libraries
-            .lock()
-            .map_err(|_| AppError::internal("library lock poisoned"))?
-            .find(&path);
-
-        let library = match existing {
-            Some(library) => library,
-            None => {
-                let library = Arc::new(Library::open(&path)?);
-                let mut set = self
-                    .libraries
-                    .lock()
-                    .map_err(|_| AppError::internal("library lock poisoned"))?;
-                set.libs.push(Arc::clone(&library));
-                set.active = Some(path.clone());
-                library
+        let library = {
+            let mut set = self
+                .libraries
+                .lock()
+                .map_err(|_| AppError::internal("library lock poisoned"))?;
+            match set.find(&path) {
+                Some(library) => library,
+                None => {
+                    let library = Arc::new(Library::open(&path)?);
+                    set.libs.push(Arc::clone(&library));
+                    set.active = Some(path.clone());
+                    library
+                }
             }
         };
 
-        library.index_blocking_with(full, progress)?;
+        library.index_blocking_with_events(full, progress)?;
 
         // Selecting the folder that was just indexed is what the user expects;
         // adding a second library should not silently leave the first one active.
-        if let Ok(mut set) = self.libraries.lock() {
+        if let Ok(mut set) = self.libraries.lock()
+            && set.find(&path).is_some_and(|current| Arc::ptr_eq(&current, &library))
+        {
             set.active = Some(path);
         }
         self.persist_session();
@@ -1519,6 +1533,9 @@ impl AppState {
                 .lock()
                 .map_err(|_| AppError::internal("library lock poisoned"))?;
             let before = set.active.clone();
+            if let Some(library) = set.find(&path) {
+                library.close();
+            }
             set.libs.retain(|l| l.root() != path.as_path());
             if before.as_deref() == Some(path.as_path()) {
                 set.active = set.libs.first().map(|l| l.root().to_path_buf());
@@ -1527,6 +1544,14 @@ impl AppState {
         };
         self.persist_session();
         Ok(changed)
+    }
+
+    pub(crate) fn close_libraries(&self) {
+        if let Ok(libraries) = self.all_libraries() {
+            for library in libraries {
+                library.close();
+            }
+        }
     }
 
     /// Show a different open library.
@@ -1569,10 +1594,26 @@ impl AppState {
         &self,
         root: Option<&str>,
         full: bool,
-        progress: F,
+        mut progress: F,
     ) -> AppResult<LibraryStatus>
     where
         F: FnMut(usize, usize),
+    {
+        self.reindex_library_with_events(root, full, |event| {
+            if matches!(event.phase, mio_index::IndexPhase::Indexing | mio_index::IndexPhase::Ready) {
+                progress(event.done, event.total);
+            }
+        })
+    }
+
+    pub fn reindex_library_with_events<F>(
+        &self,
+        root: Option<&str>,
+        full: bool,
+        progress: F,
+    ) -> AppResult<LibraryStatus>
+    where
+        F: FnMut(crate::library::IndexProgress),
     {
         let library = match root {
             Some(root) => {
@@ -1585,7 +1626,7 @@ impl AppState {
             }
             None => self.library()?,
         };
-        library.index_blocking_with(full, progress)?;
+        library.index_blocking_with_events(full, progress)?;
         crate::commands::library_status(&library)
     }
 
@@ -1838,6 +1879,7 @@ impl AppState {
 
 impl Drop for AppState {
     fn drop(&mut self) {
+        self.close_libraries();
         if let Ok(mut slot) = self.prefetch_worker.lock() {
             if let Some(handle) = slot.take() {
                 self.prefetch_closed.store(true, Ordering::Release);

@@ -19,6 +19,15 @@ export interface LibraryStatus {
   indexing: boolean
   indexed: number
   total: number
+  phase: 'Scanning' | 'Comparing' | 'Indexing' | 'Finalizing' | 'Ready' | 'Failed'
+  filesSeen: number
+  filesChanged: number
+  filesWritten: number
+  metadataIndexing: boolean
+  metadataIndexed: number
+  metadataTotal: number
+  metadataFailed: number
+  metadataStatus: 'idle' | 'indexing' | 'done' | 'failed' | 'cancelled'
   /** Whether the window is showing this library. */
   active: boolean
   skippedDirs: SkippedDir[]
@@ -174,8 +183,12 @@ export interface HistoryState {
 
 /** One tick from a blocking index pass. */
 export interface IndexProgress {
+  phase: 'Scanning' | 'Comparing' | 'Indexing' | 'Finalizing' | 'Ready' | 'Failed'
   done: number
   total: number
+  filesSeen: number
+  filesChanged: number
+  filesWritten: number
 }
 
 export interface SearchRequest {

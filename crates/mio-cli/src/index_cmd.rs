@@ -31,6 +31,8 @@ pub struct IndexArgs {
     pub full: bool,
     pub threads: usize,
     pub batch_size: usize,
+    pub scan_batch_size: usize,
+    pub basic: bool,
     pub limit: u32,
     pub query: String,
     pub reference_db: Option<PathBuf>,
@@ -40,18 +42,22 @@ pub fn run_index(args: &IndexArgs) -> Result<()> {
     let options = IndexOptions {
         threads: args.threads,
         batch_size: args.batch_size,
+        scan_batch_size: args.scan_batch_size,
         // `--full` means "re-probe everything and prune"; the default is the
         // incremental pass a UI would run on startup.
         incremental: !args.full,
         prune: args.full,
+        read_metadata: !args.basic,
     };
 
     println!("folder    {}", args.folder.display());
     println!(
-        "mode      {} (threads {}, batch {})",
+        "mode      {} (threads {}, batch {}, scan batch {}, embedded metadata {})",
         if args.full { "full" } else { "incremental" },
         options.threads,
-        options.batch_size
+        options.batch_size,
+        options.scan_batch_size,
+        if options.read_metadata { "on" } else { "off" },
     );
 
     let started = Instant::now();
@@ -84,11 +90,19 @@ pub fn run_index(args: &IndexArgs) -> Result<()> {
     println!();
     println!("stage timings");
     println!("  walk               {:>9.1} ms", t.walk_ms);
-    println!("  probe (parallel)   {:>9.1} ms", t.probe_ms);
-    println!("  classify           {:>9.1} ms", t.classify_ms);
+    println!("  scan table setup   {:>9.1} ms", t.scan_setup_ms);
+    println!("  scan table writes  {:>9.1} ms", t.scan_write_ms);
+    println!("  compare            {:>9.1} ms", t.compare_ms);
+    println!("  scan table cleanup {:>9.1} ms", t.scan_cleanup_ms);
+    println!("  probe + classify   {:>9.1} ms (wall)", t.probe_ms);
+    println!("  classify           {:>9.1} ms (worker sum)", t.classify_ms);
     println!("  write              {:>9.1} ms", t.write_ms);
     println!("  prune              {:>9.1} ms", t.prune_ms);
-    println!("  fts rebuild        {:>9.1} ms", t.index_ms);
+    println!("  bulk recovery      {:>9.1} ms", t.index_ms);
+    println!("    secondary indexes {:>7.1} ms", t.bulk.secondary_indexes_ms);
+    println!("    triggers          {:>7.1} ms", t.bulk.triggers_ms);
+    println!("    prefix FTS        {:>7.1} ms", t.bulk.fts_ms);
+    println!("    trigram FTS       {:>7.1} ms", t.bulk.trigram_ms);
     println!("  ------------------------------");
     println!("  total (stages)     {:>9.1} ms", t.total_ms());
     println!("  total (wall)       {:>9.1} ms", wall);
@@ -546,6 +560,8 @@ pub fn parse(command: &str, folder: PathBuf, rest: &[String]) -> Result<IndexArg
         full: false,
         threads: 0,
         batch_size: 5_000,
+        scan_batch_size: 5_000,
+        basic: false,
         limit: 25,
         query: String::new(),
         reference_db: None,
@@ -555,6 +571,7 @@ pub fn parse(command: &str, folder: PathBuf, rest: &[String]) -> Result<IndexArg
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--full" => args.full = true,
+            "--basic" if command == "index" => args.basic = true,
             "--threads" => {
                 args.threads = iter
                     .next()
@@ -568,6 +585,13 @@ pub fn parse(command: &str, folder: PathBuf, rest: &[String]) -> Result<IndexArg
                     .context("--batch needs a value")?
                     .parse()
                     .context("--batch must be a number")?
+            }
+            "--scan-batch" if command == "index" => {
+                args.scan_batch_size = iter
+                    .next()
+                    .context("--scan-batch needs a value")?
+                    .parse()
+                    .context("--scan-batch must be a number")?
             }
             "--limit" => {
                 args.limit = iter

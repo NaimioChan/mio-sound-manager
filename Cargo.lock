@@ -2411,6 +2411,7 @@ dependencies = [
  "log",
  "rayon",
  "rusqlite",
+ "serde",
  "serde_json",
  "symphonia",
  "symphonia-metadata",

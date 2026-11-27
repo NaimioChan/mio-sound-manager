@@ -29,26 +29,37 @@ export function IndexOverlay(props: {
 }) {
   const pct = () => {
     const p = props.progress
-    if (!p || p.total === 0) return null
+    if (!p || p.phase !== 'Indexing' || p.total === 0) return null
     return Math.min(100, Math.round((p.done / p.total) * 100))
+  }
+
+  const phaseLabel = () => {
+    const phase = props.progress?.phase
+    if (phase === 'Comparing') return t('index.comparing')
+    if (phase === 'Indexing') return t('index.indexingFiles')
+    if (phase === 'Finalizing') return t('index.finalizing')
+    if (phase === 'Ready') return t('index.ready')
+    if (phase === 'Failed') return t('index.failed')
+    return t('index.walking')
   }
 
   return (
     <Show when={props.open}>
-      <div class="index-overlay" role="dialog" aria-busy="true">
+      <div class="index-overlay" role="dialog" aria-busy="true" data-phase={props.progress?.phase ?? 'Scanning'}>
         <div class="index-card">
           <div class="index-title">{props.label}</div>
+          <div class="index-phase">{phaseLabel()}</div>
 
-          <ix-progress-indicator
-            type="linear"
-            value={pct() ?? 0}
-            label={pct() === null ? t('index.walking') : `${pct()}%`}
-          />
+          <Show when={pct() !== null} fallback={<progress class="index-indeterminate" aria-label={phaseLabel()} />}>
+            <ix-progress-indicator type="linear" value={pct() ?? 0} label="" />
+          </Show>
 
           <div class="index-detail">
             <Show
-              when={props.progress && props.progress.total > 0 ? props.progress : null}
-              fallback={<span>{t('index.walkingEllipsis')}</span>}
+              when={props.progress?.phase === 'Indexing' ? props.progress : null}
+              fallback={<span>{props.progress?.phase === 'Scanning'
+                ? t('index.filesSeen', { count: props.progress.filesSeen.toLocaleString() })
+                : t('index.phaseWorking')}</span>}
             >
               {(p) => (
                 <span>

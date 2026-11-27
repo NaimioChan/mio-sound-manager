@@ -169,6 +169,7 @@ export function App() {
   const [status, setStatus] = createSignal<AppStatus | null>(null)
   const [bootError, setBootError] = createSignal<string | null>(null)
   const [libraries, setLibraries] = createSignal<LibraryStatus[]>([])
+  const [metadataLibrary, setMetadataLibrary] = createSignal<LibraryStatus | null>(null)
   const [matching, setMatching] = createSignal(0)
   const [dataEpoch, setDataEpoch] = createSignal(0)
   const [folders, setFolders] = createSignal<FolderNode | null>(null)
@@ -249,6 +250,7 @@ export function App() {
   })
 
   const [notice, setNotice] = createSignal<string | null>(null)
+  const [metadataFailureShown, setMetadataFailureShown] = createSignal('')
   const [appVersion, setAppVersion] = createSignal('')
 
   /** A blocking index pass is running; the window is locked behind the overlay. */
@@ -429,7 +431,17 @@ export function App() {
       const next = await api.status()
       setStatus(next)
       setBootError(null)
-      setLibraries(await api.listLibraries())
+      const nextLibraries = await api.listLibraries()
+      setLibraries(nextLibraries)
+      const active = nextLibraries.find((library) => library.active) ?? null
+      setMetadataLibrary(active?.metadataIndexing ? active : null)
+      if (active?.metadataStatus === 'failed' && active.metadataFailed > 0) {
+        const key = `${active.root}:${active.metadataFailed}`
+        if (metadataFailureShown() !== key) {
+          setMetadataFailureShown(key)
+          setNotice(t('notice.metadataFailed', { count: active.metadataFailed }))
+        }
+      }
       if (next.library) {
         await Promise.all([loadTree(), loadSidebar(), loadHistory()])
       }
@@ -601,6 +613,7 @@ export function App() {
       const result = await api.addLibrary(target, (progress) => {
         setIndexing({ label: t('index.indexing'), progress })
       })
+      setIndexing(null)
       if (result.skippedDirs.length > 0) {
         setNotice(
           t('notice.indexSkippedDirs', {
@@ -631,6 +644,7 @@ export function App() {
       const result = await api.reindexLibrary(root, (progress) => {
         setIndexing({ label: full ? t('index.fullReindex') : t('index.reindexing'), progress })
       }, full)
+      setIndexing(null)
       if (result.skippedDirs.length > 0) {
         setNotice(
           t('notice.indexSkippedDirs', {
@@ -684,6 +698,44 @@ export function App() {
     setSettings(next)
     saveSettings(next)
   }
+
+  const indexingInBackground = createMemo(() => libraries().some((library) => library.indexing || library.metadataIndexing))
+  createEffect(() => {
+    if (!indexingInBackground()) return
+    let cancelled = false
+    let timer: number | undefined
+    const poll = async () => {
+      try {
+        const previous = libraries().find((library) => library.active)
+        const next = await api.listLibraries()
+        if (cancelled) return
+        setLibraries(next)
+        const active = next.find((library) => library.active) ?? null
+        setMetadataLibrary(active?.metadataIndexing ? active : null)
+        if (active?.metadataStatus === 'failed' && active.metadataFailed > 0) {
+          const key = `${active.root}:${active.metadataFailed}`
+          if (metadataFailureShown() !== key) {
+            setMetadataFailureShown(key)
+            setNotice(t('notice.metadataFailed', { count: active.metadataFailed }))
+          }
+        }
+        if (active && previous?.root === active.root &&
+            ((previous.indexing && !active.indexing) || (previous.metadataIndexing && !active.metadataIndexing))) {
+          void Promise.all([loadTree(), loadSidebar(), runSearch()])
+        }
+        if (next.some((library) => library.indexing || library.metadataIndexing)) {
+          timer = window.setTimeout(poll, 350)
+        }
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll, 1000)
+      }
+    }
+    timer = window.setTimeout(poll, 350)
+    onCleanup(() => {
+      cancelled = true
+      window.clearTimeout(timer)
+    })
+  })
 
   const changeTheme = (id: string) => {
     setTheme(applyTheme(id).id)
@@ -1282,7 +1334,7 @@ export function App() {
   const startResize = (event: PointerEvent) => {
     event.preventDefault()
     const startX = event.clientX
-    const startW = sidebarW()
+    const startW = (event.currentTarget as HTMLElement).parentElement?.getBoundingClientRect().width ?? sidebarW()
     const move = (e: PointerEvent) => {
       const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + e.clientX - startX))
       setSidebarW(next)
@@ -1448,7 +1500,7 @@ export function App() {
         />
       </header>
 
-      <div class="body" style={{ 'grid-template-columns': `${sidebarW()}px 1fr` }}>
+      <div class="body" style={{ '--mio-rail-width': `${sidebarW()}px` }}>
         {/*
           The rail and its drag handle share a wrapper so the handle can sit on the
           rail's own edge. It cannot be a grid child of `.body`: that would add a
@@ -1556,6 +1608,7 @@ export function App() {
           >
             <SoundTable
               epoch={dataEpoch()}
+              requestKey={JSON.stringify(request())}
               selectionReset={selectionReset()}
               request={request()}
               fetchWindow={fetchWindow}
@@ -1605,16 +1658,13 @@ export function App() {
       <footer class="statusbar">
         <Show
           when={status()?.audioAvailable}
-          fallback={<span class="bad">{status()?.audioError ?? t('status.noDevice')}</span>}
+          fallback={<span class="bad status-device">{status()?.audioError ?? t('status.noDevice')}</span>}
         >
           <span class="good">●</span>
           <span class="backend-tag">{status()?.backend}</span>
-          <span>{status()?.deviceName}</span>
+          <span class="status-device" title={status()?.deviceName ?? undefined}>{status()?.deviceName}</span>
           <span class="dim">
             {formatSampleRate(status()?.sampleRate ?? null)} · {status()?.channels} ch · {status()?.sampleFormat}
-          </span>
-          <span class="dim">
-            {t('status.enginePeriod', { ms: status()?.enginePeriodMs?.toFixed(2) ?? '—' })}
           </span>
         </Show>
 
@@ -1624,8 +1674,27 @@ export function App() {
           <span class="dim">{t('status.selected', { count: selectionCount().toLocaleString() })}</span>
         </Show>
 
+        <Show when={metadataLibrary()}>
+          {(library) => (
+            <div class="metadata-progress" role="status" aria-live="polite">
+              <span id="metadata-progress-label">{t('index.metadata', {
+                done: library().metadataIndexed.toLocaleString(),
+                total: library().metadataTotal.toLocaleString()
+              })}</span>
+              <progress
+                aria-labelledby="metadata-progress-label"
+                max={Math.max(1, library().metadataTotal)}
+                value={library().metadataIndexed}
+              />
+              <Show when={library().metadataFailed > 0}>
+                <span class="dim">{t('index.metadataFailed', { count: library().metadataFailed })}</span>
+              </Show>
+            </div>
+          )}
+        </Show>
+
         <Show when={appVersion()}>
-          {(version) => <span class="dim">v{version()}</span>}
+          {(version) => <span class="dim status-version">v{version()}</span>}
         </Show>
       </footer>
 

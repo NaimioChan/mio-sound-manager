@@ -16,14 +16,14 @@
 //!   includes the prune path.
 //! * **WAL is mandatory.** The UI queries while the indexer writes.
 
-use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use crate::error::{IndexError, Result};
-use crate::folders::{FolderNode, build_folder_tree, folder_range, relative_folder};
+use crate::folders::{build_folder_tree, folder_range, relative_folder, FolderNode};
 
 /// Current schema version, stored in `meta`. Bump when a migration is added.
 ///
@@ -41,7 +41,7 @@ pub const SCHEMA_VERSION: i64 = 4;
 pub const BPM_BACKFILL_KEY: &str = "bpm_rule";
 pub const BPM_BACKFILL: &str = "2";
 pub const METADATA_BACKFILL_KEY: &str = "metadata_rule";
-pub const METADATA_BACKFILL: &str = "6";
+pub const METADATA_BACKFILL: &str = "8";
 
 /// File name of the index inside a library folder.
 ///
@@ -71,12 +71,29 @@ pub struct SoundRow {
     pub ucs_category: Option<String>,
     pub ucs_subcategory: Option<String>,
     pub ucs_cat_id: Option<String>,
+    pub ucs_manual: bool,
     /// Folder relative to the library root, `""` at the root.
     pub folder: String,
     pub mtime_ns: i64,
     /// Tempo stated in the file name, or `None` when it states none. See
     /// [`crate::bpm`]: this is never guessed from the audio.
     pub bpm: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetadataCandidate {
+    pub path: String,
+    pub filesize: u64,
+    pub mtime_ns: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetadataUpdate {
+    pub path: String,
+    pub filesize: u64,
+    pub mtime_ns: i64,
+    pub description: Option<String>,
+    pub classification: crate::classify::Classification,
 }
 
 /// A row as read back, including the user-editable state.
@@ -98,6 +115,7 @@ pub struct Sound {
     pub ucs_category: Option<String>,
     pub ucs_subcategory: Option<String>,
     pub ucs_cat_id: Option<String>,
+    pub ucs_manual: bool,
     pub favorite: bool,
     pub category_manual: bool,
     pub folder: Option<String>,
@@ -115,6 +133,7 @@ pub struct EditState {
     pub ucs_category: Option<String>,
     pub ucs_subcategory: Option<String>,
     pub ucs_cat_id: Option<String>,
+    pub ucs_manual: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,11 +146,16 @@ pub enum SortColumn {
     Channels,
     SampleRate,
     Filesize,
+    Description,
     UcsCategory,
     UcsSubcategory,
 }
 
 impl SortColumn {
+    fn uses_metadata_sort_index(self) -> bool {
+        matches!(self, Self::Description | Self::UcsCategory | Self::UcsSubcategory)
+    }
+
     /// Whitelisted SQL. Sorting never interpolates a caller-supplied string.
     fn sql(self) -> &'static str {
         match self {
@@ -143,6 +167,7 @@ impl SortColumn {
             SortColumn::Channels => "s.channels",
             SortColumn::SampleRate => "s.sample_rate",
             SortColumn::Filesize => "s.filesize",
+            SortColumn::Description => "s.description COLLATE NOCASE",
             SortColumn::UcsCategory => "s.ucs_category COLLATE NOCASE",
             SortColumn::UcsSubcategory => "s.ucs_subcategory COLLATE NOCASE",
         }
@@ -293,6 +318,14 @@ pub struct ScannedPath {
     pub path: String,
     pub filesize: u64,
     pub mtime_ns: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BulkTimings {
+    pub secondary_indexes_ms: f64,
+    pub fts_ms: f64,
+    pub trigram_ms: f64,
+    pub triggers_ms: f64,
 }
 
 impl IndexDb {
@@ -494,41 +527,44 @@ impl IndexDb {
             })? as usize)
     }
 
-    pub fn scan_batch(
+    /// Snapshot changed paths once for both progress totals and probe batches.
+    pub(crate) fn stage_scan_changes(&self) -> Result<usize> {
+        self.conn.execute_batch(
+            "CREATE TEMP TABLE _scan_changed (
+                 path TEXT PRIMARY KEY,
+                 filesize INTEGER NOT NULL,
+                 mtime_ns INTEGER NOT NULL
+             ) WITHOUT ROWID;",
+        )?;
+        Ok(self.conn.execute(
+            "INSERT INTO _scan_changed
+             SELECT f.path, f.filesize, f.mtime_ns
+             FROM _scan_files f LEFT JOIN sounds s ON s.path = f.path
+             WHERE s.path IS NULL OR COALESCE(s.mtime_ns, 0) = 0
+               OR s.mtime_ns <> f.mtime_ns OR COALESCE(s.filesize, 0) <> f.filesize",
+            [],
+        )?)
+    }
+
+    pub(crate) fn scan_batch(
         &self,
         after_path: Option<&str>,
         limit: usize,
         incremental: bool,
     ) -> Result<Vec<ScannedPath>> {
         use rusqlite::types::Value;
-        let (sql, args): (&str, Vec<Value>) = match (incremental, after_path) {
-            (true, Some(path)) => (
-                "SELECT f.path, f.filesize, f.mtime_ns
-                 FROM _scan_files f LEFT JOIN sounds s ON s.path = f.path
-                 WHERE f.path > ?1 AND (s.path IS NULL OR COALESCE(s.mtime_ns, 0) = 0
-                       OR s.mtime_ns <> f.mtime_ns OR COALESCE(s.filesize, 0) <> f.filesize)
-                 ORDER BY f.path LIMIT ?2",
+        let table = if incremental { "_scan_changed" } else { "_scan_files" };
+        let (sql, args) = match after_path {
+            Some(path) => (
+                format!("SELECT path, filesize, mtime_ns FROM {table} WHERE path > ?1 ORDER BY path LIMIT ?2"),
                 vec![Value::Text(path.to_owned()), Value::Integer(limit as i64)],
             ),
-            (true, None) => (
-                "SELECT f.path, f.filesize, f.mtime_ns
-                 FROM _scan_files f LEFT JOIN sounds s ON s.path = f.path
-                 WHERE s.path IS NULL OR COALESCE(s.mtime_ns, 0) = 0
-                       OR s.mtime_ns <> f.mtime_ns OR COALESCE(s.filesize, 0) <> f.filesize
-                 ORDER BY f.path LIMIT ?1",
-                vec![Value::Integer(limit as i64)],
-            ),
-            (false, Some(path)) => (
-                "SELECT path, filesize, mtime_ns FROM _scan_files
-                 WHERE path > ?1 ORDER BY path LIMIT ?2",
-                vec![Value::Text(path.to_owned()), Value::Integer(limit as i64)],
-            ),
-            (false, None) => (
-                "SELECT path, filesize, mtime_ns FROM _scan_files ORDER BY path LIMIT ?1",
+            None => (
+                format!("SELECT path, filesize, mtime_ns FROM {table} ORDER BY path LIMIT ?1"),
                 vec![Value::Integer(limit as i64)],
             ),
         };
-        let mut stmt = self.conn.prepare_cached(sql)?;
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params_from_iter(args.iter()), |r| {
             Ok(ScannedPath {
                 path: r.get(0)?,
@@ -541,16 +577,6 @@ impl IndexDb {
             batch.push(row?);
         }
         Ok(batch)
-    }
-
-    pub fn unchanged_scan_count(&self) -> Result<usize> {
-        Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM _scan_files f JOIN sounds s ON s.path = f.path
-             WHERE COALESCE(s.mtime_ns, 0) <> 0 AND s.mtime_ns = f.mtime_ns
-               AND COALESCE(s.filesize, 0) = f.filesize",
-            [],
-            |r| r.get::<_, i64>(0),
-        )? as usize)
     }
 
     pub fn prune_scan_missing(&mut self) -> Result<u64> {
@@ -590,7 +616,8 @@ impl IndexDb {
 
     pub fn end_scan(&mut self) -> Result<()> {
         self.conn.execute_batch(
-            "DROP TABLE IF EXISTS _scan_files;
+            "DROP TABLE IF EXISTS _scan_changed;
+             DROP TABLE IF EXISTS _scan_files;
                  DROP TABLE IF EXISTS _scan_skipped;",
         )?;
         self.conn.pragma_update(None, "temp_store", "MEMORY")?;
@@ -617,9 +644,11 @@ impl IndexDb {
                 category_manual INTEGER NOT NULL DEFAULT 0,
                 folder TEXT,
                 description TEXT,
-                ucs_category TEXT,
-                ucs_subcategory TEXT,
-                ucs_cat_id TEXT
+                 ucs_category TEXT,
+                 ucs_subcategory TEXT,
+                 ucs_cat_id TEXT,
+                 ucs_manual INTEGER NOT NULL DEFAULT 0,
+                 metadata_indexed INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_duration ON sounds(duration);
@@ -687,6 +716,26 @@ impl IndexDb {
                  ON sounds(ucs_category, ucs_subcategory);
              CREATE INDEX IF NOT EXISTS idx_description ON sounds(description);",
         )?;
+        // Filename ties stay ascending in both directions, so a reverse scan of
+        // the ascending index cannot serve the descending sort.
+        for column in ["description", "ucs_category", "ucs_subcategory"] {
+            for dir in ["ASC", "DESC"] {
+                self.conn.execute_batch(&format!(
+                    "CREATE INDEX IF NOT EXISTS idx_sort_{column}_{dir}
+                     ON sounds({column} COLLATE NOCASE {dir}, filename COLLATE NOCASE ASC);"
+                ))?;
+            }
+        }
+        if !has("metadata_indexed") {
+            self.conn.execute_batch(
+                "ALTER TABLE sounds ADD COLUMN metadata_indexed INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        if !has("ucs_manual") {
+            self.conn.execute_batch(
+                "ALTER TABLE sounds ADD COLUMN ucs_manual INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
         if backfill && self.get_meta(METADATA_BACKFILL_KEY)?.as_deref() != Some(METADATA_BACKFILL) {
             self.backfill_metadata()?;
             self.set_meta(METADATA_BACKFILL_KEY, METADATA_BACKFILL)?;
@@ -811,20 +860,37 @@ impl IndexDb {
 
         let classifier = crate::classify::Classifier::new();
         let mut updates = Vec::new();
-        for (path, category_manual, description, ucs_category, ucs_subcategory, ucs_cat_id) in rows {
-            let needs_description = description.is_none();
-            if !needs_description && category_manual {
+        for (path, category_manual, description, ucs_category, ucs_subcategory, ucs_cat_id) in rows
+        {
+            let description_source = std::path::Path::new(&path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(|extension| matches!(extension.to_ascii_lowercase().as_str(), "wav" | "wave" | "mp3"))
+                .unwrap_or(false);
+            let needs_description = description_source;
+            let needs_ucs = ucs_category.is_none();
+            if !needs_description && !needs_ucs && category_manual {
                 continue;
             }
-            let meta = if needs_description {
+            let meta = if needs_description || needs_ucs {
                 crate::probe::probe_file(std::path::Path::new(&path))
             } else {
                 crate::probe::AudioMeta::default()
             };
-            let classification = classifier.classify_with_description(&path, meta.description.as_deref());
+            let effective_description = if description_source {
+                meta.description.as_deref()
+            } else {
+                meta.description.as_deref().or(description.as_deref())
+            };
+            let classification = classifier.classify_with_metadata(
+                &path,
+                effective_description,
+                meta.ucs_category.as_deref(),
+                meta.ucs_subcategory.as_deref(),
+            );
             updates.push((
                 path,
-                description.or(meta.description),
+                if description_source { meta.description } else { description.or(meta.description) },
                 category_manual,
                 classification,
                 ucs_category,
@@ -848,9 +914,9 @@ impl IndexDb {
                 description,
                 category_manual,
                 classification,
-                _old_ucs_category,
-                _old_ucs_subcategory,
-                _old_ucs_cat_id,
+                old_ucs_category,
+                old_ucs_subcategory,
+                old_ucs_cat_id,
             ) in updates
             {
                 stmt.execute(params![
@@ -859,10 +925,11 @@ impl IndexDb {
                     classification.category,
                     classification.subcategory,
                     classification.confidence,
-                    serde_json::to_string(&classification.matched_terms).unwrap_or_else(|_| "[]".into()),
-                    classification.ucs_category,
-                    classification.ucs_subcategory,
-                    classification.ucs_cat_id,
+                    serde_json::to_string(&classification.matched_terms)
+                        .unwrap_or_else(|_| "[]".into()),
+                    classification.ucs_category.or(old_ucs_category),
+                    classification.ucs_subcategory.or(old_ucs_subcategory),
+                    classification.ucs_cat_id.or(old_ucs_cat_id),
                     path
                 ])?;
             }
@@ -969,9 +1036,9 @@ impl IndexDb {
                 INSERT INTO sounds
                     (path, filename, duration, channels, sample_rate, filesize,
                      category, subcategory, confidence, matched_terms, folder,
-                     description, ucs_category, ucs_subcategory, ucs_cat_id,
-                     mtime_ns, indexed_at, bpm)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                     description, ucs_category, ucs_subcategory, ucs_cat_id, ucs_manual,
+                     metadata_indexed, mtime_ns, indexed_at, bpm)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
                 ON CONFLICT(path) DO UPDATE SET
                     filename = excluded.filename,
                     folder = excluded.folder,
@@ -979,10 +1046,29 @@ impl IndexDb {
                     channels = excluded.channels,
                     sample_rate = excluded.sample_rate,
                     filesize = excluded.filesize,
-                    description = excluded.description,
-                    ucs_category = excluded.ucs_category,
-                    ucs_subcategory = excluded.ucs_subcategory,
-                    ucs_cat_id = excluded.ucs_cat_id,
+                     description = CASE WHEN sounds.mtime_ns = excluded.mtime_ns
+                                             AND sounds.filesize = excluded.filesize
+                                        THEN COALESCE(sounds.description, excluded.description)
+                                        ELSE excluded.description END,
+                     ucs_category = CASE WHEN sounds.ucs_manual = 1 THEN sounds.ucs_category
+                                         WHEN sounds.mtime_ns = excluded.mtime_ns
+                                             AND sounds.filesize = excluded.filesize
+                                        THEN COALESCE(sounds.ucs_category, excluded.ucs_category)
+                                        ELSE excluded.ucs_category END,
+                     ucs_subcategory = CASE WHEN sounds.ucs_manual = 1 THEN sounds.ucs_subcategory
+                                             WHEN sounds.mtime_ns = excluded.mtime_ns
+                                             AND sounds.filesize = excluded.filesize
+                                        THEN COALESCE(sounds.ucs_subcategory, excluded.ucs_subcategory)
+                                        ELSE excluded.ucs_subcategory END,
+                     ucs_cat_id = CASE WHEN sounds.ucs_manual = 1 THEN sounds.ucs_cat_id
+                                         WHEN sounds.mtime_ns = excluded.mtime_ns
+                                             AND sounds.filesize = excluded.filesize
+                                        THEN COALESCE(sounds.ucs_cat_id, excluded.ucs_cat_id)
+                                        ELSE excluded.ucs_cat_id END,
+                     ucs_manual = sounds.ucs_manual,
+                     metadata_indexed = CASE WHEN sounds.mtime_ns = excluded.mtime_ns
+                                                  AND sounds.filesize = excluded.filesize
+                                             THEN sounds.metadata_indexed ELSE 0 END,
                     mtime_ns = excluded.mtime_ns,
                     indexed_at = excluded.indexed_at,
                     bpm = excluded.bpm,
@@ -1015,7 +1101,9 @@ impl IndexDb {
                     row.description,
                     row.ucs_category,
                     row.ucs_subcategory,
-                    row.ucs_cat_id,
+                     row.ucs_cat_id,
+                    row.ucs_manual as i64,
+                    0i64,
                     row.mtime_ns,
                     now,
                     row.bpm,
@@ -1025,6 +1113,132 @@ impl IndexDb {
         bump_index_version_in(&tx)?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn metadata_candidates(&self, limit: usize) -> Result<Vec<MetadataCandidate>> {
+        self.metadata_candidates_after(None, limit)
+    }
+
+    pub fn metadata_candidates_after(
+        &self,
+        after_path: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MetadataCandidate>> {
+        let (sql, args): (&str, Vec<rusqlite::types::Value>) = match after_path {
+            Some(path) => (
+                "SELECT path, filesize, mtime_ns FROM sounds
+                 WHERE metadata_indexed = 0 AND path > ?1
+                   AND (lower(filename) LIKE '%.wav' OR lower(filename) LIKE '%.wave'
+                        OR lower(filename) LIKE '%.mp3')
+                 ORDER BY path LIMIT ?2",
+                vec![
+                    rusqlite::types::Value::Text(path.to_owned()),
+                    rusqlite::types::Value::Integer(limit as i64),
+                ],
+            ),
+            None => (
+                "SELECT path, filesize, mtime_ns FROM sounds
+                 WHERE metadata_indexed = 0
+                   AND (lower(filename) LIKE '%.wav' OR lower(filename) LIKE '%.wave'
+                        OR lower(filename) LIKE '%.mp3')
+                 ORDER BY path LIMIT ?1",
+                vec![rusqlite::types::Value::Integer(limit as i64)],
+            ),
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
+            Ok(MetadataCandidate {
+                path: row.get(0)?,
+                filesize: row.get::<_, i64>(1)? as u64,
+                mtime_ns: row.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    pub fn metadata_candidate_count(&self) -> Result<usize> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM sounds
+             WHERE metadata_indexed = 0
+               AND (lower(filename) LIKE '%.wav' OR lower(filename) LIKE '%.wave'
+                    OR lower(filename) LIKE '%.mp3')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize)
+    }
+
+    /// Schedule a new extraction rule from the metadata worker. Commit the
+    /// version and pending bits together, so reopening can resume a partial pass.
+    pub fn prepare_metadata_pass(&mut self) -> Result<()> {
+        if self.get_meta(METADATA_BACKFILL_KEY)?.as_deref() == Some(METADATA_BACKFILL) {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE sounds SET metadata_indexed = 0 WHERE metadata_indexed <> 0
+               AND (lower(filename) LIKE '%.wav' OR lower(filename) LIKE '%.wave'
+                    OR lower(filename) LIKE '%.mp3')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![METADATA_BACKFILL_KEY, METADATA_BACKFILL],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn mark_metadata_failed(&mut self, candidate: &MetadataCandidate) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE sounds SET metadata_indexed = 1
+             WHERE path = ?1 AND mtime_ns = ?2 AND filesize = ?3",
+            params![candidate.path, candidate.mtime_ns, candidate.filesize as i64],
+        )?;
+        Ok(changed != 0)
+    }
+
+    pub fn apply_metadata_batch(&mut self, updates: &[MetadataUpdate]) -> Result<u64> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.transaction()?;
+        let mut stmt = tx.prepare(
+            "UPDATE sounds SET description = ?1,
+                 ucs_category = CASE WHEN ucs_manual = 1 THEN ucs_category ELSE ?2 END,
+                 ucs_subcategory = CASE WHEN ucs_manual = 1 THEN ucs_subcategory ELSE ?3 END,
+                 ucs_cat_id = CASE WHEN ucs_manual = 1 THEN ucs_cat_id ELSE ?4 END,
+                category = CASE WHEN category_manual = 1 THEN category ELSE ?5 END,
+                subcategory = CASE WHEN category_manual = 1 THEN subcategory ELSE ?6 END,
+                confidence = CASE WHEN category_manual = 1 THEN confidence ELSE ?7 END,
+                matched_terms = CASE WHEN category_manual = 1 THEN matched_terms ELSE ?8 END,
+                metadata_indexed = 1
+             WHERE path = ?9 AND mtime_ns = ?10 AND filesize = ?11",
+        )?;
+        let mut changed = 0u64;
+        for update in updates {
+            let terms = serde_json::to_string(&update.classification.matched_terms)
+                .unwrap_or_else(|_| "[]".into());
+            changed += stmt.execute(params![
+                update.description,
+                update.classification.ucs_category,
+                update.classification.ucs_subcategory,
+                update.classification.ucs_cat_id,
+                update.classification.category,
+                update.classification.subcategory,
+                update.classification.confidence,
+                terms,
+                update.path,
+                update.mtime_ns,
+                update.filesize as i64,
+            ])? as u64;
+        }
+        drop(stmt);
+        if changed > 0 {
+            bump_index_version_in(&tx)?;
+        }
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// Delete rows for files that no longer exist, given the complete set of
@@ -1105,7 +1319,10 @@ impl IndexDb {
     }
 
     /// Restore the triggers and indexes, rebuild `sounds_fts` from `sounds`.
-    pub fn end_bulk(&mut self) -> Result<()> {
+    pub fn end_bulk(&mut self) -> Result<BulkTimings> {
+        use std::time::Instant;
+
+        let indexes = Instant::now();
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_duration ON sounds(duration);
              CREATE INDEX IF NOT EXISTS idx_channels ON sounds(channels);
@@ -1116,16 +1333,23 @@ impl IndexDb {
              CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);
              CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);
              CREATE INDEX IF NOT EXISTS idx_mtime ON sounds(mtime_ns);
-             CREATE INDEX IF NOT EXISTS idx_bpm ON sounds(bpm);
-             CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);
-             CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);",
+             CREATE INDEX IF NOT EXISTS idx_bpm ON sounds(bpm);",
         )?;
+        let triggers = Instant::now();
         self.create_fts()?;
+        let fts = Instant::now();
         self.rebuild_fts()?;
+        let trigram = Instant::now();
         self.rebuild_trigram_fts()?;
+        let finished = Instant::now();
         self.set_meta("fts_dirty", "0")?;
         self.favorite_index_available = true;
-        Ok(())
+        Ok(BulkTimings {
+            secondary_indexes_ms: (triggers - indexes).as_secs_f64() * 1000.0,
+            triggers_ms: (fts - triggers).as_secs_f64() * 1000.0,
+            fts_ms: (trigram - fts).as_secs_f64() * 1000.0,
+            trigram_ms: (finished - trigram).as_secs_f64() * 1000.0,
+        })
     }
 
     pub fn count(&self) -> Result<u64> {
@@ -1245,7 +1469,7 @@ impl IndexDb {
         let tx = self.conn.transaction()?;
         let mut stmt = tx.prepare(
             "UPDATE sounds SET ucs_category = ?1, ucs_subcategory = ?2, ucs_cat_id = ?3,
-             category = ?4, subcategory = ?5, confidence = 1, category_manual = 1
+              ucs_manual = 1, category = ?4, subcategory = ?5, confidence = 1, category_manual = 1
              WHERE path = ?6",
         )?;
         let mut changed = 0;
@@ -1330,15 +1554,12 @@ impl IndexDb {
         Ok(changed)
     }
 
-    pub fn restore_category_and_ucs_many(
-        &mut self,
-        states: &[EditState],
-    ) -> Result<u64> {
+    pub fn restore_category_and_ucs_many(&mut self, states: &[EditState]) -> Result<u64> {
         let tx = self.conn.transaction()?;
         let mut stmt = tx.prepare(
             "UPDATE sounds SET category = ?1, subcategory = ?2, category_manual = ?3,
-             ucs_category = ?4, ucs_subcategory = ?5, ucs_cat_id = ?6
-             WHERE path = ?7",
+             ucs_category = ?4, ucs_subcategory = ?5, ucs_cat_id = ?6, ucs_manual = ?7
+             WHERE path = ?8",
         )?;
         let mut changed = 0;
         for state in states {
@@ -1349,6 +1570,7 @@ impl IndexDb {
                 state.ucs_category,
                 state.ucs_subcategory,
                 state.ucs_cat_id,
+                state.ucs_manual as i64,
                 state.path
             ])? as u64;
         }
@@ -1429,11 +1651,13 @@ impl IndexDb {
         self.update_matching(
             params,
             excluded,
-            "ucs_category = ?, ucs_subcategory = ?, ucs_cat_id = ?,
+            "ucs_category = ?, ucs_subcategory = ?, ucs_cat_id = ?, ucs_manual = 1,
              category = ?, subcategory = ?, confidence = 1, category_manual = 1",
             vec![
                 Value::Text(category.to_string()),
-                subcategory.map(|v| Value::Text(v.to_string())).unwrap_or(Value::Null),
+                subcategory
+                    .map(|v| Value::Text(v.to_string()))
+                    .unwrap_or(Value::Null),
                 Value::Text(cat_id.to_string()),
                 Value::Text(projected_category.to_string()),
                 projected_subcategory
@@ -1442,10 +1666,12 @@ impl IndexDb {
             ],
             "s.ucs_category IS NOT ? OR s.ucs_subcategory IS NOT ? OR s.ucs_cat_id IS NOT ?
              OR s.category IS NOT ? OR s.subcategory IS NOT ? OR s.confidence != 1
-             OR s.category_manual != 1",
+             OR s.category_manual != 1 OR s.ucs_manual != 1",
             vec![
                 Value::Text(category.to_string()),
-                subcategory.map(|v| Value::Text(v.to_string())).unwrap_or(Value::Null),
+                subcategory
+                    .map(|v| Value::Text(v.to_string()))
+                    .unwrap_or(Value::Null),
                 Value::Text(cat_id.to_string()),
                 Value::Text(projected_category.to_string()),
                 projected_subcategory
@@ -1494,7 +1720,7 @@ impl IndexDb {
         let (snapshot_sql, snapshot_args) = Self::build_search_sql_for(
             params,
             "s.path, s.favorite, s.category, s.subcategory, s.category_manual,
-             s.ucs_category, s.ucs_subcategory, s.ucs_cat_id",
+             s.ucs_category, s.ucs_subcategory, s.ucs_cat_id, s.ucs_manual",
             false,
             substring,
             excluded,
@@ -1514,6 +1740,7 @@ impl IndexDb {
                     ucs_category: row.get(5)?,
                     ucs_subcategory: row.get(6)?,
                     ucs_cat_id: row.get(7)?,
+                    ucs_manual: row.get::<_, i64>(8)? == 1,
                 });
             }
         }
@@ -1569,7 +1796,44 @@ impl IndexDb {
         counting: bool,
         substring: bool,
     ) -> (String, Vec<rusqlite::types::Value>) {
+        if !counting && params.sort_by.is_some() {
+            // Compute the shared-description count only for the final page. It
+            // is a correlated subquery and would otherwise run on rows skipped
+            // by a temporary sort (for example after a selective FTS filter).
+            let (page, args) = Self::build_search_sql_for(params, "s.id", false, substring, &[], None);
+            let order = Self::search_order(params);
+            let columns = SOUND_COLUMNS.replace(DESCRIPTION_COUNT_SQL, "counts.n");
+            return (format!(
+                "WITH page AS MATERIALIZED ({page}),
+                 descriptions AS (SELECT DISTINCT s.description FROM page JOIN sounds s USING (id)
+                                  WHERE s.description IS NOT NULL),
+                 counts AS MATERIALIZED (
+                     SELECT description, (SELECT COUNT(*) FROM sounds d WHERE d.description = descriptions.description) AS n
+                     FROM descriptions
+                 )
+                 SELECT {columns} FROM page JOIN sounds s ON s.id = page.id
+                 LEFT JOIN counts ON counts.description = s.description{order}"
+            ), args);
+        }
         Self::build_search_sql_for(params, SOUND_COLUMNS, counting, substring, &[], None)
+    }
+
+    fn search_order(params: &SearchParams) -> String {
+        let Some(sort) = params.sort_by else { return String::new() };
+        let dir = match params.sort_dir.unwrap_or(SortDir::Asc) {
+            SortDir::Asc => "ASC",
+            SortDir::Desc => "DESC",
+        };
+        // NULLs sort last in both directions. A leading IS NULL expression
+        // instead would prevent SQLite from using the sort indexes.
+        let tie = if matches!(sort, SortColumn::Filename) {
+            ""
+        } else if sort.uses_metadata_sort_index() {
+            ", s.filename COLLATE NOCASE ASC, s.id ASC"
+        } else {
+            ", s.filename COLLATE NOCASE ASC"
+        };
+        format!(" ORDER BY {} {dir} NULLS LAST{tie}", sort.sql())
     }
 
     fn build_search_sql_for(
@@ -1711,33 +1975,7 @@ impl IndexDb {
         }
 
         if !counting {
-            if let Some(sort) = params.sort_by {
-                let dir = match params.sort_dir.unwrap_or(SortDir::Asc) {
-                    SortDir::Asc => "ASC",
-                    SortDir::Desc => "DESC",
-                };
-                let col = sort.sql();
-                // NULLs last in both directions: an unset duration must not jump
-                // to the top just because the user sorted descending.
-                //
-                // Written without the `{col} IS NULL` prefix term. That expression
-                // defeats every sort index — SQLite will not use an index whose
-                // first ORDER BY term is an arbitrary expression — so each paged
-                // query materialised and sorted the whole 280k table before
-                // applying OFFSET: the scroll freeze. `NULLS LAST` keeps the
-                // semantics and lets an index serve the sort.
-                //
-                // `s.filename COLLATE NOCASE` as the tiebreaker only when the
-                // sort column is not already filename: the duplicate term would
-                // force a TEMP B-TREE even with the index, because SQLite will
-                // not prove the second term ordered when the first equals it.
-                let tie = if matches!(sort, SortColumn::Filename) {
-                    ""
-                } else {
-                    ", s.filename COLLATE NOCASE ASC"
-                };
-                sql.push_str(&format!(" ORDER BY {col} {dir} NULLS LAST{tie}"));
-            }
+            sql.push_str(&Self::search_order(params));
             sql.push_str(" LIMIT ? OFFSET ?");
             args.push(Value::Integer(
                 if params.limit == 0 { 50 } else { params.limit } as i64,
@@ -1850,6 +2088,9 @@ impl IndexDb {
     }
 }
 
+const DESCRIPTION_COUNT_SQL: &str = "CASE WHEN s.description IS NULL THEN NULL ELSE \
+       (SELECT COUNT(*) FROM sounds d WHERE d.description = s.description) END";
+
 /// Column list shared by every read, in the order `read_sound` expects.
 const SOUND_COLUMNS: &str = "s.id, s.path, s.filename, s.duration, s.channels, s.sample_rate, \
      s.filesize, s.category, s.subcategory, s.confidence, s.matched_terms, s.favorite, \
@@ -1857,7 +2098,7 @@ const SOUND_COLUMNS: &str = "s.id, s.path, s.filename, s.duration, s.channels, s
      CASE WHEN s.description IS NULL THEN NULL ELSE \
        (SELECT COUNT(*) FROM sounds d WHERE d.description = s.description) END, \
      s.ucs_category, \
-     s.ucs_subcategory, s.ucs_cat_id";
+      s.ucs_subcategory, s.ucs_cat_id, s.ucs_manual";
 
 fn bump_index_version_in(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     tx.execute(
@@ -1895,6 +2136,7 @@ fn read_sound(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sound> {
         ucs_category: row.get(17)?,
         ucs_subcategory: row.get(18)?,
         ucs_cat_id: row.get(19)?,
+        ucs_manual: row.get::<_, i64>(20)? == 1,
     })
 }
 
@@ -1937,6 +2179,7 @@ pub fn row_from_parts(
         ucs_category: classification.ucs_category.clone(),
         ucs_subcategory: classification.ucs_subcategory.clone(),
         ucs_cat_id: classification.ucs_cat_id.clone(),
+        ucs_manual: false,
         mtime_ns: meta.mtime_ns,
         bpm,
     }
@@ -1964,6 +2207,7 @@ mod tests {
             ucs_category: None,
             ucs_subcategory: None,
             ucs_cat_id: None,
+            ucs_manual: false,
             folder: String::new(),
             mtime_ns: 1,
             bpm: None,
@@ -2103,6 +2347,7 @@ mod tests {
         db.begin_scan().unwrap();
         db.stage_scan_batch(&[("C:/lib/a.wav".into(), 101, 1)])
             .unwrap();
+        assert_eq!(db.stage_scan_changes().unwrap(), 1);
         let batch = db.scan_batch(None, 10, true).unwrap();
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].filesize, 101);
@@ -2150,11 +2395,10 @@ mod tests {
 
         let prefix = db.search(&SearchParams::new("pian")).unwrap();
         assert_eq!(prefix.len(), 2, "the existing prefix search stays primary");
-        assert!(
-            db.search(&SearchParams::new("no-match"))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(db
+            .search(&SearchParams::new("no-match"))
+            .unwrap()
+            .is_empty());
         assert!(db.search(&SearchParams::new("ia")).unwrap().is_empty());
     }
 
@@ -2502,6 +2746,8 @@ mod tests {
             mtime_ns: 7,
             decoded_head: false,
             description: None,
+            ucs_category: None,
+            ucs_subcategory: None,
         };
         let classification = Classifier::new().classify(r"C:\lib\Foley\door_slam.wav");
         let built = row_from_parts(
@@ -2544,5 +2790,48 @@ mod tests {
         assert_eq!(hits[0].description.as_deref(), Some("Metal, Impact, Hit"));
         assert_eq!(hits[0].description_count, Some(1));
         assert_eq!(hits[0].ucs_cat_id.as_deref(), Some("GORESrce"));
+    }
+
+    #[test]
+    fn metadata_update_requires_the_original_fingerprint_and_updates_fts() {
+        let mut db = db();
+        let mut value = row("C:/lib/aircraft.wav", "Uncategorized");
+        value.mtime_ns = 12;
+        value.filesize = 100;
+        db.upsert_batch(&[value]).unwrap();
+        let classifier = Classifier::new();
+        let update = MetadataUpdate {
+            path: "C:/lib/aircraft.wav".into(),
+            filesize: 100,
+            mtime_ns: 12,
+            description: Some("unicorn engine pass".into()),
+            classification: classifier.classify_with_metadata(
+                "C:/lib/aircraft.wav",
+                Some("unicorn engine pass"),
+                Some("AIRCRAFT"),
+                Some("JET"),
+            ),
+        };
+        assert_eq!(db.apply_metadata_batch(std::slice::from_ref(&update)).unwrap(), 1);
+        assert_eq!(db.search(&SearchParams::new("unicorn")).unwrap().len(), 1);
+
+        let mut stale = update.clone();
+        stale.mtime_ns = 13;
+        assert_eq!(db.apply_metadata_batch(&[stale]).unwrap(), 0);
+        let sound = db.get_by_path("C:/lib/aircraft.wav").unwrap().unwrap();
+        assert_eq!(sound.description.as_deref(), Some("unicorn engine pass"));
+
+        let mut cleared = update;
+        cleared.description = None;
+        cleared.classification = classifier.classify_with_metadata(
+            "C:/lib/aircraft.wav",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(db.apply_metadata_batch(&[cleared]).unwrap(), 1);
+        let sound = db.get_by_path("C:/lib/aircraft.wav").unwrap().unwrap();
+        assert_eq!(sound.description, None);
+        assert!(db.search(&SearchParams::new("unicorn")).unwrap().is_empty());
     }
 }

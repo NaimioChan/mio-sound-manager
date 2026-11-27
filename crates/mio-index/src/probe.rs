@@ -53,6 +53,18 @@ pub struct AudioMeta {
     /// The first useful textual description found in the file's metadata.
     /// Embedded artwork and binary tags are deliberately excluded.
     pub description: Option<String>,
+    /// Official UCS category/subcategory declared by embedded metadata, when present.
+    pub ucs_category: Option<String>,
+    pub ucs_subcategory: Option<String>,
+}
+
+/// Embedded fields read by the optional metadata pass. The basic index never
+/// opens the metadata chunks, so a large library can become searchable first.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EmbeddedMetadata {
+    pub description: Option<String>,
+    pub ucs_category: Option<String>,
+    pub ucs_subcategory: Option<String>,
 }
 
 /// Is this extension one the indexer keeps?
@@ -124,6 +136,20 @@ pub fn probe_file(path: &Path) -> AudioMeta {
 
 /// Probe a file whose size and mtime the caller already has, skipping the `stat`.
 pub fn probe_with_meta(path: &Path, filesize: u64, mtime_ns: i64) -> AudioMeta {
+    probe_with_options(path, filesize, mtime_ns, true)
+}
+
+/// Probe only the fields required by the basic index.
+pub fn probe_basic_with_meta(path: &Path, filesize: u64, mtime_ns: i64) -> AudioMeta {
+    probe_with_options(path, filesize, mtime_ns, false)
+}
+
+fn probe_with_options(
+    path: &Path,
+    filesize: u64,
+    mtime_ns: i64,
+    read_embedded_metadata: bool,
+) -> AudioMeta {
     let mut meta = AudioMeta {
         filesize,
         mtime_ns,
@@ -133,7 +159,12 @@ pub fn probe_with_meta(path: &Path, filesize: u64, mtime_ns: i64) -> AudioMeta {
     // Metadata is independent of the audio demuxer's duration/channel probe.
     // Read it before opening Symphonia so WAV chunks after `data` and MP3 ID3
     // headers are still visible even when the demuxer stops early.
-    meta.description = read_description(path);
+    if read_embedded_metadata {
+        let metadata = read_metadata(path);
+        meta.description = metadata.description;
+        meta.ucs_category = metadata.ucs_category;
+        meta.ucs_subcategory = metadata.ucs_subcategory;
+    }
 
     let Ok(file) = File::open(path) else {
         return meta;
@@ -207,6 +238,33 @@ pub fn probe_with_meta(path: &Path, filesize: u64, mtime_ns: i64) -> AudioMeta {
     meta
 }
 
+/// Read only embedded metadata using the size and mtime already returned by the
+/// directory scan. The filesystem values are carried by the caller so this API
+/// does not perform another `stat` before the guarded database update.
+pub fn metadata_only_with_meta(
+    path: &Path,
+    _filesize: u64,
+    _mtime_ns: i64,
+) -> EmbeddedMetadata {
+    read_metadata(path).into()
+}
+
+/// Read from a single open handle. `Ok(None)` means the file fingerprint changed
+/// since the base index; leave that row pending for the next pass.
+pub fn metadata_only_with_meta_checked(
+    path: &Path,
+    filesize: u64,
+    expected_mtime_ns: i64,
+) -> std::io::Result<Option<EmbeddedMetadata>> {
+    let mut file = File::open(path)?;
+    let matches = |meta: Metadata| meta.len() == filesize && mtime_ns(&meta) == expected_mtime_ns;
+    if !matches(file.metadata()?) {
+        return Ok(None);
+    }
+    let metadata = read_metadata_from(path, &mut file);
+    Ok(matches(file.metadata()?).then(|| metadata.into()))
+}
+
 /// Fill in what the RIFF header says when symphonia would not open the file.
 ///
 /// Only WAV benefits: the other formats' headers are what symphonia already
@@ -252,33 +310,62 @@ fn apply_wav_fallback(path: &Path, meta: &mut AudioMeta) {
     meta.decoded_head = true;
 }
 
-fn read_description(path: &Path) -> Option<String> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())?
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "wav" | "wave" => read_wav_description(path),
-        "mp3" => read_mp3_description(path),
-        _ => None,
+#[derive(Debug, Default)]
+struct FileMetadata {
+    description: Option<String>,
+    ucs_category: Option<String>,
+    ucs_subcategory: Option<String>,
+}
+
+impl From<FileMetadata> for EmbeddedMetadata {
+    fn from(metadata: FileMetadata) -> Self {
+        Self {
+            description: metadata.description,
+            ucs_category: metadata.ucs_category,
+            ucs_subcategory: metadata.ucs_subcategory,
+        }
     }
 }
 
-fn read_wav_description(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
+fn read_metadata(path: &Path) -> FileMetadata {
+    let Ok(mut file) = File::open(path) else {
+        return FileMetadata::default();
+    };
+    read_metadata_from(path, &mut file)
+}
+
+fn read_metadata_from(path: &Path, file: &mut File) -> FileMetadata {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return FileMetadata::default();
+    };
+    let ext = ext.to_ascii_lowercase();
+    match ext.as_str() {
+        "wav" | "wave" => read_wav_metadata(file),
+        "mp3" => FileMetadata {
+            description: read_mp3_description(file),
+            ..Default::default()
+        },
+        _ => FileMetadata::default(),
+    }
+}
+
+fn read_wav_metadata(file: &mut File) -> FileMetadata {
     let mut header = [0u8; 12];
-    file.read_exact(&mut header).ok()?;
+    if file.read_exact(&mut header).is_err() {
+        return FileMetadata::default();
+    }
     if &header[..4] != b"RIFF" || &header[8..12] != b"WAVE" {
-        return None;
+        return FileMetadata::default();
     }
 
     let mut descriptions = Vec::new();
+    let mut ucs = None;
     loop {
         let mut chunk = [0u8; 8];
         if file.read_exact(&mut chunk).is_err() {
             break;
         }
-        let size = u32::from_le_bytes(chunk[4..8].try_into().ok()?) as u64;
+        let size = u32::from_le_bytes(chunk[4..8].try_into().unwrap()) as u64;
         let interesting = matches!(&chunk[..4], b"bext" | b"iXML" | b"LIST" | b"ID3 " | b"_PMX");
         let body = if interesting {
             let read_size = size.min(MAX_DESCRIPTION_BYTES as u64) as usize;
@@ -287,16 +374,24 @@ fn read_wav_description(path: &Path) -> Option<String> {
                 break;
             }
             if size > read_size as u64 {
-                file.seek(SeekFrom::Current((size - read_size as u64) as i64))
-                    .ok()?;
+                if file
+                    .seek(SeekFrom::Current((size - read_size as u64) as i64))
+                    .is_err()
+                {
+                    break;
+                }
             }
             body
         } else {
-            file.seek(SeekFrom::Current(size as i64)).ok()?;
+            if file.seek(SeekFrom::Current(size as i64)).is_err() {
+                break;
+            }
             Vec::new()
         };
         if size & 1 == 1 {
-            file.seek(SeekFrom::Current(1)).ok()?;
+            if file.seek(SeekFrom::Current(1)).is_err() {
+                break;
+            }
         }
 
         match &chunk[..4] {
@@ -306,9 +401,8 @@ fn read_wav_description(path: &Path) -> Option<String> {
                 }
             }
             b"iXML" => {
-                if let Some(value) = xml_description(&body) {
-                    descriptions.push(value);
-                }
+                descriptions.extend(xml_descriptions(&body));
+                ucs = xml_musical_category(&body).or(ucs);
             }
             b"LIST" => descriptions.extend(riff_info_descriptions(&body)),
             b"ID3 " => descriptions.extend(id3_descriptions(&body)),
@@ -320,11 +414,14 @@ fn read_wav_description(path: &Path) -> Option<String> {
             _ => {}
         }
     }
-    choose_description(descriptions)
+    FileMetadata {
+        description: choose_description(descriptions),
+        ucs_category: ucs.as_ref().map(|value| value.0.clone()),
+        ucs_subcategory: ucs.and_then(|value| value.1),
+    }
 }
 
-fn read_mp3_description(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
+fn read_mp3_description(file: &mut File) -> Option<String> {
     let mut header = [0u8; 10];
     file.read_exact(&mut header).ok()?;
     if &header[..3] != b"ID3" {
@@ -393,13 +490,60 @@ fn id3_descriptions(body: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn xml_description(body: &[u8]) -> Option<String> {
+fn xml_descriptions(body: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(body);
     let lower = text.to_ascii_lowercase();
-    let start = lower.find("<description")?;
-    let value_start = text[start..].find('>')? + start + 1;
-    let value_end = lower[value_start..].find("</description>")? + value_start;
-    trim_metadata_text(text[value_start..value_end].as_bytes())
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(relative) = lower[at..].find("<description") {
+        let start = at + relative;
+        let Some(value_start) = text[start..].find('>').map(|offset| start + offset + 1) else {
+            break;
+        };
+        let Some(value_end) = lower[value_start..]
+            .find("</description>")
+            .map(|offset| value_start + offset)
+        else {
+            break;
+        };
+        if let Some(value) = trim_metadata_text(text[value_start..value_end].as_bytes()) {
+            out.push(value);
+        }
+        at = value_end + "</description>".len();
+    }
+    out
+}
+
+fn xml_musical_category(body: &[u8]) -> Option<(String, Option<String>)> {
+    let text = String::from_utf8_lossy(body);
+    let lower = text.to_ascii_lowercase();
+    let mut at = 0;
+    while let Some(relative) = lower[at..].find("<attr>") {
+        let start = at + relative;
+        let end = lower[start..]
+            .find("</attr>")
+            .map(|offset| start + offset)?;
+        let block = &text[start..end];
+        let block_lower = block.to_ascii_lowercase();
+        let name_start = block_lower.find("<name>")? + "<name>".len();
+        let name_end = block_lower[name_start..].find("</name>")? + name_start;
+        if block[name_start..name_end]
+            .trim()
+            .eq_ignore_ascii_case("MusicalCategory")
+        {
+            let value_start = block_lower.find("<value>")? + "<value>".len();
+            let value_end = block_lower[value_start..].find("</value>")? + value_start;
+            let mut parts = block[value_start..value_end]
+                .split('/')
+                .map(str::trim)
+                .filter(|part| !part.is_empty());
+            let category = parts.next()?.to_ascii_uppercase();
+            let subcategory = parts.next().map(|part| part.to_ascii_uppercase());
+            return Some((category, subcategory));
+        }
+        at = end + "</attr>".len();
+    }
+    None
 }
 
 fn ascii_description(body: &[u8]) -> Option<String> {
@@ -421,7 +565,95 @@ fn trim_metadata_text(bytes: &[u8]) -> Option<String> {
     if text.len() < 3 || printable_ratio(&text) < 0.95 {
         return None;
     }
-    Some(text)
+
+    // Metadata writers often put a useful phrase beside a technical dump in
+    // the same field. Keep meaningful segments and discard lines/clauses that
+    // only describe the container, encoder or recording equipment.
+    let segments: Vec<String> = text
+        .split(|c: char| matches!(c, '\r' | '\n' | '|' | ';' | ','))
+        .filter_map(clean_metadata_segment)
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+    Some(segments.join(", "))
+}
+
+fn clean_metadata_segment(segment: &str) -> Option<String> {
+    let text = segment
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = text.trim();
+    if text.len() < 3 || !text.chars().any(|c| c.is_alphabetic()) {
+        return None;
+    }
+
+    let lower = text.to_ascii_lowercase();
+    let digits = text.chars().filter(|c| c.is_ascii_digit()).count();
+    let technical = [
+        "sample rate",
+        "samplerate",
+        "bit depth",
+        "bitdepth",
+        "bits per sample",
+        "channel count",
+        "channels",
+        "stereo",
+        "mono",
+        "duration",
+        "codec",
+        "container",
+        "bitrate",
+        "kilobit",
+        "sample format",
+        "file format",
+        "device",
+        "serial number",
+        "firmware",
+        "guid",
+        "uuid",
+        "hash",
+        "checksum",
+        "md5",
+        "sha1",
+        "sha256",
+    ];
+    let has_technical_term = technical.iter().any(|term| lower.contains(term));
+    let field_label = text
+        .split_once(':')
+        .map(|(label, _)| technical.iter().any(|term| label.trim().to_ascii_lowercase().contains(term)))
+        .unwrap_or(false);
+    let unit_dump = lower.contains(" hz")
+        || lower.contains("khz")
+        || lower.contains(" khz")
+        || lower.contains(" bit")
+        || lower.contains("bits")
+        || lower.contains(" bps")
+        || lower.contains(" kbps")
+        || lower.contains(" mbps")
+        || lower.contains(" sec")
+        || lower.contains(" ms");
+
+    // A long hexadecimal token is normally a GUID, hash, or binary tag that
+    // happened to survive lossy UTF-8 conversion. Do not put it in FTS.
+    if has_long_hex_token(text) {
+        return None;
+    }
+    if field_label || has_technical_term || (unit_dump && digits > 0) {
+        return None;
+    }
+    if digits >= 4 && digits * 3 > text.chars().filter(|c| c.is_alphanumeric()).count() {
+        return None;
+    }
+
+    Some(text.to_string())
+}
+
+fn has_long_hex_token(text: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_hexdigit())
+        .any(|token| token.len() >= 24 && token.chars().any(|c| c.is_ascii_digit()))
 }
 
 fn printable_ratio(text: &str) -> f64 {
@@ -721,6 +953,35 @@ mod tests {
     }
 
     #[test]
+    fn basic_probe_does_not_read_embedded_description_or_ucs() {
+        let mut bytes = wav_bytes(10);
+        bytes.extend_from_slice(b"bext");
+        bytes.extend_from_slice(&256u32.to_le_bytes());
+        let mut description = [0u8; 256];
+        description[..18].copy_from_slice(b"Metal, Impact, Hit");
+        bytes.extend_from_slice(&description);
+        let path = write_temp("basic-probe-skips-metadata.wav", &bytes);
+        let meta = probe_basic_with_meta(&path, bytes.len() as u64, 7);
+        assert_eq!(meta.duration_s, Some(10.0 / 44_100.0));
+        assert_eq!(meta.description, None);
+        assert_eq!(meta.ucs_category, None);
+        assert_eq!(meta.ucs_subcategory, None);
+    }
+
+    #[test]
+    fn reads_ucs_musical_category_from_ixml() {
+        let mut bytes = wav_bytes(10);
+        let xml = br#"<?xml version="1.0"?><BWFXML><STEINBERG><ATTR_LIST><ATTR><NAME>MusicalCategory</NAME><VALUE>AIRCRAFT / JET</VALUE></ATTR></ATTR_LIST></STEINBERG></BWFXML>"#;
+        bytes.extend_from_slice(b"iXML");
+        bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(xml);
+        let path = write_temp("ucs-ixml.wav", &bytes);
+        let meta = probe_file(&path);
+        assert_eq!(meta.ucs_category.as_deref(), Some("AIRCRAFT"));
+        assert_eq!(meta.ucs_subcategory.as_deref(), Some("JET"));
+    }
+
+    #[test]
     fn rejects_binary_bext_garbage() {
         let mut bytes = wav_bytes(10);
         bytes.extend_from_slice(b"bext");
@@ -728,5 +989,33 @@ mod tests {
         bytes.extend_from_slice(&[0xff; 256]);
         let path = write_temp("description-garbage.wav", &bytes);
         assert_eq!(probe_file(&path).description, None);
+    }
+
+    #[test]
+    fn keeps_meaningful_prose_and_drops_technical_metadata() {
+        assert_eq!(
+            trim_metadata_text(b"Metal impact, 44100 Hz, 24 bit, stereo"),
+            Some("Metal impact".into())
+        );
+        assert_eq!(
+            trim_metadata_text(b"Sample Rate: 44100 Hz\nBit Depth: 24\nChannels: 2"),
+            None
+        );
+        assert_eq!(
+            trim_metadata_text(b"A warm metal impact recorded in a small room"),
+            Some("A warm metal impact recorded in a small room".into())
+        );
+    }
+
+    #[test]
+    fn drops_hex_hashes_and_applies_the_same_rule_to_metadata_sources() {
+        assert_eq!(
+            trim_metadata_text(b"8f4a9d11c2e7aa00ff1133557799abcd0011223344556677"),
+            None
+        );
+        assert!(xml_descriptions(b"<description>Sample Rate: 48000 Hz</description>").is_empty());
+        assert!(riff_info_descriptions(b"INFOICMT\x13\0\0\0Codec: PCM 24 bit").is_empty());
+        assert_eq!(ascii_description(b"Metal impact\0\0"), Some("Metal impact".into()));
+        assert_eq!(ascii_description(b"00112233445566778899aabbccddeeff"), None);
     }
 }

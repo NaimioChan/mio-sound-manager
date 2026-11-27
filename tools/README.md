@@ -108,6 +108,9 @@ node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 `check-i18n.mjs` 不需要窗口：它直接读 `ui/src/locales/*.ts` 的源码，检查三语键集是否齐平、
 每个语种有没有丢掉或凭空多出 `{placeholder}`。`tsc` 管得到漏键，管不到占位符。
 
+`check-responsive-layout.mjs` 用隔离的 IPC 测试数据检查选中文件前后的列宽和 metadata 进度对齐。
+先运行 `npm --prefix ui run dev`，再运行 `node tools/check-responsive-layout.mjs http://127.0.0.1:1420`；无需打开桌面应用或真实库。
+
 **iX 组件的四个坑**，写脚本时都会踩到：
 
 1. 控件在 shadow root 里，`host.click()` 无效；要点 `host.shadowRoot.querySelector('button')`。

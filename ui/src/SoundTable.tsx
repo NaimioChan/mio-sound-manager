@@ -29,6 +29,7 @@ export type SortKey =
   | 'channels'
   | 'sampleRate'
   | 'filesize'
+  | 'description'
 
 /**
  * Wire name per sort key.
@@ -52,7 +53,8 @@ export const SORT_WIRE: Record<SortKey, string> = {
   bpm: 'bpm',
   channels: 'channels',
   sampleRate: 'sample_rate',
-  filesize: 'filesize'
+  filesize: 'filesize',
+  description: 'description'
 }
 
 interface Column {
@@ -64,16 +66,17 @@ interface Column {
 }
 
 const COLUMNS: Column[] = [
-  { key: 'favorite', label: () => '★', width: '32px' },
-  { key: 'filename', label: () => t('col.name'), width: 'minmax(180px, 2fr)' },
-  { key: 'category', label: () => t('col.category'), width: 'minmax(140px, 1fr)' },
-  { key: 'ucsCategory', label: () => t('col.ucsCategory'), width: 'minmax(160px, 1fr)' },
-  { key: 'ucsSubcategory', label: () => t('col.ucsSubcategory'), width: 'minmax(160px, 1fr)' },
-  { key: 'durationS', label: () => t('col.length'), width: '84px', numeric: true },
-  { key: 'bpm', label: () => t('col.bpm'), width: '56px', numeric: true },
-  { key: 'channels', label: () => t('col.channels'), width: '64px' },
-  { key: 'sampleRate', label: () => t('col.rate'), width: '78px', numeric: true },
-  { key: 'filesize', label: () => t('col.size'), width: '84px', numeric: true }
+  { key: 'favorite', label: () => '★', width: 'min(32px, 8%)' },
+  { key: 'filename', label: () => t('col.name'), width: 'minmax(0, 2fr)' },
+  { key: 'category', label: () => t('col.category'), width: 'minmax(0, 1fr)' },
+  { key: 'ucsCategory', label: () => t('col.ucsCategory'), width: 'minmax(0, 1fr)' },
+  { key: 'ucsSubcategory', label: () => t('col.ucsSubcategory'), width: 'minmax(0, 1fr)' },
+  { key: 'durationS', label: () => t('col.length'), width: 'min(84px, 14%)', numeric: true },
+  { key: 'bpm', label: () => t('col.bpm'), width: 'min(56px, 10%)', numeric: true },
+  { key: 'channels', label: () => t('col.channels'), width: 'min(64px, 11%)' },
+  { key: 'sampleRate', label: () => t('col.rate'), width: 'min(78px, 13%)', numeric: true },
+  { key: 'filesize', label: () => t('col.size'), width: 'min(84px, 14%)', numeric: true },
+  { key: 'description', label: () => t('col.description'), width: 'minmax(0, 2fr)' }
 ]
 
 /**
@@ -90,7 +93,8 @@ export const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   bpm: 'desc',
   channels: 'desc',
   sampleRate: 'desc',
-  filesize: 'desc'
+  filesize: 'desc',
+  description: 'asc'
 }
 
 /**
@@ -223,6 +227,8 @@ function cellNode(col: SortKey, row: SoundRow) {
       return <span class="cell numeric dim">{formatRate(row.sampleRate)}</span>
     case 'filesize':
       return <span class="cell numeric dim">{formatBytes(row.filesize)}</span>
+    case 'description':
+      return <span class="cell description" title={row.description ?? undefined}>{row.description ?? '—'}</span>
     default:
       // A key with no cell is a column the user added to `COLUMNS` and forgot to
       // draw; the header already shows the label, so the row shows a dash rather
@@ -233,6 +239,7 @@ function cellNode(col: SortKey, row: SoundRow) {
 
 interface Props {
   epoch: number
+  requestKey: string
   selectionReset: number
   request: SearchRequest
   fetchWindow: (offset: number, limit: number) => Promise<SoundRow[]>
@@ -271,6 +278,7 @@ type Selection =
 
 export function SoundTable(props: Props) {
   const [scrollTop, setScrollTop] = createSignal(0)
+  const [scrollRevision, setScrollRevision] = createSignal(0)
   const [viewportH, setViewportH] = createSignal(600)
   /**
    * Width the body's scrollbar takes. The header is not inside the scrolling
@@ -282,6 +290,7 @@ export function SoundTable(props: Props) {
   const [anchor, setAnchor] = createSignal<string | null>(null)
   const [segments, setSegments] = createSignal<Map<number, SoundRow[]>>(new Map())
   const [segmentsEpoch, setSegmentsEpoch] = createSignal(props.epoch)
+  const [segmentsRequestKey, setSegmentsRequestKey] = createSignal(props.requestKey)
   const segmentUse = new Map<number, number>()
   let useClock = 0
   const [selection, setSelection] = createSignal<Selection>({ mode: 'paths', paths: new Set() })
@@ -356,8 +365,20 @@ export function SoundTable(props: Props) {
 
   let body: HTMLDivElement | undefined
 
+  const viewportSegments = () => {
+    const top = body?.scrollTop ?? scrollTop()
+    const height = body?.clientHeight ?? viewportH()
+    const first = Math.max(0, Math.floor(top / ROW_H) - OVERSCAN)
+    const last = Math.max(first, Math.floor((top + height) / ROW_H) + OVERSCAN)
+    return {
+      first: Math.floor(first / SEGMENT_ROWS),
+      last: Math.floor(last / SEGMENT_ROWS)
+    }
+  }
+
   const rowAt = (index: number): SoundRow | undefined => {
     if (index < 0 || index >= props.matching) return undefined
+    if (segmentsEpoch() !== props.epoch || segmentsRequestKey() !== props.requestKey) return undefined
     const segment = segments().get(Math.floor(index / SEGMENT_ROWS))
     return segment?.[index % SEGMENT_ROWS]
   }
@@ -403,17 +424,23 @@ export function SoundTable(props: Props) {
     return out
   })
 
-  const fetchSegment = (segment: number, requestedEpoch: number): void => {
+  const retryCount = new Map<string, number>()
+
+  const fetchSegment = (segment: number, requestedEpoch: number, requestedKey = props.requestKey): void => {
     if (segment < 0 || segment * SEGMENT_ROWS >= props.matching) return
-    if (segmentsEpoch() === requestedEpoch && segments().has(segment)) return
-    const key = `${requestedEpoch}:${segment}`
+    if (segmentsEpoch() === requestedEpoch && segmentsRequestKey() === requestedKey && segments().has(segment)) return
+    const key = `${requestedEpoch}:${requestedKey}:${segment}`
     if (inFlight.has(key) || backlog.has(key)) return
+    const currentRange = viewportSegments()
+    const currentFirstSegment = currentRange.first
+    const currentLastSegment = currentRange.last
+    const isCurrentViewport = segment >= currentFirstSegment && segment <= currentLastSegment
     // The in-flight cap is not a "drop on the floor" gate: a burst of programmatic
     // jumps (the scroll-heap check) can occupy every slot, and a skipped segment
     // would never be retried — the viewport would sit on skeletons until the user
-    // scrolled again. Park it in `backlog` instead; when a slot frees up the
-    // backlog drains oldest-first.
-    if (inFlight.size >= MAX_IN_FLIGHT) {
+    // scrolled again. Park prefetch entries in `backlog` instead; the current
+    // viewport is urgent and must not wait behind requests for a previous jump.
+    if (!isCurrentViewport && inFlight.size >= MAX_IN_FLIGHT) {
       backlog.set(key, { segment, epoch: requestedEpoch })
       return
     }
@@ -421,20 +448,26 @@ export function SoundTable(props: Props) {
     task = (async () => {
       try {
         const rows = await props.fetchWindow(segment * SEGMENT_ROWS, SEGMENT_ROWS)
-        if (requestedEpoch !== props.epoch) return
-        if (segmentsEpoch() !== requestedEpoch) {
+        if (requestedEpoch !== props.epoch || requestedKey !== props.requestKey) return
+        if (segmentsEpoch() !== requestedEpoch || segmentsRequestKey() !== requestedKey) {
           setSegments(new Map())
           segmentUse.clear()
           setSegmentsEpoch(requestedEpoch)
+          setSegmentsRequestKey(requestedKey)
         }
+        retryCount.delete(key)
         segmentUse.set(segment, ++useClock)
         setSegments((previous) => {
           const next = new Map(previous)
+          const visible = viewportSegments()
+          const protectedFirst = visible.first
+          const protectedLast = visible.last
           next.set(segment, rows)
           while (next.size > MAX_SEGMENTS) {
             let oldestSegment: number | undefined
             let oldestUse = Number.POSITIVE_INFINITY
             for (const cached of next.keys()) {
+              if (cached >= protectedFirst && cached <= protectedLast) continue
               const used = segmentUse.get(cached) ?? 0
               if (used < oldestUse) {
                 oldestUse = used
@@ -448,13 +481,33 @@ export function SoundTable(props: Props) {
           return next
         })
       } catch {
-        // A failed window can be retried the next time it enters the viewport.
+        // SQLite can briefly reject a read while the indexer commits. If this
+        // segment is still visible, retry it through the same backlog instead of
+        // leaving the viewport on skeletons until a later scroll event.
+        const current = viewportSegments()
+        const first = current.first
+        const last = current.last
+        const attempts = (retryCount.get(key) ?? 0) + 1
+        if (requestedEpoch === props.epoch && requestedKey === props.requestKey && segment >= first && segment <= last && attempts <= 3) {
+          retryCount.set(key, attempts)
+          backlog.set(key, { segment, epoch: requestedEpoch })
+        }
       } finally {
         if (inFlight.get(key) === task) inFlight.delete(key)
         drainBacklog()
       }
     })()
     inFlight.set(key, task)
+  }
+
+  const requestViewport = () => {
+    if (props.querying) return
+    const { first, last } = viewportSegments()
+    const epoch = props.epoch
+    const requestKey = props.requestKey
+    for (let segment = first; segment <= last; segment++) {
+      void fetchSegment(segment, epoch, requestKey)
+    }
   }
 
   /**
@@ -477,14 +530,14 @@ export function SoundTable(props: Props) {
         backlog.delete(key)
         continue
       }
-      if (segmentsEpoch() === epoch && segments().has(segment)) {
+      if (segmentsEpoch() === epoch && segmentsRequestKey() === props.requestKey && segments().has(segment)) {
         backlog.delete(key)
         continue
       }
       if (inFlight.has(key)) continue
       if (inFlight.size >= MAX_IN_FLIGHT) break
       backlog.delete(key)
-      fetchSegment(segment, epoch)
+      fetchSegment(segment, epoch, props.requestKey)
     }
   }
 
@@ -522,8 +575,9 @@ export function SoundTable(props: Props) {
 
   createEffect(() => {
     const epoch = props.epoch
-    if (!props.querying && props.matching === 0 && segmentsEpoch() !== epoch) {
+    if (!props.querying && props.matching === 0 && (segmentsEpoch() !== epoch || segmentsRequestKey() !== props.requestKey)) {
       setSegmentsEpoch(epoch)
+      setSegmentsRequestKey(props.requestKey)
       backlog.clear()
       segmentUse.clear()
       setSegments(new Map())
@@ -532,8 +586,14 @@ export function SoundTable(props: Props) {
 
   createEffect(() => {
     const epoch = props.epoch
+    const requestKey = props.requestKey
+    // Keep an explicit event revision alongside the measured offset. WebView2 can
+    // deliver several programmatic scroll events in one render batch; the revision
+    // guarantees the fetch effect runs once for every viewport change even when the
+    // rounded offset maps to the same row range.
+    scrollRevision()
     for (const [key, queued] of backlog) {
-      if (queued.epoch !== epoch) backlog.delete(key)
+      if (queued.epoch !== epoch || !key.startsWith(`${epoch}:${requestKey}:`)) backlog.delete(key)
     }
     if (props.querying) return
     const { first, last } = range()
@@ -545,8 +605,12 @@ export function SoundTable(props: Props) {
     for (let segment = firstSegment; segment <= lastSegment; segment++) {
       if (cached.has(segment)) segmentUse.set(segment, ++useClock)
     }
-    for (let segment = Math.max(0, firstSegment - 1); segment <= lastSegment + 1; segment++) {
-      void fetchSegment(segment, epoch)
+    // Request only the visible window. Prefetching both neighbours made a burst
+    // of deep scrollbar jumps accumulate dozens of stale SQLite reads; those old
+    // reads competed with the current viewport and could leave it on skeletons
+    // for seconds. The next scroll event will request the newly visible segment.
+    for (let segment = firstSegment; segment <= lastSegment; segment++) {
+      void fetchSegment(segment, epoch, requestKey)
     }
   })
 
@@ -554,7 +618,7 @@ export function SoundTable(props: Props) {
     const epoch = props.epoch
     const pending = pendingIndex()
     if (pending === null) return
-    if (segmentsEpoch() !== epoch) return
+    if (segmentsEpoch() !== epoch || segmentsRequestKey() !== props.requestKey) return
     const row = rowAt(pending)
     if (row) {
       setPendingIndex(null)
@@ -931,10 +995,12 @@ export function SoundTable(props: Props) {
           // gone, which pins the detached subtree against collection.
           onCleanup(() => observer.disconnect())
         }}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          setScrollTop(el.scrollTop)
-        }}
+         onScroll={(e) => {
+           const el = e.currentTarget
+           setScrollTop(el.scrollTop)
+           setScrollRevision((revision) => revision + 1)
+           requestViewport()
+         }}
       >
         <div role="list" style={{ height: `${props.matching * ROW_H}px`, position: 'relative' }}>
           <For each={visibleIndices()}>
@@ -943,6 +1009,7 @@ export function SoundTable(props: Props) {
               return (
                 <Show
                   when={row()}
+                  keyed
                   fallback={
                     <div
                       class="row skeleton"
@@ -958,8 +1025,7 @@ export function SoundTable(props: Props) {
                     />
                   }
                 >
-                  {(loaded) => {
-                    const currentRow = loaded()
+                  {(currentRow) => {
                     const isActive = () => props.active?.path === currentRow.path
                     const isRowSelected = () => isSelected(currentRow, absoluteIndex)
                     return (

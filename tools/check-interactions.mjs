@@ -145,7 +145,11 @@ await search('')
 await page.waitForTimeout(400)
 check((await rowCount()) > 0, 'clearing the query restores visible rows')
 const restoredMatchLabel = (await page.locator('#match-count').textContent()) ?? ''
-check(/282,762/.test(restoredMatchLabel), 'clearing the query restores the full result count', restoredMatchLabel)
+check(
+  restoredMatchLabel.includes(matchingCount.toLocaleString()),
+  'clearing the query restores the full result count',
+  `${restoredMatchLabel} (expected ${matchingCount.toLocaleString()})`
+)
 
 // Scroll across sparse windows and verify each target window is populated while
 // the segment LRU keeps renderer heap growth bounded.
@@ -163,14 +167,24 @@ for (let step = 1; step <= 20; step++) {
     el.scrollTop = target * 28
     el.dispatchEvent(new Event('scroll'))
   }, target)
-  await page.waitForFunction(
-    (target) => [...document.querySelectorAll('.row[data-path]')].some((row) => {
-      const index = Number(row.getAttribute('aria-posinset')) - 1
-      return index >= target - 40 && index <= target + 70
-    }),
-    target,
-    { timeout: 10_000 }
-  )
+  try {
+    await page.waitForFunction(
+      (target) => [...document.querySelectorAll('.row[data-path]')].some((row) => {
+        const index = Number(row.getAttribute('aria-posinset')) - 1
+        return index >= target - 40 && index <= target + 70
+      }),
+      target,
+      { timeout: 10_000 }
+    )
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      scrollTop: document.querySelector('.table-body')?.scrollTop,
+      rows: [...document.querySelectorAll('.row[data-path]')].map((row) => Number(row.getAttribute('aria-posinset')) - 1),
+      epoch: document.querySelector('.table')?.dataset
+    }))
+    console.error(`deep jump timeout step=${step} target=${target} state=${JSON.stringify(state)}`)
+    throw error
+  }
 }
 await page.evaluate(() => {
   const el = document.querySelector('.table-body')
@@ -331,7 +345,8 @@ const longestIndex = await page.evaluate(() => {
 check(longestIndex.length > 3, 'the list holds a clip long enough to observe', `${longestIndex.length.toFixed(2)}s`)
 
 const longestRow = page.locator('.row[data-path]').nth(longestIndex.index)
-const longestName = ((await longestRow.locator('.cell.name').textContent()) ?? '').trim()
+const longestPath = await longestRow.getAttribute('data-path')
+const longestName = longestPath.split(/[\\/]/).at(-1).trim()
 await longestRow.click()
 // Wait for the dock to actually be showing this clip. `.wave-time` appears for the
 // previous row too, so waiting on its presence alone reads the old clip's position

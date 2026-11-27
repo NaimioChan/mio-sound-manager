@@ -208,8 +208,7 @@ export function SettingsDialog(props: Props) {
             >
               <div class="setting-hint">
                 {props.status?.backend} · {props.status?.deviceName} · {props.status?.sampleRate} Hz ·{' '}
-                {props.status?.channels} ch · {props.status?.sampleFormat} · engine period{' '}
-                {props.status?.enginePeriodMs?.toFixed(2)} ms
+                {props.status?.channels} ch · {props.status?.sampleFormat}
               </div>
             </Show>
 

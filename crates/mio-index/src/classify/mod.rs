@@ -67,7 +67,7 @@ use std::collections::HashMap;
 
 pub use dictionary::CATEGORY_DICTIONARY;
 pub use ucs::{
-    UCS_CAT_ID_NATIVE, UCS_CAT_IDS, UCS_DICTIONARY, UCS_NATIVE_KEYWORDS, UCS_NATIVE_PHRASES,
+    UCS_CAT_IDS, UCS_CAT_ID_NATIVE, UCS_DICTIONARY, UCS_NATIVE_KEYWORDS, UCS_NATIVE_PHRASES,
     UCS_VERSION,
 };
 
@@ -238,9 +238,28 @@ impl Classifier {
         full_path: &str,
         description: Option<&str>,
     ) -> Classification {
+        self.classify_with_metadata(full_path, description, None, None)
+    }
+
+    pub fn classify_with_metadata(
+        &self,
+        full_path: &str,
+        description: Option<&str>,
+        metadata_ucs_category: Option<&str>,
+        metadata_ucs_subcategory: Option<&str>,
+    ) -> Classification {
         let (haystack, mut tokens, filename_start) = tokenize_path_spans(full_path, description);
         let filename = &full_path[filename_start..];
         let native_ucs = native_ucs_for_filename(filename);
+        let has_explicit_cat_id = native_ucs.is_some();
+        let metadata_ucs = metadata_ucs_category.map(|category| {
+            let subcategory = metadata_ucs_subcategory.filter(|value| !value.is_empty());
+            (
+                native_target(category, subcategory),
+                category.to_string(),
+                subcategory.map(str::to_string),
+            )
+        });
         for token in &mut tokens {
             token.directory = token.raw_start < filename_start && !token.description;
         }
@@ -406,7 +425,19 @@ impl Classifier {
             }
         }
 
-        finish(scores, matched, native_ucs, inferred_native)
+        let mut classification = finish(scores, matched, native_ucs, inferred_native);
+        if !has_explicit_cat_id {
+            if let Some((target, category, subcategory)) = metadata_ucs {
+                if let Some(target) = target {
+                    classification.category = target.category.to_string();
+                    classification.subcategory = target.subcategory.map(str::to_string);
+                    classification.confidence = 1.0;
+                }
+                classification.ucs_category = Some(category);
+                classification.ucs_subcategory = subcategory;
+            }
+        }
+        classification
     }
 
     fn native_keyword_label(&self, token: &str) -> Option<&(String, Option<String>)> {
@@ -414,7 +445,6 @@ impl Classifier {
             .get(token)
             .or_else(|| self.native_keywords.get(stem(token)))
     }
-
 }
 
 /// Pick the winner from accumulated scores and package it as a [`Classification`].
@@ -495,6 +525,24 @@ fn native_ucs_for_filename(filename: &str) -> Option<(String, Option<String>, St
     Some((category, subcategory, cat_id.to_string()))
 }
 
+fn native_target(category: &str, subcategory: Option<&str>) -> Option<Target> {
+    UCS_CAT_ID_NATIVE
+        .iter()
+        .find(|(_, known_category, known_subcategory)| {
+            *known_category == category && *known_subcategory == subcategory
+        })
+        .map(|(cat_id, _, _)| {
+            UCS_CAT_IDS
+                .iter()
+                .find(|(known_id, _, _)| *known_id == *cat_id)
+                .map(|(_, projected_category, projected_subcategory)| Target {
+                    category: projected_category,
+                    subcategory: *projected_subcategory,
+                })
+        })
+        .flatten()
+}
+
 fn apply_native_ucs(
     classification: &mut Classification,
     native_ucs: Option<(String, Option<String>, String)>,
@@ -540,7 +588,10 @@ fn build_native_keywords() -> HashMap<&'static str, (String, Option<String>)> {
     UCS_NATIVE_KEYWORDS
         .iter()
         .map(|(word, category, subcategory)| {
-            (*word, ((*category).to_string(), subcategory.map(str::to_string)))
+            (
+                *word,
+                ((*category).to_string(), subcategory.map(str::to_string)),
+            )
         })
         .collect()
 }
@@ -549,7 +600,10 @@ fn build_native_phrases() -> HashMap<&'static str, (String, Option<String>)> {
     UCS_NATIVE_PHRASES
         .iter()
         .map(|(phrase, category, subcategory)| {
-            (*phrase, ((*category).to_string(), subcategory.map(str::to_string)))
+            (
+                *phrase,
+                ((*category).to_string(), subcategory.map(str::to_string)),
+            )
         })
         .collect()
 }
@@ -846,7 +900,11 @@ fn cat_id_prefix(filename: &str) -> Option<&str> {
     let stem = &filename[..stem_end];
     let head_end = stem.find(['_', '-', ' ', '.']).unwrap_or(stem.len());
     let head = &stem[..head_end];
-    if head.is_empty() { None } else { Some(head) }
+    if head.is_empty() {
+        None
+    } else {
+        Some(head)
+    }
 }
 
 /// Split into (directory part with its separators intact, filename).
@@ -1142,6 +1200,52 @@ mod tests {
     }
 
     #[test]
+    fn metadata_ucs_category_supplies_native_fields_and_projection() {
+        let classifier = Classifier::new();
+        let result = classifier.classify_with_metadata(
+            r"C:\lib\unknown_001.wav",
+            Some("airplane, jet"),
+            Some("AIRCRAFT"),
+            Some("JET"),
+        );
+        assert_eq!(result.category, "Vehicles");
+        assert_eq!(result.subcategory.as_deref(), Some("Aircraft"));
+        assert_eq!(result.ucs_category.as_deref(), Some("AIRCRAFT"));
+        assert_eq!(result.ucs_subcategory.as_deref(), Some("JET"));
+        assert_eq!(result.ucs_cat_id, None);
+        assert_eq!(result.confidence, 1.0);
+    }
+
+    #[test]
+    fn unmapped_metadata_ucs_category_is_still_preserved() {
+        let classifier = Classifier::new();
+        let result = classifier.classify_with_metadata(
+            r"C:\lib\unknown_001.wav",
+            None,
+            Some("ARCHIVED"),
+            Some("ADR"),
+        );
+        assert_eq!(result.category, "Uncategorized");
+        assert_eq!(result.ucs_category.as_deref(), Some("ARCHIVED"));
+        assert_eq!(result.ucs_subcategory.as_deref(), Some("ADR"));
+    }
+
+    #[test]
+    fn explicit_filename_cat_id_beats_metadata_ucs_category() {
+        let classifier = Classifier::new();
+        let result = classifier.classify_with_metadata(
+            r"C:\lib\GORESqsh_source.wav",
+            None,
+            Some("AIRCRAFT"),
+            Some("JET"),
+        );
+        assert_eq!(result.category, "Creatures");
+        assert_eq!(result.ucs_category.as_deref(), Some("GORE"));
+        assert_eq!(result.ucs_subcategory.as_deref(), Some("SQUISH"));
+        assert_eq!(result.ucs_cat_id.as_deref(), Some("GORESqsh"));
+    }
+
+    #[test]
     fn native_ucs_fields_keep_the_official_cat_id_label() {
         let result = classify(r"C:\lib\GORESrce_source_01.wav");
         assert_eq!(result.ucs_cat_id.as_deref(), Some("GORESrce"));
@@ -1289,7 +1393,6 @@ mod tests {
         assert_eq!(c.category, "Creatures");
         assert_eq!(c.subcategory.as_deref(), Some("Gore & Violence"));
     }
-
 
     #[test]
     fn a_cat_id_is_matched_with_its_case_intact() {

@@ -113,8 +113,13 @@ pub fn run() {
             commands::pick_library_folder,
             commands::reveal_in_folder,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Mio Sound Manager");
+        .build(tauri::generate_context!())
+        .expect("error while building Mio Sound Manager")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<AppState>().close_libraries();
+            }
+        });
 }
 
 fn cleanup_exports(dir: &std::path::Path) -> std::io::Result<()> {

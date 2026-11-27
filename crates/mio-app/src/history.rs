@@ -61,6 +61,7 @@ pub struct FieldState {
     pub ucs_category: Option<String>,
     pub ucs_subcategory: Option<String>,
     pub ucs_cat_id: Option<String>,
+    pub ucs_manual: bool,
 }
 
 impl FieldState {
@@ -74,6 +75,7 @@ impl FieldState {
             ucs_category: sound.ucs_category.clone(),
             ucs_subcategory: sound.ucs_subcategory.clone(),
             ucs_cat_id: sound.ucs_cat_id.clone(),
+            ucs_manual: sound.ucs_manual,
         }
     }
 
@@ -87,6 +89,7 @@ impl FieldState {
             ucs_category: state.ucs_category,
             ucs_subcategory: state.ucs_subcategory,
             ucs_cat_id: state.ucs_cat_id,
+            ucs_manual: state.ucs_manual,
         }
     }
 }
@@ -235,6 +238,7 @@ pub fn restore(library: &Library, states: &[FieldState]) -> AppResult<u64> {
             ucs_category: state.ucs_category.clone(),
             ucs_subcategory: state.ucs_subcategory.clone(),
             ucs_cat_id: state.ucs_cat_id.clone(),
+            ucs_manual: state.ucs_manual,
         })
         .collect();
     touched += library.restore_category_and_ucs(&restore_states)?;
@@ -339,6 +343,7 @@ mod tests {
             ucs_category: None,
             ucs_subcategory: None,
             ucs_cat_id: None,
+            ucs_manual: false,
         }
     }
 

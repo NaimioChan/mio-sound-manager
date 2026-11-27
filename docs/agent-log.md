@@ -4,6 +4,68 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 ## 当前占用
 
+## 2026-11-27 13:00 · opencode · 提交索引与界面改动
+- 改：将索引拆分、界面修复、验收脚本和 TODO 一并提交；清理空示例目录及 `tools/__pycache__/`。
+- 验证：`cargo test --release --workspace` 205 项通过；前端类型检查、三语文案检查、7 个脚本语法检查及 4 种宽度的布局回归通过；本轮未重跑桌面 WebView2 验收。
+- 遗留：完整 metadata 回填墙钟与终态失败数、trigram 后台重建评估仍见 `docs/indexing-todo.md`。提交未推送。
+
+## 2026-11-25 14:30 · opencode · 修复文件选中列宽与 metadata 对齐
+- 改：限制表格与波形区宽度，窄窗口让播放控件换行；状态栏使用与文字垂直居中的 4 px 进度轨道。
+- 验证：`check-responsive-layout.mjs` 在 600/720/900/1280 px 下验证点击长短文件名不改变列宽，控件不越界；`check-layout.mjs 9227`、`check-indexing-feedback.mjs 9227`、前端及桌面 release 构建通过。
+- 遗留：本轮只改界面布局及验收脚本，未重跑 Rust 全量测试，未打安装包；工作区未提交。
+
+## 2026-11-25 13:02 · opencode · 索引反馈验收、任务恢复与阶段测速
+- 改：补不确定进度和扫描计数；列表按实际排序查询分页，再统计共享描述；metadata 核对文件指纹、保留用户编辑，关闭时取消并等待 worker；增量比较去重，CLI 分开计时。
+- 验证：`cargo test --release --workspace` 205 项通过；UI、release 桌面构建和三语 172 键检查通过。`check-indexing-feedback.mjs`、`check-interactions.mjs` 在 metadata 回填期间通过；非名称排序深跳最慢 305 ms，播放、暂停与 seek 均通过。
+- 实测：基础全量 92.87 s（5,000 写入批次）；增量 0 changed 由 6.87 s 降至 5.25–5.60 s。扫描批次仍为 5,000。关闭再开后 metadata 已提交数继续增长，分项数据见 `docs/indexing-todo.md`。
+- 遗留：真实库 metadata 完整墙钟与终态失败数未测；未单测重复触发 GUI。trigram 仍同步，待评估后台重建。未提交或推送。
+
+## 2026-11-25 13:45 · opencode · 修复用户反馈并更新下一轮验收 TODO
+- 改：`ui/src/IndexOverlay.tsx`、`ui/src/App.tsx` 关闭 metadata/基础进度 indicator 内置重复 label；移除 statusbar 和设置摘要里的 engine period；`ui/src/styles.css` 让 header 单行 ellipsis，避免窄列标题越界；`ui/src/SoundTable.tsx` 给虚拟列表 segment 缓存加入完整 requestKey，排序变化不复用旧数据；`tools/check-interactions.mjs` 保留动态匹配数断言。
+- 验证：`npm run build`（`ui/`）通过；`node ../tools/check-i18n.mjs`（en/ja/zh 各 171 键）通过；`git diff --check` 通过。最新代码尚未启动桌面 CDP，四项 UI 反馈待下一轮几何/排序/metadata 文案复验。
+- 改：`docs/indexing-todo.md` 新增 E3 四项用户反馈待办，标注代码已实现、CDP 待复验；修正多库隔离验收勾选。
+- 遗留：下一轮需跑 statusbar metadata 文案唯一性、窄窗口 UCS header 几何、非名称排序后的连续快速滚动，以及 engine period 文案不存在的 CDP 检查；真实库性能 benchmark 仍未执行。
+
+## 2026-11-25 11:45 · opencode · 完成索引剩余验收并修复虚拟列表竞态
+- 改：`ui/src/SoundTable.tsx` 修复连续深跳空白：当前 viewport segment 优先请求、真实 scroll 事件直接调度、可见 segment LRU 保护、SQLite 短暂失败重试、移除 stale 邻段预取；`ui/src/styles.css` 修正 metadata progress host 高度；`tools/check-interactions.mjs` 使用动态匹配数并增加深跳诊断；新增三个 indexing CDP 生命周期脚本。
+- 验证：`cargo test --release --workspace` 通过（app 24 + IPC 33 + engine 24 + index 122）；`npm run build` 通过；`check-layout.mjs 9223`、`check-interactions.mjs 9223`、`check-scroll-deep.mjs 9223`、`check-tags.mjs 9223` 全通过；连续深跳 20 段、Home/End、播放/seek、statusbar 几何均通过。
+- 验证：metadata 基础命令约 1s 返回，Channel 收到 `Scanning/Comparing/Indexing/Finalizing/Ready` 五阶段；metadata 计数持续前进；active metadata 期间查询/收藏编辑/播放位置读取通过；多库 A/B 进度隔离通过；完成后 progress DOM 移除；删除文件故障注入后失败计数 1,500、状态 failed；取消/移除库后任务消失。
+- 改：`docs/indexing-todo.md` 标记 metadata 非阻塞、statusbar 几何、多库隔离、失败场景和大列表 CDP 验收完成。
+- 遗留：未执行真实 271,350 文件库本轮拆分后的完整性能 benchmark、RSS 和 batch size 对比；这些是性能回归项，不是本轮 GUI/生命周期验收。工作区仍保留本轮及上一轮未提交改动。
+
+## 2026-11-24 23:20 · opencode · 索引阶段事件、description 清洗与 statusbar 布局
+- 改：`crates/mio-index/src/indexer.rs` 增加显式 Indexing(0/0) 事件及 full/空库/0 changed 阶段序列测试；`crates/mio-app/src/commands.rs` 对 Channel 事件按 100ms 节流、阶段切换立即转发，并补转发器单测；`ui/src/IndexOverlay.tsx` 和三语字典补 Ready/Failed 文案。真实 CDP 观察到 `Scanning → Comparing → Indexing → Finalizing → Ready`，修复 Ready 被误显示为 walking。
+- 改：`crates/mio-index/src/probe.rs` 统一清洗 WAV `bext`、iXML、LIST/INFO、ID3、`_PMX` description，丢弃技术 dump、设备/编码字段和 GUID/哈希/长十六进制串；`db.rs` metadata rule 升到 8，空 description 写 NULL 并同步 FTS；补正例、反例、来源和 FTS 回归。
+- 改：`ui/src/App.tsx`/`styles.css` 将 metadata progress 嵌入现有 statusbar，位于版本号左侧；`docs/indexing-todo.md` 更新阶段事件和 description 项，保留 metadata 多库/失败、状态栏几何和大列表 CDP 验收未完成。
+- 验证：`cargo test --release --workspace` 通过（app 24 + IPC 33 + engine 24 + index 122）；`npm run build`（`ui/`）通过；`node ../tools/check-i18n.mjs`（en/ja/zh 各 171 键）通过；`cargo check --release -p mio-index -p mio-app`、`git diff --check` 通过；metadata 定向 FTS 测试通过。
+- 遗留：最后一次 statusbar DOM/CDP 几何检查因 9223 实例已关闭未运行；metadata 运行期间的点击、多库隔离、失败 notice 和大列表快速滚动仍待验收。工作区保留本轮及上一轮未提交改动。
+
+## 2026-11-24 22:19 · opencode · 记录索引阶段、description、metadata 布局与大列表滚动反馈
+- 改：仅更新 `docs/indexing-todo.md`，把四项新反馈拆成可验收任务；将“阶段事件已通过 GUI”与“metadata 底部条已完成”改回未完成，补充 description 技术字段/十六进制清洗契约、版本号同行布局和大列表深度滚动验收。
+- 验证：仅修改 Markdown，未运行 Rust、UI 或 CDP 验收。
+- 遗留：阶段事件实际未到达 GUI、description 清洗未实现、metadata 条仍独占一行、大列表快速滚动中段空白未修复。
+- 下一步：新对话优先修阶段事件传递链路，其次清洗 description，再调整 statusbar 布局，最后修复虚拟列表快速滚动竞态。
+
+## 2026-11-24 22:10 · opencode · 索引阶段事件、基础 probe 与后台 metadata worker
+- 改：`mio-index` 增加 `Scanning/Comparing/Indexing/Finalizing/Ready/Failed` 阶段事件、取消检查、基础 probe 与 metadata-only probe；`mio-index/db.rs` 增加 metadata 候选/批量写回、mtime+size 防护、普通 FTS 同步、`ucs_manual` 所有权与 `metadata_indexed` 状态。
+- 改：`mio-app` 为每个库增加基础索引与 metadata 任务状态、generation、取消和 busy 防护；add/reindex 在基础 Ready 后返回并启动 metadata worker；`LibraryStatus`/IPC/UI 同步阶段计数和 metadata 状态；overlay 按 phase 渲染，状态栏显示非阻塞 metadata 进度，失败只弹一次 notice。
+- 改：三语索引文案、metadata 失败 notice、基础 probe/metadata fingerprint+FTS 回归测试；更新 `docs/indexing-todo.md` 已完成项。
+- 验证：`cargo test --release --workspace` 通过（app 23 + IPC 33 + engine 24 + index 118）；`(cd ui && npm run build)`、`(cd ui && node ../tools/check-i18n.mjs)`（169 键）、`git diff --check` 通过。
+- 遗留：尚未跑桌面 CDP 的 metadata 非阻塞点击/多库切换/失败注入验收；尚未在 `D:\reslip-test-library` 记录拆分后的真实阶段与 metadata 墙钟、RSS、batch 5k/10k/20k 对比；当前工作区保留本轮及上一轮未提交改动。
+
+## 2026-11-24 19:00 · opencode · 索引建立异步 metadata 方案文档
+- 改：新增 `docs/indexing-todo.md`，定义基础索引与后台 metadata 的边界、阶段进度事件、底部进度条、任务生命周期、数据库一致性、低风险优化和验收清单。
+- 验证：仅修改 Markdown，未运行 Rust、UI 或 CDP 验收。
+- 遗留：文档尚未实现；现有 `IndexProgress` 仍只有 `done/total`，当前 `IndexOverlay` 仍会阻塞到整个索引命令结束。
+- 下一步：按 `docs/indexing-todo.md` 先实现阶段事件和独立计时，再拆分基础 probe 与后台 metadata worker。
+
+## 2026-11-24 17:15 · opencode · 全量测试、压力测试与 28 万库全量重建
+- 改：`tools/check-stress.mjs` 修正连续试听断言：从 `data-path` 取真实 basename，并去掉文件名的前导空格；避免把共享 description 计数 `×N` 当作文件名。
+- 验证：`cargo test --release --workspace` 通过（23 + 33 + 24 + 112，共 192）；`ui/npm run build` 通过；修正后的 `node tools/check-stress.mjs 9223` 通过，`stress: OK`，无 decode error、播放 IPC 正常、无 uncaught frontend error。
+- 真实库：`D:\reslip-test-library` 全量 `mio-cli index --full` 通过；271,350/271,350 文件探测，271,350 行写入，0 跳过，0 prune；stage total 200.989s，wall 222.221s，外层计时 222.77s，吞吐 1,350 files/s。
+- 说明：压力测试前两次失败均是脚本把 `.cell.name` 的 `×428` 和路径文件名的前导空格带入期望值；现场 active row、dock 和播放状态均已与最后点击项一致，修正脚本后复跑通过。
+- 遗留：无；测试启动的桌面实例已关闭，工作区仅保留上述测试脚本改动，未提交。
+
 ## 2026-11-24 17:05 · opencode · release 构建并提交 TODO 实现
 - 改：提交本轮解码预算/窗口链、完整 A 分类、native UCS inference、CatID 精确筛选、批量 UCS 编辑/undo、description UI、FTS/schema v4 和 UCS 目录 UI 全部改动。
 - 验证：`(cd ui && npm run build)`、`cargo test --release --workspace`（23 + 33 + 24 + 112）、`cargo build -p mio-app --release`、`node ui/../tools/check-i18n.mjs`（160 键）、`git diff --check` 全通过。

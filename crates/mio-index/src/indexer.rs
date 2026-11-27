@@ -11,17 +11,18 @@
 //! header reads per millisecond.
 
 use std::path::{Path, PathBuf};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use rayon::prelude::*;
 
 use crate::classify::Classifier;
-use crate::db::{IndexDb, SoundRow, row_from_parts};
+use crate::db::{row_from_parts, IndexDb, SoundRow};
 use crate::error::Result;
 use crate::probe::{
-    AudioMeta, FileEntry, SkippedDir, WalkReport, probe_with_meta, walk_audio_entries_with_report,
+    probe_with_meta, walk_audio_entries_with_report, AudioMeta, FileEntry, SkippedDir, WalkReport,
 };
 
 /// How the indexer should behave on this pass.
@@ -39,12 +40,17 @@ pub struct IndexOptions {
     /// Rows per write transaction. 5000 was measured at 156k rows/s, and it keeps
     /// the WAL small enough that a reader is never blocked for long.
     pub batch_size: usize,
+    /// Directory entries per transaction in the connection-local scan table.
+    pub scan_batch_size: usize,
     /// Skip files whose `(mtime, size)` matches what is already indexed. The
     /// first pass must have this off; every later pass wants it on.
     pub incremental: bool,
     /// Delete rows for files that are gone. Off during a partial rescan of a
     /// subfolder, where "not seen" does not mean "deleted".
     pub prune: bool,
+    /// Read embedded metadata during the pass. The desktop basic index keeps
+    /// this disabled so descriptions and embedded UCS do not delay readiness.
+    pub read_metadata: bool,
 }
 
 impl Default for IndexOptions {
@@ -52,10 +58,50 @@ impl Default for IndexOptions {
         Self {
             threads: 0,
             batch_size: 5_000,
+            scan_batch_size: 5_000,
             incremental: true,
             prune: true,
+            read_metadata: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum IndexPhase {
+    Scanning,
+    Comparing,
+    Indexing,
+    Finalizing,
+    Ready,
+    Failed,
+}
+
+impl Default for IndexPhase {
+    fn default() -> Self {
+        Self::Scanning
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IndexMessageKind {
+    Walking,
+    Comparing,
+    Probing,
+    Finalizing,
+    Ready,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexProgress {
+    pub phase: IndexPhase,
+    pub done: usize,
+    pub total: usize,
+    pub files_seen: usize,
+    pub files_changed: usize,
+    pub files_written: usize,
+    pub message_kind: Option<IndexMessageKind>,
 }
 
 /// Per-stage wall time, plus counts. This is what gets printed and compared
@@ -63,18 +109,26 @@ impl Default for IndexOptions {
 #[derive(Debug, Clone, Default)]
 pub struct StageTimings {
     pub walk_ms: f64,
+    pub scan_write_ms: f64,
+    pub compare_ms: f64,
+    pub scan_setup_ms: f64,
+    pub scan_cleanup_ms: f64,
     pub probe_ms: f64,
     pub classify_ms: f64,
     pub write_ms: f64,
     pub prune_ms: f64,
     pub index_ms: f64,
+    pub bulk: crate::db::BulkTimings,
 }
 
 impl StageTimings {
     pub fn total_ms(&self) -> f64 {
         self.walk_ms
+            + self.scan_write_ms
+            + self.compare_ms
+            + self.scan_setup_ms
+            + self.scan_cleanup_ms
             + self.probe_ms
-            + self.classify_ms
             + self.write_ms
             + self.prune_ms
             + self.index_ms
@@ -126,47 +180,89 @@ pub fn index_folder<F>(
 where
     F: FnMut(usize, usize),
 {
+    let mut callback = on_progress;
+    index_folder_with_events(
+        root.as_ref(),
+        options,
+        None,
+        |event| {
+            if matches!(event.phase, IndexPhase::Indexing | IndexPhase::Ready) {
+                callback(event.done, event.total);
+            }
+        },
+    )
+}
+
+pub fn index_folder_with_events<F>(
+    root: impl AsRef<Path>,
+    options: &IndexOptions,
+    cancel: Option<&AtomicBool>,
+    on_progress: F,
+) -> Result<IndexReport>
+where
+    F: FnMut(IndexProgress),
+{
+    let callback = RefCell::new(on_progress);
     index_folder_with_walk(
         root.as_ref(),
         options,
-        |root, db| {
-            let mut pending = Vec::with_capacity(options.batch_size.max(1));
+        cancel,
+        |root, db, timings| {
+            let batch_size = options.scan_batch_size.max(1);
+            let mut pending = Vec::with_capacity(batch_size);
             let mut count = 0usize;
             let walked = walk_audio_entries_with_report(root, |entry| {
+                if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                    return Err(crate::error::IndexError::Cancelled);
+                }
                 pending.push((
                     crate::folders::store_path(&entry.path),
                     entry.filesize,
                     entry.mtime_ns,
                 ));
                 count += 1;
-                if pending.len() >= options.batch_size.max(1) {
+                (callback.borrow_mut())(IndexProgress {
+                    phase: IndexPhase::Scanning,
+                    done: count,
+                    total: 0,
+                    files_seen: count,
+                    files_changed: 0,
+                    files_written: 0,
+                    message_kind: Some(IndexMessageKind::Walking),
+                });
+                if pending.len() >= batch_size {
+                    let started = Instant::now();
                     db.stage_scan_batch(&pending)?;
+                    timings.scan_write_ms += ms(started);
                     pending.clear();
                 }
                 Ok(())
             })?;
+            let started = Instant::now();
             if !pending.is_empty() {
                 db.stage_scan_batch(&pending)?;
             }
             db.stage_skipped_dirs(&walked.skipped_dirs)?;
+            timings.scan_write_ms += ms(started);
             Ok(WalkReport {
                 files: walked.files.max(count),
                 skipped_dirs: walked.skipped_dirs,
             })
         },
-        on_progress,
+        |event| (callback.borrow_mut())(event),
     )
 }
 
 fn index_folder_with_walk<F, W>(
     root: &Path,
     options: &IndexOptions,
+    cancel: Option<&AtomicBool>,
     walk: W,
     mut on_progress: F,
 ) -> Result<IndexReport>
 where
-    F: FnMut(usize, usize),
-    W: FnOnce(&Path, &mut IndexDb) -> Result<WalkReport>,
+    F: FnMut(IndexProgress),
+    W: FnOnce(&Path, &mut IndexDb, &mut StageTimings) -> Result<WalkReport>,
 {
     let root = root.to_path_buf();
     let mut report = IndexReport {
@@ -180,22 +276,40 @@ where
         path: root.display().to_string(),
         detail: e.to_string(),
     })?;
-    let mut db = IndexDb::open(&root)?;
+    let mut db = IndexDb::open_fast(&root)?;
+    let scan_start = Instant::now();
     db.begin_scan()?;
+    report.timings.scan_setup_ms = ms(scan_start);
+    on_progress(IndexProgress {
+        phase: IndexPhase::Scanning,
+        done: 0,
+        total: 0,
+        files_seen: 0,
+        files_changed: 0,
+        files_written: 0,
+        message_kind: Some(IndexMessageKind::Walking),
+    });
 
     // Stage entries as they are walked. No live index rows are changed until the
     // full directory traversal succeeds, and paths stay in SQLite rather than RAM.
     let t = Instant::now();
-    let walk_report = walk(&root, &mut db)?;
-    report.timings.walk_ms = ms(t);
+    let walk_report = walk(&root, &mut db, &mut report.timings)?;
+    report.timings.walk_ms = (ms(t) - report.timings.scan_write_ms).max(0.0);
     report.files_seen = walk_report.files;
     report.skipped_dirs = walk_report.skipped_dirs;
+    on_progress(IndexProgress {
+        phase: IndexPhase::Comparing,
+        done: 0,
+        total: 0,
+        files_seen: report.files_seen,
+        files_changed: 0,
+        files_written: 0,
+        message_kind: Some(IndexMessageKind::Comparing),
+    });
+    let comparing = Instant::now();
+    let candidates = if options.incremental { db.stage_scan_changes()? } else { report.files_seen };
+    report.timings.compare_ms = ms(comparing);
     let classifier = Arc::new(Classifier::new());
-    let unchanged = if options.incremental {
-        db.unchanged_scan_count()?
-    } else {
-        0
-    };
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(report.threads)
@@ -205,7 +319,6 @@ where
 
     // 2. Probe, in parallel, in chunks so progress is reported and memory stays
     //    bounded regardless of library size.
-    let probe_started = Instant::now();
     let classify_started = AtomicU64::new(0);
     let mut classify_ns = 0u64;
     let mut rows_written = 0usize;
@@ -221,7 +334,22 @@ where
     }
 
     let mut after_path: Option<String> = None;
+    // Emit an explicit indexing phase even when an incremental pass has no
+    // candidates. This keeps the phase contract observable for empty and
+    // unchanged libraries instead of jumping from Comparing to Finalizing.
+    on_progress(IndexProgress {
+        phase: IndexPhase::Indexing,
+        done: 0,
+        total: candidates,
+        files_seen: report.files_seen,
+        files_changed: candidates,
+        files_written: 0,
+        message_kind: Some(IndexMessageKind::Probing),
+    });
     loop {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(crate::error::IndexError::Cancelled);
+        }
         let batch = db.scan_batch(after_path.as_deref(), chunk, options.incremental)?;
         if batch.is_empty() {
             break;
@@ -238,6 +366,7 @@ where
         // Probe in parallel; classify on the same worker right after, since both
         // are CPU work on the same file and moving to another pool would only add
         // a hop.
+        let probe_started = Instant::now();
         let built: Vec<(AudioMeta, crate::classify::Classification, PathBuf)> =
             pool.install(|| {
                 to_probe
@@ -245,11 +374,21 @@ where
                     .map(|entry| {
                         // Size and mtime came from the directory scan; passing
                         // them in is what keeps the probe to one file open.
-                        let meta = probe_with_meta(&entry.path, entry.filesize, entry.mtime_ns);
+                        let meta = if options.read_metadata {
+                            probe_with_meta(&entry.path, entry.filesize, entry.mtime_ns)
+                        } else {
+                            crate::probe::probe_basic_with_meta(
+                                &entry.path,
+                                entry.filesize,
+                                entry.mtime_ns,
+                            )
+                        };
                         let cstart = Instant::now();
-                        let classification = classifier.classify_with_description(
+                        let classification = classifier.classify_with_metadata(
                             &entry.path.to_string_lossy(),
                             meta.description.as_deref(),
+                            meta.ucs_category.as_deref(),
+                            meta.ucs_subcategory.as_deref(),
                         );
                         let _ = classify_started
                             .fetch_add(cstart.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -263,6 +402,7 @@ where
             .iter()
             .map(|(meta, classification, path)| row_from_parts(&root, path, meta, classification))
             .collect();
+        report.timings.probe_ms += ms(probe_started);
 
         // 3. Write.
         let w = Instant::now();
@@ -271,18 +411,29 @@ where
 
         rows_written += rows.len();
         report.files_probed += rows.len();
-        on_progress(
-            (rows_written + unchanged).min(report.files_seen),
-            report.files_seen,
-        );
+        on_progress(IndexProgress {
+            phase: IndexPhase::Indexing,
+            done: rows_written,
+            total: candidates,
+            files_seen: report.files_seen,
+            files_changed: candidates,
+            files_written: rows_written,
+            message_kind: Some(IndexMessageKind::Probing),
+        });
     }
-    report.timings.probe_ms =
-        ms(probe_started) - report.timings.write_ms - classify_ns as f64 / 1e6;
     report.timings.classify_ms = classify_ns as f64 / 1e6;
 
-    report.files_skipped = unchanged;
+    report.files_skipped = report.files_seen.saturating_sub(report.files_probed);
     report.rows_written = rows_written;
-    on_progress(report.files_seen, report.files_seen);
+    on_progress(IndexProgress {
+        phase: IndexPhase::Finalizing,
+        done: 0,
+        total: 0,
+        files_seen: report.files_seen,
+        files_changed: candidates,
+        files_written: rows_written,
+        message_kind: Some(IndexMessageKind::Finalizing),
+    });
 
     // 4. Prune. Only meaningful on a full pass: a partial scan has not seen the
     //    rest of the library, so absence proves nothing.
@@ -295,11 +446,23 @@ where
     // 5. Rebuild the FTS index that the bulk load bypassed.
     if bulk {
         let i = Instant::now();
-        db.end_bulk()?;
+        report.timings.bulk = db.end_bulk()?;
         report.timings.index_ms = ms(i);
     }
 
+    let cleanup = Instant::now();
     db.end_scan()?;
+    report.timings.scan_cleanup_ms = ms(cleanup);
+
+    on_progress(IndexProgress {
+        phase: IndexPhase::Ready,
+        done: candidates,
+        total: candidates,
+        files_seen: report.files_seen,
+        files_changed: candidates,
+        files_written: rows_written,
+        message_kind: Some(IndexMessageKind::Ready),
+    });
 
     Ok(report)
 }
@@ -308,7 +471,11 @@ fn effective_threads(requested: usize) -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    if requested == 0 { cores } else { requested }
+    if requested == 0 {
+        cores
+    } else {
+        requested
+    }
 }
 
 fn ms(since: Instant) -> f64 {
@@ -419,6 +586,84 @@ mod tests {
     }
 
     #[test]
+    fn reports_each_index_phase_in_order_for_full_and_unchanged_passes() {
+        let root = temp_lib("phase-events");
+        write_wav(&root.join("a.wav"), 1_000);
+
+        let mut full_phases = Vec::new();
+        index_folder_with_events(
+            &root,
+            &IndexOptions {
+                incremental: false,
+                ..Default::default()
+            },
+            None,
+            |event| {
+                if full_phases.last().copied() != Some(event.phase) {
+                    full_phases.push(event.phase);
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            full_phases,
+            vec![
+                IndexPhase::Scanning,
+                IndexPhase::Comparing,
+                IndexPhase::Indexing,
+                IndexPhase::Finalizing,
+                IndexPhase::Ready,
+            ]
+        );
+
+        let mut unchanged_phases = Vec::new();
+        index_folder_with_events(&root, &IndexOptions::default(), None, |event| {
+            if unchanged_phases.last().copied() != Some(event.phase) {
+                unchanged_phases.push(event.phase);
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            unchanged_phases,
+            vec![
+                IndexPhase::Scanning,
+                IndexPhase::Comparing,
+                IndexPhase::Indexing,
+                IndexPhase::Finalizing,
+                IndexPhase::Ready,
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reports_scanning_and_ready_for_an_empty_library() {
+        let root = temp_lib("empty-phases");
+        let mut phases = Vec::new();
+        let report = index_folder_with_events(&root, &IndexOptions::default(), None, |event| {
+            if phases.last().copied() != Some(event.phase) {
+                phases.push(event.phase);
+            }
+        })
+        .unwrap();
+
+        assert_eq!(report.files_seen, 0);
+        assert_eq!(
+            phases,
+            vec![
+                IndexPhase::Scanning,
+                IndexPhase::Comparing,
+                IndexPhase::Indexing,
+                IndexPhase::Finalizing,
+                IndexPhase::Ready,
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_full_pass_prunes_deleted_files() {
         let root = temp_lib("prune");
         write_wav(&root.join("a.wav"), 100);
@@ -474,7 +719,8 @@ mod tests {
                 incremental: false,
                 ..Default::default()
             },
-            |_, db| {
+            None,
+            |_, db, _| {
                 db.stage_skipped_dirs(&[SkippedDir {
                     path: crate::folders::store_path(&skipped),
                     detail: "access denied".into(),
@@ -487,23 +733,21 @@ mod tests {
                     }],
                 })
             },
-            |_, _| {},
+            |_| {},
         )
         .unwrap();
 
         assert_eq!(report.rows_pruned, 1);
         assert_eq!(report.skipped_dirs.len(), 1);
         let db = IndexDb::open(&root).unwrap();
-        assert!(
-            db.get_by_path(&root.join(r"protected").join("old.wav").to_string_lossy())
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            db.get_by_path(&root.join("kept.wav").to_string_lossy())
-                .unwrap()
-                .is_none()
-        );
+        assert!(db
+            .get_by_path(&root.join(r"protected").join("old.wav").to_string_lossy())
+            .unwrap()
+            .is_some());
+        assert!(db
+            .get_by_path(&root.join("kept.wav").to_string_lossy())
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -547,25 +791,25 @@ mod tests {
                 incremental: false,
                 ..Default::default()
             },
-            |_, db| {
+            None,
+            |_, db, _| {
                 db.stage_scan_path(&root.join("b.wav"), 100, 2)?;
                 Err(crate::error::IndexError::Walk {
                     path: root.join("nested").display().to_string(),
                     detail: "mock directory disappeared".into(),
                 })
             },
-            |_, _| {},
+            |_| {},
         )
         .unwrap_err();
         assert!(error.to_string().contains("mock directory disappeared"));
 
         let db = IndexDb::open(&root).unwrap();
         assert_eq!(db.count().unwrap(), 1);
-        assert!(
-            db.get_by_path(&root.join("a.wav").to_string_lossy())
-                .unwrap()
-                .is_some()
-        );
+        assert!(db
+            .get_by_path(&root.join("a.wav").to_string_lossy())
+            .unwrap()
+            .is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 
