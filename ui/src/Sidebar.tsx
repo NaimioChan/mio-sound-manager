@@ -450,7 +450,7 @@ export function Sidebar(props: Props) {
                                   <button
                                     class={
                                        (mode() === 'ucs'
-                                         ? ucsSubcategoryLit(group.name, child.name)
+                                         ? ucsSubcategoryLit(group.name, child.filterName ?? child.name)
                                          : subcategoryLit(group.name, child.name))
                                         ? 'facet sub selected'
                                         : 'facet sub'

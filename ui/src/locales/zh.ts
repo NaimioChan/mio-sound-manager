@@ -106,6 +106,7 @@ export const zh: Record<MessageKey, string> = {
   'col.ucsSubcategory': 'UCS 子类',
   'category.ucsLabel': 'UCS CatID',
   'category.noUcsLabel': '不设置 UCS 标签',
+  'category.unmapped': '未映射到分类，只保留 UCS 标签',
   'col.length': '时长',
   'col.bpm': 'BPM',
   'col.channels': '声道',

@@ -106,11 +106,6 @@ export function t(key: MessageKey, params?: Params): string {
   })
 }
 
-/** Count-aware text, for the two places English needs a plural and CJK does not. */
-export function plural(count: number, one: MessageKey, many: MessageKey, params?: Params): string {
-  return t(count === 1 ? one : many, { count, ...params })
-}
-
 /** Localised channel label. The count itself is data; only the word is a message. */
 export function channelLabel(channels: number | null | undefined): string {
   if (channels === null || channels === undefined) return '—'

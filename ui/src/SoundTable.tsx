@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { categoryName, channelLabel, t } from './i18n'
 import { api, startDrag, type SearchRequest, type SoundRow } from './ipc'
+import { focusedElement, isTextEntry } from './keyboard'
 
 /**
  * The sound list.
@@ -736,16 +737,11 @@ export function SoundTable(props: Props) {
    * typing "rain" does not audition every letter typed.
    */
   const onKeyDown = (event: KeyboardEvent) => {
-    const el = document.activeElement as HTMLElement | null
-    // iX's own inputs render a native input inside a shadow root; `activeElement`
-    // is then the host, so the tag name is checked against the host's too.
-    const tag = el?.tagName ?? ''
-    const inField =
-      tag === 'INPUT' ||
-      tag === 'TEXTAREA' ||
-      tag === 'SELECT' ||
-      tag.startsWith('IX-') ||
-      el?.isContentEditable === true
+    // A native input inside an iX shadow root reports its host as
+    // `activeElement`. The shared predicate lists the hosts that actually take
+    // typing, so a focused `ix-button` no longer disables the table's arrows —
+    // see `keyboard.ts` for the bug that caused.
+    const inField = isTextEntry(focusedElement())
 
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !inField) {
       event.preventDefault()

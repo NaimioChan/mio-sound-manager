@@ -177,6 +177,9 @@ export function SettingsDialog(props: Props) {
   const switchDevice = async (backend: string, device: string) => {
     setDeviceError(null)
     try {
+      // No frame count: the backend keeps the stored ASIO block size, which is
+      // what a picker with no block-size control should do. Sending `null` used
+      // to erase a 64-frame setting made in the CLI back to the driver default.
       const next = await api.setAudioDevice(backend, device === '' ? null : device, null)
       props.onStatus(next)
     } catch (e) {

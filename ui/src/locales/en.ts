@@ -114,6 +114,7 @@ export const en = {
   'col.ucsSubcategory': 'UCS subcategory',
   'category.ucsLabel': 'UCS CatID',
   'category.noUcsLabel': 'No UCS label',
+  'category.unmapped': 'Not mapped to a category — the file keeps its UCS label only',
   'col.length': 'Length',
   'col.bpm': 'BPM',
   'col.channels': 'Ch',

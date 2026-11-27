@@ -109,6 +109,7 @@ export const ja: Record<MessageKey, string> = {
   'col.ucsSubcategory': 'UCS サブカテゴリ',
   'category.ucsLabel': 'UCS CatID',
   'category.noUcsLabel': 'UCS ラベルなし',
+  'category.unmapped': 'カテゴリには未対応 — UCS ラベルのみ保持',
   'col.length': '長さ',
   'col.bpm': 'BPM',
   'col.channels': 'ch',

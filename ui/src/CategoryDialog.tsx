@@ -127,8 +127,20 @@ export function CategoryDialog(props: Props) {
           <Show when={selectedUcs()}>
             {(entry) => (
               <div class="setting-hint">
-                {entry().projectedCategory}
-                <Show when={entry().projectedSubcategory}> / {entry().projectedSubcategory}</Show>
+                <Show
+                  when={entry().projectedCategory}
+                  fallback={t('category.unmapped')}
+                >
+                  {(projected) => (
+                    <>
+                      {projected()}
+                      <Show when={entry().projectedSubcategory}>
+                        {' / '}
+                        {entry().projectedSubcategory}
+                      </Show>
+                    </>
+                  )}
+                </Show>
               </div>
             )}
           </Show>
@@ -202,8 +214,14 @@ export function CategoryDialog(props: Props) {
           </ix-button>
           <ix-button
             variant="primary"
-            disabled={!category().trim() && !selectedUcs()}
-            onClick={() => close(selectedUcs() ? () => props.onSaveUcs(selectedUcs()!) : save)}
+            disabled={!category().trim() && !selectedUcs()?.projectedCategory}
+            onClick={() =>
+              close(
+                selectedUcs()?.projectedCategory
+                  ? () => props.onSaveUcs(selectedUcs()!)
+                  : save
+              )
+            }
           >
             {t('common.save')}
           </ix-button>

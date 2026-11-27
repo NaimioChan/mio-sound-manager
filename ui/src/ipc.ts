@@ -25,6 +25,8 @@ export interface LibraryStatus {
   filesWritten: number
   metadataIndexing: boolean
   metadataIndexed: number
+  /** Rows the file changed under; the next pass will pick them up. */
+  metadataDeferred: number
   metadataTotal: number
   metadataFailed: number
   metadataStatus: 'idle' | 'indexing' | 'done' | 'failed' | 'cancelled'
@@ -74,10 +76,6 @@ export interface PlaybackPosition {
   paused: boolean
   finished: boolean
   errorSeq: number
-  /** Whether the render thread is looping the loaded clip. */
-  looping: boolean
-  /** The looped region in seconds, or `null` when it is the whole clip. */
-  loopRegionS: [number, number] | null
 }
 
 /**
@@ -161,7 +159,14 @@ export interface UcsCategory {
   catId: string
   category: string
   subcategory: string | null
-  projectedCategory: string
+  /**
+   * The 22-category target, or `null` when this CatID is deliberately not
+   * projected (archive marker, compressed air, a process word, or a CatID the
+   * corpus contradicts). `null` is not `Uncategorized`: picking it would write a
+   * manual Uncategorized and lock the row against the classifier, so the dialog
+   * refuses to apply it.
+   */
+  projectedCategory: string | null
   projectedSubcategory: string | null
   count: number
 }

@@ -31,12 +31,23 @@ import { SettingsDialog, loadSettings, saveSettings, type Settings } from './Set
 import { IndexOverlay } from './IndexOverlay'
 import { UNCATEGORIZED, categoryName, editKindName, t } from './i18n'
 import { ICON } from './icons'
+import { focusedElement, isTextEntry } from './keyboard'
 // The product mark, next to the name in the top bar. A file rather than inline
 // SVG: Vite hashes and emits it, so the CSP's `img-src 'self'` covers it and the
 // logo stays one asset instead of a second copy of the paths.
 import brandLogo from './assets/brand.svg'
 import { applyTheme, loadThemeId } from './theme'
 import { applyZoom, loadZoom } from './zoom'
+
+/**
+ * The message `AppError::Superseded` serialises to.
+ *
+ * A bare message is what the IPC boundary sends, so recognising "the user moved
+ * on" is a string match. Keep it identical to the `#[error(...)]` attribute in
+ * `crates/mio-app/src/error.rs`; if the variant ever grows a code field this can
+ * go away.
+ */
+const SUPERSEDED_MESSAGE = 'superseded by a newer request'
 
 /**
  * Playhead polling, per `docs/architecture.md` 7.3: read position from
@@ -296,6 +307,21 @@ export function App() {
 
   const playhead = usePlayhead()
 
+  /**
+   * Show a playback-command failure, unless it is the "a newer request arrived"
+   * case.
+   *
+   * Superseding is normal: holding an arrow key or clicking the waveform faster
+   * than a decode completes cancels the older request by design. Showing it put an
+   * English backend string in the top bar on every other keypress, and it was not
+   * translatable because it was born in Rust (`AGENTS.md`).
+   */
+  const showPlaybackError = (error: unknown) => {
+    const message = String(error)
+    if (message.includes(SUPERSEDED_MESSAGE)) return
+    setNotice(message)
+  }
+
   createEffect(() => {
     const error = playhead.playbackError()
     if (!error) return
@@ -461,7 +487,7 @@ export function App() {
     try {
       await api.play(row.path, startAt)
     } catch (e) {
-      setNotice(String(e))
+      showPlaybackError(e)
     }
   }
 
@@ -480,7 +506,7 @@ export function App() {
       else if (playhead.playing()) await api.pause()
       else if (active()) await api.play(active()!.path)
     } catch (e) {
-      setNotice(String(e))
+      showPlaybackError(e)
     }
   }
 
@@ -823,10 +849,26 @@ export function App() {
     void runSearch()
   }
 
+  /**
+   * Clicking a UCS top category.
+   *
+   * The CatIDs are the third filter level, and they intersect with the category
+   * set: leaving a stale one behind (the old bug) produced
+   * `ucs_category IN ('X') AND ucs_cat_id IN ('an id of Y')`, so both rows looked
+   * lit and the list went empty. Every branch therefore maintains `ucsCatIds`
+   * together with the category set:
+   *
+   * * not additive → the clicked category is the only one, so no catId narrows it;
+   * * additive and removing → drop the catIds that belong to the removed
+   *   category, since their parent is no longer selected;
+   * * additive and adding → leave existing catIds alone; they still have their
+   *   own parents selected.
+   */
   const toggleUcsCategory = (name: string | null, additive: boolean) => {
     if (name === null) {
       setUcsCategories([])
       setUcsSubcategories([])
+      setUcsCatIds([])
       setFolder(null)
       setFavoritesOnly(false)
       void runSearch()
@@ -836,9 +878,16 @@ export function App() {
       const sole = ucsCategories().length === 1 && ucsCategories()[0] === name
       setUcsCategories(sole ? [] : [name])
       setUcsSubcategories([])
+      setUcsCatIds([])
     } else if (ucsCategories().includes(name)) {
       setUcsCategories(ucsCategories().filter((category) => category !== name))
       setUcsSubcategories(ucsSubcategories().filter((entry) => entry.category !== name))
+      const own = new Set(
+        ucsCatalog()
+          .filter((entry) => entry.category === name)
+          .map((entry) => entry.catId)
+      )
+      setUcsCatIds(ucsCatIds().filter((catId) => !own.has(catId)))
     } else {
       setUcsCategories([...ucsCategories(), name])
     }
@@ -1246,20 +1295,11 @@ export function App() {
    * Ctrl+Z/Y, Ctrl+, and the auto-play toggle. The table owns arrows and Ctrl+A.
    */
   const onKeyDown = (event: KeyboardEvent) => {
-    const el = document.activeElement as HTMLElement | null
-    const tag = el?.tagName ?? ''
-    // iX components put a native input inside a shadow root, so the host is what
-    // `activeElement` reports. Treating the whole iX namespace as "in a field"
-    // would also swallow Space on a focused button, which is correct: a focused
-    // button activates on Space.
-    const inField =
-      tag === 'INPUT' ||
-      tag === 'TEXTAREA' ||
-      tag === 'SELECT' ||
-      tag === 'IX-INPUT' ||
-      tag === 'IX-SLIDER' ||
-      tag === 'IX-SELECT' ||
-      el?.isContentEditable === true
+    // A native input inside an iX shadow root reports its host as
+    // `activeElement`. The shared predicate lists only the hosts that take
+    // typing: a focused `ix-button` still owns Space and Enter, but arrows and
+    // Ctrl+A must keep working for the table.
+    const inField = isTextEntry(focusedElement())
 
     // Nothing but Escape works while a blocking index pass owns the window.
     if (indexing()) return
@@ -1684,7 +1724,15 @@ export function App() {
               <progress
                 aria-labelledby="metadata-progress-label"
                 max={Math.max(1, library().metadataTotal)}
-                value={library().metadataIndexed}
+                /* Rows dealt with: indexed, plus the ones whose file changed
+                   under the pass and the ones that failed. A bar that counted
+                   only `indexed` would stop short of 100% forever, and one that
+                   counted a changed row as indexed claimed work it never did. */
+                value={
+                  library().metadataIndexed +
+                  library().metadataDeferred +
+                  library().metadataFailed
+                }
               />
               <Show when={library().metadataFailed > 0}>
                 <span class="dim">{t('index.metadataFailed', { count: library().metadataFailed })}</span>
