@@ -3,11 +3,13 @@
 //   node tools/shot-themes.mjs [outDir]
 import { createRequire } from 'node:module'
 import { mkdirSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
 const { chromium } = require('playwright-core')
 
-const outDir = process.argv[2] ?? 'C:/Users/Naimio/AppData/Local/hermes/cache/scratch/themes'
+const outDir = process.argv[2] ?? path.join(os.tmpdir(), 'mio-themes')
 mkdirSync(outDir, { recursive: true })
 
 const browser = await chromium.connectOverCDP('http://127.0.0.1:9223')

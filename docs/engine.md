@@ -50,13 +50,15 @@ Engine::publish() →  存槽、打时间戳、翻 active
 
 后端由 `EngineConfig::backend` 选，默认 `Backend::Wasapi`。ASIO 只在 `--features asio` 时编译进来（见下）。
 
-**槽与切换。** `slots: [ArcSwapOption<DecodedAudio>; 2]` + `active: AtomicUsize`。
+**槽与切换。** `slots: [ArcSwapOption<SlotState>; 2]` + `active: AtomicUsize`。`SlotState` 是"一个 clip 加上它所在的坐标"：`clip`、`start`（本次播放从哪个帧起播）、`window_start`（该缓冲在文件里的起点）、`total_frames` 和 `tag`。
 
-`publish` 的顺序是：写入非活跃槽 → 重置位置与 finished → 打 `pub_seq` 与 `pub_ns` → 翻 `active`。渲染线程先读 `active` 再读 `pub_seq`，看到新序号就说明槽里的东西已经装好了。
+`publish` 的顺序是：写入非活跃槽（一次 `ArcSwap` 存完整的 `SlotState`）→ 打 `pub_seq` 与 `pub_ns` → 翻 `active`。**槽与坐标必须一次发布**：旧实现把 clip 存进槽、把 `pos` / `buffer_frames` / `window_start` 存进几个共用原子量，回调落在中间就会拿到"旧 clip + 新 offset"，`copy_from_slice` 直接越界 panic，渲染线程死掉后只是从此没声音。
 
-旧 clip 由 `arc-swap` 负责回收：`store()` 内部会等所有 guard 释放才 drop 旧值，所以音频线程永远不会释放自己正在读的内存。**不要**自己写 retire 列表，那是重复实现而且还容易错。
+播放头是一个字：高 32 位是 `tag`、低 32 位是缓冲内偏移（`pos_tagged`）。回调与读方都先加载 `SlotState`，再比对 `tag`；不匹配就退回该槽的 `start`，永远不会把别人的偏移当索引。`tag` 每次 publish 和每次 handoff 都递增，32 位帧的偏移上限远高于 `MAX_PCM_BYTES`。
 
-**渲染回调的硬约束。** `scratch` 缓冲在循环外按 endpoint 上限分配一次；回调内只做 `copy_from_slice` 与 `fill(0)`，没有分配、没有锁、没有 IO、没有 `format!`。测量数据通过 `ArrayQueue` 送出，push 失败就丢弃——诊断数据不值得阻塞音频线程。ASIO 的每声道拆分同样是预分配指针上的定长循环。
+旧 clip 由 `arc-swap` 负责回收：`store()` 会等所有 guard 释放才 drop 旧值。**回调不拿 guard**——它用 `load_full()` 拿到一个 `Arc`，回调结束时这个 `Arc` 在回调线程上递减；只有当回调恰好是最后一个持有者时才会在那里释放。所以"AUDIO THREAD NEVER DEALLOCATES"这句注释不成立，也不该再写：实际保证是"回调不做分配、不加锁、不做 IO"，释放一个已无引用的 `Arc` 不违反这三条。ASIO 侧另有两处必须诚实：`asio-sys` 跑每个缓冲回调时持有它自己的全局 `BUFFER_CALLBACK` 锁（不是我们的代码）；我们的 `streams` 锁改用 `try_lock`，拿不到就交一个静音缓冲，而不是让音频线程等控制线程。
+
+**渲染回调的硬约束。** `scratch` 缓冲在循环外按 endpoint 上限分配一次；回调内只做 `copy_from_slice` 与 `fill(0)`，没有分配、没有锁、没有 IO、没有 `format!`。测量数据通过 `ArrayQueue` 送出，push 失败就丢弃——诊断数据不值得阻塞音频线程。ASIO 的每声道拆分同样是预分配指针上的定长循环，且每次字节读取都走 `scratch.get(..)`：驱动若在流中途要求更大的块，`Mixer::fill` 已经决定返回静音，解交织循环必须跟着退化成静音，不能按下标越界 panic。
 
 **`IAudioClient` 的生命周期。** 它在渲染线程内创建、使用、销毁。`set_get_eventhandle()` 返回的 `Handle` 与 `AudioClient` 同寿命；提前 drop 会关掉事件，`Start()` 报 `AUDCLNT_E_EVENTHANDLE_NOT_SET`（`0x88890014`）。
 

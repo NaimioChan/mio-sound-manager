@@ -10,6 +10,8 @@
 //    the loop switch looks on when it is on, and export_region writes a WAV
 // 5. lanes: a stereo file carries two envelopes, a mono file one
 import { createRequire } from 'node:module'
+import os from 'node:os'
+import path from 'node:path'
 
 const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
 const { chromium } = require('playwright-core')
@@ -345,7 +347,11 @@ check(
 // drag loop, which parks every later IPC call. The outside-the-selection case shares
 // the same `!inside` branch as "no selection at all" — it hands over the source file
 // with no export — so it is not worth a second session here.
-const exportsDir = 'C:/Users/Naimio/AppData/Local/com.naimio.miosound/exports'
+const exportsDir = path.join(
+  process.env.LOCALAPPDATA ?? os.homedir(),
+  'com.naimio.miosound',
+  'exports'
+)
 // Name → mtime, not a bare list: the file name is derived from the path and the
 // selection, so running this twice exports to the same name and a count would not
 // move. A rewritten file is a newer mtime.

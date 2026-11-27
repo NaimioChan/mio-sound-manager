@@ -17,9 +17,15 @@
 // no build step and no ts-node: the locale files are flat `'key': 'value',` lists by
 // construction, and that shape is what the check enforces.
 import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const dir = 'src/locales'
+// Resolved from this file, not the process's working directory: `AGENTS.md`
+// documents the check as `node tools/check-i18n.mjs` from the repository root,
+// and a relative `src/locales` made that fail with ENOENT. Every other
+// `check-*.mjs` resolves its own paths the same way.
+const HERE = dirname(fileURLToPath(import.meta.url))
+const dir = join(HERE, '..', 'ui', 'src', 'locales')
 const files = readdirSync(dir).filter((f) => f.endsWith('.ts'))
 const problems = []
 

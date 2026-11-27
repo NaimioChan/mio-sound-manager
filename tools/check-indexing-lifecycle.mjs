@@ -1,12 +1,15 @@
 import { createRequire } from 'node:module'
 import { mkdir, rm, writeFile, unlink } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
 const { chromium } = require('playwright-core')
 
 const port = process.argv[2] ?? '9223'
-const base = 'C:/Users/Naimio/AppData/Local/Temp/opencode/mio-index-lifecycle'
+// Per-user temporary directory, not a hardcoded checkout path: this is test
+// fixture data, and the script should run on any machine that has the app open.
+const base = path.join(os.tmpdir(), 'opencode', 'mio-index-lifecycle')
 const cancelRoot = path.join(base, 'cancel')
 const failRoot = path.join(base, 'fail')
 const wav = Buffer.from([

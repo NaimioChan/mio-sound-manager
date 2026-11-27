@@ -225,6 +225,43 @@ await page.waitForFunction(
 )
 check(true, 'Ctrl+A selects the filter without transferring paths', `${matchingCount}`)
 
+// --- A7: clicking a dock button must not disable the table's keyboard.
+// The old predicate treated every `IX-*` host as a text field, so after a click
+// on AUTO PLAY the focus sat on `IX-BUTTON` and arrows/Home/End stopped moving
+// the selection. Drive the real inner button so the focus lands where a user's
+// click puts it.
+await page.evaluate(() => {
+  const host = document.querySelector('#auto-play')
+  const inner = host?.shadowRoot?.querySelector('button')
+  ;(inner ?? host)?.click()
+})
+await page.waitForTimeout(300)
+const focusedTag = await page.evaluate(() => document.activeElement?.tagName ?? '')
+await page.keyboard.press('Home')
+await page.waitForFunction(
+  () => Number(document.querySelector('.row.active[data-path]')?.getAttribute('aria-posinset')) === 1,
+  undefined,
+  { timeout: 10_000 }
+)
+await page.keyboard.press('ArrowDown')
+await page.waitForFunction(
+  () => Number(document.querySelector('.row.active[data-path]')?.getAttribute('aria-posinset')) === 2,
+  undefined,
+  { timeout: 10_000 }
+)
+check(
+  true,
+  'arrows still navigate the table after clicking a dock button',
+  `focus was on ${focusedTag || '(none)'}`
+)
+// Put the toggle back where the rest of the checks expect it.
+await page.evaluate(() => {
+  const host = document.querySelector('#auto-play')
+  const inner = host?.shadowRoot?.querySelector('button')
+  ;(inner ?? host)?.click()
+})
+await page.waitForTimeout(300)
+
 // --- the row context menu
 await page.locator('.row[data-path]').first().click({ button: 'right' })
 await page.waitForTimeout(300)

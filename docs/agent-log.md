@@ -2,7 +2,19 @@
 
 Shared handoff log. Newest entry on top. One entry per work session: what changed, what was verified, what is left.
 
+> **2026-11-27:** `docs/indexing-todo.md` has been deleted. References to it below are historical
+> records of the session that used it; its open items were the metadata bugs fixed in the next
+> entry (deferred-vs-indexed progress, and the `close()`/`start_metadata` race).
+
 ## 当前占用
+
+## 2026-11-27 18:40 · opencode · 修完一轮只读审计（A1–A18、B1–B5）
+
+- 改：按当轮审计清单逐条修。P0：双槽发布改为一次 `SlotState` 发布 + 带 tag 的播放头（`output.rs`）；UCS 补 `WEAPONS` 与 `DROPPED`/`WITHHELD_CAT_IDS` 并让 `import-ucs.py` 拒绝静默漏条目；M4A priming 只裁流头。P1：长文件区域循环按链回绕、`IX-*` 键盘判据抽到 `ui/src/keyboard.ts`、三个重 IPC 命令改 async、设备切换只在成功时持久化且保留 ASIO 帧数、`AppError::Superseded`。P2：`tauri-plugin-log`、稳定 FNV-1a 锁键、metadata 增加 `deferred` 计数、`close()` 竞态用 `AtomicBool` 关住、ASIO `try_lock` 与 `scratch.get`。文档与工具链一并修正。
+- 验证：`cargo check --workspace --all-targets` 干净；`cargo test --workspace` 226 项通过（app 28 + IPC 36 + engine 32 + index 130）；`cargo check --features asio`（含 SDK）干净；`npm run build` 通过；`node tools/check-i18n.mjs` 从根目录通过（173 键 ×3）。
+- 新增测试：`output.rs` 7 个（惰性 clip + 大 offset 的并发 publish/fill、handoff、loop、stop、complete clip 收尾）；`a_summary_survives_a_bulk_drop_on_another_connection`（能复现 `no such index`）；`an_m4a_window_is_not_priming_trimmed`（ffmpeg fixture，缺 ffmpeg 则跳过）；`a_long_file_region_loop_wraps_at_the_region_start`、`a_non_looping_long_file_finishes_at_its_end`；两个设备切换持久化测试；`a_newer_schema_version_refuses_to_open`。
+- 已知坑（本轮踩过并修掉）：`streaming_loop` 的含义是"链拥有边界"，不是"用户要循环"。把两者混用会让每个长文件永远循环，且 `finished` 永不置位；引擎的 `finished` 判定原本也被我写反成 `!clip.complete`。两处都有测试钉住。
+- 未做：桌面 CDP 验收（`check-interactions.mjs` 已加 A7 断言但未跑）；真实 ASIO 驱动的播放与设备切换；A4 的区域中间拖动场景。本轮审计清单本身已删除，遗留项就是这三条。
 
 ## 2026-11-27 13:00 · opencode · 提交索引与界面改动
 - 改：将索引拆分、界面修复、验收脚本和 TODO 一并提交；清理空示例目录及 `tools/__pycache__/`。

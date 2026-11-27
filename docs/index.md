@@ -180,7 +180,7 @@ cargo run --release -p mio-cli -- classify-check expect.json
 三条容易破坏且难查的不变式：
 
 - **upsert 不碰用户状态。** `favorite` 完全不在 UPDATE 子句里；分类列只在 `category_manual = 0` 时刷新。重扫不能撤销用户的决定。
-- **FTS 靠触发器同步，不靠写入方。** 任何 INSERT / UPDATE / DELETE 都会更新 `sounds_fts`，包括 prune 路径。
+- **FTS 的常规维护靠触发器，批量装载靠重建。** 逐行路径上，`sounds` 的 INSERT / UPDATE / DELETE 都由触发器同步到 `sounds_fts`，prune 也走同一条路。批量路径是例外：`begin_bulk` 明确 `DROP TRIGGER`，`prune_scan_missing` 又跑在 `end_bulk` 之前，所以装载期间 `sounds_fts` 不实时；正确性由 `end_bulk` 的最后一次整表 rebuild 兜底（`meta.fts_dirty` 记录这个中间态）。别把"触发器覆盖一切"当成理由去在批量路径里相信 FTS 的中间结果。
 - **WAL 是必须的。** UI 在索引写入时查询。
 
 **批量装载与逐行维护的取舍。** 三个 FTS 触发器加七个二级索引，逐行维护对单条编辑是对的，对 28 万行的装载是错的：实测写入阶段 16.9s，其中大部分是索引维护。`begin_bulk` / `end_bulk` 在批量装载时卸掉它们，结束时一次重建，写入降到 6–7s。`meta.fts_dirty` 记录中间状态，进程在中间死掉时下次 `open` 会补齐。

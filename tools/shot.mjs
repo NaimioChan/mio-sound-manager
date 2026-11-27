@@ -5,11 +5,15 @@
 // Uses the same playwright-core that the existing checks resolve out of the
 // Slip Sound checkout, so this needs no extra install.
 import { createRequire } from 'node:module'
+import os from 'node:os'
+import path from 'node:path'
 
 const require = createRequire('C:/Users/Naimio/projects/slip-sound/package.json')
 const { chromium } = require('playwright-core')
 
-const out = process.argv[2] ?? 'C:/Users/Naimio/AppData/Local/hermes/cache/scratch/mio.png'
+// A per-user scratch path, not a checkout path: the screenshot is for a person to
+// look at and should not depend on who ran the script.
+const out = process.argv[2] ?? path.join(os.tmpdir(), 'mio-shot.png')
 const port = process.argv[3] ?? '9223'
 
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
