@@ -45,6 +45,7 @@ node tools/check-region.mjs         # 行可拖、框选、循环跟随框选、
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/check-tags.mjs           # 侧栏模式下拉/旧键迁移、列宽拖动与显隐、表头菜单、横向滚动、库头无三角、BPM 列、tag 多选、无副标题
+node tools/check-favorite.mjs       # 星标不重查（epoch/骨架/searching）、字形延迟、侧栏计数、undo、收藏过滤下必须重查
 node tools/check-stress.mjs         # 压力测试：仅在前后端数据结构/算法有破坏性改动时运行
 node tools/check-shipped.mjs [port] # 对着打包产物验版本/ASIO/设备/新控件（解压 zip 后起那个 exe 再跑）
 node tools/shot.mjs [out.png]       # 截图（给人看）

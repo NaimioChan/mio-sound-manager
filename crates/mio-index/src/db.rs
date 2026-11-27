@@ -716,6 +716,11 @@ impl IndexDb {
             "CREATE INDEX IF NOT EXISTS idx_ucs_category ON sounds(ucs_category);
              CREATE INDEX IF NOT EXISTS idx_ucs_category_subcategory
                  ON sounds(ucs_category, ucs_subcategory);
+             -- The CatID is a filter of its own (the third level under UCS) and it is
+             -- also grouped by once per sidebar refresh for the dialog's counts.
+             -- Without this index both were whole-table scans: 5.9 s per page and
+             -- 447 ms per refresh on the reference library.
+             CREATE INDEX IF NOT EXISTS idx_ucs_cat_id ON sounds(ucs_cat_id);
              CREATE INDEX IF NOT EXISTS idx_description ON sounds(description);",
         )?;
         // Filename ties stay ascending in both directions, so a reverse scan of
@@ -1324,6 +1329,7 @@ impl IndexDb {
              DROP INDEX IF EXISTS idx_category_subcategory;
              DROP INDEX IF EXISTS idx_confidence;
              DROP INDEX IF EXISTS idx_favorite;
+             DROP INDEX IF EXISTS idx_ucs_cat_id;
              DROP INDEX IF EXISTS idx_mtime;
              DROP INDEX IF EXISTS idx_bpm;",
         )?;
@@ -1343,6 +1349,7 @@ impl IndexDb {
              CREATE INDEX IF NOT EXISTS idx_category_subcategory ON sounds(category, subcategory);
              CREATE INDEX IF NOT EXISTS idx_confidence ON sounds(confidence);
              CREATE INDEX IF NOT EXISTS idx_favorite ON sounds(favorite);
+             CREATE INDEX IF NOT EXISTS idx_ucs_cat_id ON sounds(ucs_cat_id);
              CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);
              CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);
              CREATE INDEX IF NOT EXISTS idx_mtime ON sounds(mtime_ns);
@@ -1395,10 +1402,17 @@ impl IndexDb {
     /// The single-row form is fine for a star click; this one exists because the
     /// table lets the user star a whole multi-selection, and one transaction per
     /// row would commit — and fsync under WAL — once per sound.
+    ///
+    /// The `favorite != ?` predicate makes the returned count mean "rows that
+    /// actually changed". SQLite's `changes()` counts rows *matched*, so without it
+    /// starring an already-starred row reported a change, fired the FTS triggers for
+    /// nothing, and pushed an undo entry whose inverse was a no-op.
     pub fn set_favorite_many(&mut self, paths: &[String], favorite: bool) -> Result<u64> {
         let tx = self.conn.transaction()?;
         let changed = {
-            let mut stmt = tx.prepare("UPDATE sounds SET favorite = ?1 WHERE path = ?2")?;
+            let mut stmt = tx.prepare(
+                "UPDATE sounds SET favorite = ?1 WHERE path = ?2 AND favorite != ?1",
+            )?;
             let mut changed = 0u64;
             for path in paths {
                 changed += stmt.execute(params![favorite as i64, path])? as u64;
@@ -1431,6 +1445,10 @@ impl IndexDb {
     /// Same reason as [`set_favorite_many`](Self::set_favorite_many): the UI
     /// categorises a multi-selection, and the FTS triggers fire per row, so the
     /// batching has to be at the transaction level.
+    ///
+    /// The predicate carries the same "only rows that change" meaning as the
+    /// favourite one: re-applying a category a row already has is not an edit, and
+    /// must not report one.
     pub fn set_category_many(
         &mut self,
         paths: &[String],
@@ -1442,7 +1460,9 @@ impl IndexDb {
             let mut stmt = tx.prepare(
                 "UPDATE sounds
                  SET category = ?1, subcategory = ?2, confidence = 1, category_manual = 1
-                 WHERE path = ?3",
+                 WHERE path = ?3
+                   AND (category != ?1 OR subcategory IS NOT ?2
+                        OR confidence != 1 OR category_manual != 1)",
             )?;
             let mut changed = 0u64;
             for path in paths {
@@ -1468,7 +1488,10 @@ impl IndexDb {
         let mut stmt = tx.prepare(
             "UPDATE sounds SET ucs_category = ?1, ucs_subcategory = ?2, ucs_cat_id = ?3,
               ucs_manual = 1, category = ?4, subcategory = ?5, confidence = 1, category_manual = 1
-             WHERE path = ?6",
+             WHERE path = ?6
+               AND (ucs_category IS NOT ?1 OR ucs_subcategory IS NOT ?2
+                    OR ucs_cat_id IS NOT ?3 OR category IS NOT ?4 OR subcategory IS NOT ?5
+                    OR confidence != 1 OR category_manual != 1 OR ucs_manual != 1)",
         )?;
         let mut changed = 0;
         for path in paths {
@@ -1499,6 +1522,9 @@ impl IndexDb {
     }
 
     /// Clear the manual category on many paths in one transaction.
+    ///
+    /// Only rows that are not already clear are written, so the count means "how
+    /// many changed" and clearing an uncategorised selection is not an edit.
     pub fn clear_category_many(&mut self, paths: &[String]) -> Result<u64> {
         let tx = self.conn.transaction()?;
         let changed = {
@@ -1506,7 +1532,9 @@ impl IndexDb {
                 "UPDATE sounds
                  SET category = 'Uncategorized', subcategory = NULL, confidence = 0,
                      matched_terms = NULL, category_manual = 0
-                 WHERE path = ?1",
+                 WHERE path = ?1
+                   AND (category != 'Uncategorized' OR subcategory IS NOT NULL
+                        OR confidence != 0 OR category_manual != 0 OR matched_terms IS NOT NULL)",
             )?;
             let mut changed = 0u64;
             for path in paths {
@@ -2745,6 +2773,48 @@ mod tests {
         let sorted = db.search(&params).unwrap();
         assert_eq!(sorted[0].ucs_category.as_deref(), Some("GORE"));
         assert_eq!(sorted[1].ucs_category.as_deref(), Some("METAL"));
+    }
+
+    /// The CatID is filtered by and grouped by, so both have to use the index.
+    ///
+    /// Without it the counts were a `SCAN sounds` plus a temp B-tree — 447 ms on
+    /// the reference library, on the UI thread, on every star click. Asserting the
+    /// plan rather than a duration keeps the test honest on other machines.
+    #[test]
+    fn ucs_cat_id_filters_and_counts_use_their_index() {
+        let mut db = db();
+        let mut a = row("C:/lib/a.wav", "Impacts");
+        a.ucs_cat_id = Some("IMPCTFir".into());
+        let mut b = row("C:/lib/b.wav", "Impacts");
+        b.ucs_cat_id = Some("METLFric".into());
+        db.upsert_batch(&[a, b, row("C:/lib/c.wav", "Foley")]).unwrap();
+
+        let mut params = SearchParams::new("");
+        params.ucs_cat_ids = vec!["IMPCTFir".into()];
+        let hits = db.search(&params).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].ucs_cat_id.as_deref(), Some("IMPCTFir"));
+
+        let counts = db.ucs_cat_counts().unwrap();
+        assert_eq!(counts.get("IMPCTFir"), Some(&1));
+
+        for sql in [
+            "SELECT ucs_cat_id, COUNT(*) FROM sounds WHERE ucs_cat_id IS NOT NULL GROUP BY ucs_cat_id",
+            "SELECT COUNT(*) FROM sounds WHERE ucs_cat_id = 'IMPCTFir'",
+        ] {
+            let plan: Vec<String> = db
+                .connection()
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |row| row.get(3))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect();
+            assert!(
+                plan.iter().any(|detail| detail.contains("idx_ucs_cat_id")),
+                "the planner should use idx_ucs_cat_id for {sql}: {plan:?}"
+            );
+        }
     }
 
     #[test]

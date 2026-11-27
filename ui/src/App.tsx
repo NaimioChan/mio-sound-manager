@@ -18,6 +18,7 @@ import {
 import {
   SoundTable,
   type EditScope,
+  type FavoriteOverride,
   type RowMenuRequest
 } from './SoundTable'
 import {
@@ -362,6 +363,15 @@ export function App() {
   })
 
   const activeLibrary = createMemo(() => libraries().find((l) => l.active) ?? null)
+  // Worker completion order is unrelated to click order. Keep writes, undo and
+  // library switches in order without blocking the renderer.
+  let libraryAction = Promise.resolve()
+  const queueLibraryAction = (action: () => Promise<void>) => {
+    libraryAction = libraryAction.then(action).catch((e) => {
+      setNotice(String(e))
+    })
+    return libraryAction
+  }
   let searchSequence = 0
 
   /**
@@ -391,6 +401,7 @@ export function App() {
   const runSearch = async () => {
     const sequence = ++searchSequence
     if (libraries().length === 0) {
+      setFavoriteOverride(null)
       setDataEpoch((epoch) => epoch + 1)
       setMatching(0)
       setQuerying(false)
@@ -400,6 +411,8 @@ export function App() {
     try {
       const count = await api.countMatching(request())
       if (sequence !== searchSequence) return
+      // Windows for the new epoch read the committed flags from SQLite.
+      setFavoriteOverride(null)
       setDataEpoch((epoch) => epoch + 1)
       setMatching(count)
     } catch (e) {
@@ -451,15 +464,23 @@ export function App() {
    * Facet counts. Refreshed after every library edit rather than on a timer: a
    * stale count next to a category the user just emptied is the kind of wrong
    * number that makes the whole rail untrustworthy.
+   *
+   * The UCS CatID catalog is a separate call on purpose. It is the dialog's list of
+   * every CatID with its count, and `set_favorite` cannot change it — but this used
+   * to fetch it anyway, which put a whole-table `GROUP BY` behind every star click.
+   * `ucsCatalog` says whether the caller's edit can actually move those numbers.
    */
-  const loadSidebar = async () => {
+  const loadSidebar = async (wantUcsCatalog = true) => {
     try {
-      const [sidebar, catalog] = await Promise.all([api.sidebar(), api.ucsCategories()])
+      const [sidebar, catalog] = await Promise.all([
+        api.sidebar(),
+        wantUcsCatalog ? api.ucsCategories() : Promise.resolve(null)
+      ])
       setFacets(sidebar.facets)
       setUcsFacets(sidebar.ucsFacets)
       setFavorites(sidebar.favorites)
       setTotal(sidebar.total)
-      setUcsCatalog(catalog)
+      if (catalog) setUcsCatalog(catalog)
     } catch {
       setFacets([])
       setUcsFacets([])
@@ -650,7 +671,9 @@ export function App() {
    * the promise lifetime, not by a separate poll: there is no window in which the
    * app thinks it is idle while the database is still being written.
    */
-  const addLibrary = async (root?: string) => {
+  const addLibrary = (root?: string) => queueLibraryAction(() => openLibrary(root))
+
+  const openLibrary = async (root?: string) => {
     let target = root
     if (!target) {
       const picked = await api.pickLibraryFolder()
@@ -713,6 +736,10 @@ export function App() {
   }
 
   const switchLibrary = async (root: string) => {
+    await queueLibraryAction(() => activateLibrary(root))
+  }
+
+  const activateLibrary = async (root: string) => {
     if (activeLibrary()?.root === root) return
     try {
       setLibraries(await api.setActiveLibrary(root))
@@ -734,6 +761,10 @@ export function App() {
   }
 
   const removeLibrary = async (root: string) => {
+    await queueLibraryAction(() => closeLibrary(root))
+  }
+
+  const closeLibrary = async (root: string) => {
     try {
       setLibraries(await api.removeLibrary(root))
       clearSelection()
@@ -1019,41 +1050,151 @@ export function App() {
     void runSearch()
   }
 
-  /** Apply a library edit, then refresh the counts, the rows and the undo labels. */
-  const editThenRefresh = async (apply: () => Promise<unknown>, resetSelection = false) => {
+  /**
+   * A star click that did not need a re-query, applied at read time by the table.
+   *
+   * Kept for rows that are on screen: a star is a boolean per row, so the click
+   * can paint the change itself. `flags` only holds the paths this click touched,
+   * and `SoundTable.rowAt` merges them, so exactly those rows get a new object.
+   */
+  const [favoriteOverride, setFavoriteOverride] = createSignal<FavoriteOverride | null>(null)
+
+  /**
+   * Paint `paths` as `favorite` without a query, for the rows already loaded.
+   *
+   * Matching edits apply to a filter, not to the rows the table has loaded, so the
+   * caller passes the paths it knows about; rows outside the cache stay as the
+   * database has them, which is what a later fetch will show anyway.
+   */
+  const paintFavorites = (paths: string[], favorite: boolean) => {
+    if (paths.length === 0) return
+    const flags = new Map(favoriteOverride()?.flags ?? [])
+    for (const path of paths) flags.set(path, favorite)
+    setFavoriteOverride({ flags })
+  }
+
+  /**
+   * Apply a library edit, then refresh exactly what that kind of edit can change.
+   *
+   * Starring used to refresh everything: `get_sidebar` (facets + summary + the UCS
+   * CatID group-by) and `runSearch()` (which bumps `dataEpoch`, dropping every
+   * cached segment). Nothing about a star changes a category count or a CatID, and
+   * with no favourite filter and no favourite sort it changes no row's position —
+   * the CatID group-by alone took 447 ms in a SQL probe on the 289k library.
+   *
+   * `paths` is what the click painted locally, so a local star also updates the
+   * rows on screen. `null` means "do not paint", for callers that only know a
+   * scope (the matching form) and whose rows are not loaded.
+   */
+  type EditRefreshOptions = { paths?: string[] | null; favorite?: boolean; resetSelection?: boolean }
+
+  const editThenRefresh = (
+    apply: () => Promise<number>,
+    kind: EditKind,
+    options: EditRefreshOptions = {}
+  ) => {
+    const root = activeLibrary()?.root
+    return queueLibraryAction(async () => {
+      if (!root || activeLibrary()?.root !== root) return
+      await applyLibraryEdit(apply, kind, options)
+    })
+  }
+
+  const applyLibraryEdit = async (
+    apply: () => Promise<number>,
+    kind: EditKind,
+    options: EditRefreshOptions
+  ) => {
+    const { paths = null, favorite = false, resetSelection = false } = options
     try {
-      await apply()
+      const changed = await apply()
       if (resetSelection) clearSelection()
-      await Promise.all([loadSidebar(), runSearch(), loadHistory()])
+      // Nothing moved in the database: the history entry was not recorded either.
+      if (changed === 0) return
+      const favoriteKind = kind === 'favorite' || kind === 'unfavorite'
+      // A star changes which rows match or their order only when the view filters
+      // on the flag or sorts by it; otherwise the list on screen is still correct.
+      // Matching edits have no exact path list and must invalidate cached windows.
+      const starIsLocal =
+        favoriteKind &&
+        paths !== null &&
+        paths.length > 0 &&
+        !favoritesOnly() &&
+        sortKey() !== 'favorite'
+      if (starIsLocal) {
+        paintFavorites(paths, favorite)
+        await Promise.all([refreshFavoriteCount(), loadHistory()])
+        return
+      }
+      setFavoriteOverride(null)
+      // A star still moves the favourite *count*, but never a facet: it changes no
+      // row's category. So the re-query path for a star pays `get_summary` and the
+      // rows, not the two whole-table facet groups.
+      if (favoriteKind) {
+        await Promise.all([refreshFavoriteCount(), runSearch(), loadHistory()])
+        return
+      }
+      // Facets move for a category edit. The UCS CatID catalog is rebuilt only when
+      // the edit wrote a UCS label, because that is the one thing `ucs_cat_counts`
+      // reads.
+      await Promise.all([loadSidebar(kind === 'setUcsCategory'), runSearch(), loadHistory()])
     } catch (e) {
       setNotice(String(e))
     }
   }
 
-  const undo = async () => {
+  /**
+   * The sidebar's favourite number and total, without the two facet `GROUP BY`s.
+   *
+   * A star moves `favorites` and nothing else; re-reading the facets bought two
+   * whole-table groups the click cannot have changed.
+   */
+  const refreshFavoriteCount = async () => {
+    try {
+      const counts = await api.summary()
+      setFavorites(counts.favorites)
+      setTotal(counts.total)
+    } catch {
+      // A failed count leaves the old number; the star itself already moved.
+    }
+  }
+
+  const undo = () => queueLibraryAction(async () => {
     try {
       const kind = await api.undo()
       if (!kind) return
       setNotice(t('notice.undid', { label: editKindName(kind) }))
-      await Promise.all([loadSidebar(), runSearch(), loadHistory()])
+      setFavoriteOverride(null)
+      // Undo writes back whatever the edit changed, including UCS columns for a
+      // category edit, so the catalog is rebuilt rather than assumed unchanged.
+      await Promise.all([loadSidebar(true), runSearch(), loadHistory()])
     } catch (e) {
       setNotice(String(e))
     }
-  }
+  })
 
-  const redo = async () => {
+  const redo = () => queueLibraryAction(async () => {
     try {
       const kind = await api.redo()
       if (!kind) return
       setNotice(t('notice.redid', { label: editKindName(kind) }))
-      await Promise.all([loadSidebar(), runSearch(), loadHistory()])
+      setFavoriteOverride(null)
+      await Promise.all([loadSidebar(true), runSearch(), loadHistory()])
     } catch (e) {
       setNotice(String(e))
     }
-  }
+  })
 
   const toggleFavorite = (row: SoundRow) => {
-    void editThenRefresh(() => api.setFavorite([row.path], !row.favorite))
+    const root = activeLibrary()?.root
+    void queueLibraryAction(async () => {
+      if (!root || activeLibrary()?.root !== root) return
+      const next = !(favoriteOverride()?.flags.get(row.path) ?? row.favorite)
+      await applyLibraryEdit(() => api.setFavorite([row.path], next), next ? 'favorite' : 'unfavorite', {
+        paths: [row.path],
+        favorite: next
+      })
+    })
   }
 
   const applyFavoriteScope = (scope: EditScope, favorite: boolean) => {
@@ -1093,23 +1234,35 @@ export function App() {
     })
   }
 
-  const toggleFavoriteSelection = () => {
-    const current = menu()
-    const targets = current?.targets ?? []
+  /**
+   * The star entry in the row menu.
+   *
+   * `ContextMenu` closes the menu *before* it runs the item (so a click on a row
+   * behind it does not also select that row), which sets `menu()` to `null`. These
+   * handlers used to read `menu()` themselves and therefore did nothing at all —
+   * a right-click "Add to Favorites" was silently a no-op. The request is captured
+   * here, at build time, the same way "Set Category" captures it for the dialog.
+   */
+  const toggleFavoriteSelection = (request: RowMenuRequest) => {
+    const targets = request.targets
     if (targets.length === 0) return
-    const allStarred = targets.every((r) => r.favorite)
-    void editThenRefresh(
-      () => applyFavoriteScope(current!.scope, !allStarred),
-      current!.scope.kind === 'matching'
-    )
+    const next = !targets.every((r) => r.favorite)
+    void editThenRefresh(() => applyFavoriteScope(request.scope, next), next ? 'favorite' : 'unfavorite', {
+      paths: request.scope.kind === 'paths' ? request.scope.paths : null,
+      favorite: next,
+      resetSelection: request.scope.kind === 'matching'
+    })
   }
 
-  const favoriteScope = (favorite: boolean) => {
-    const current = menu()
-    if (!current) return
+  const favoriteScope = (request: RowMenuRequest, favorite: boolean) => {
     void editThenRefresh(
-      () => applyFavoriteScope(current.scope, favorite),
-      current.scope.kind === 'matching'
+      () => applyFavoriteScope(request.scope, favorite),
+      favorite ? 'favorite' : 'unfavorite',
+      {
+        paths: request.scope.kind === 'paths' ? request.scope.paths : null,
+        favorite,
+        resetSelection: request.scope.kind === 'matching'
+      }
     )
   }
 
@@ -1149,19 +1302,19 @@ export function App() {
             {
               id: 'favorite',
               label: many(t('edit.favorite')),
-              onSelect: () => favoriteScope(true)
+              onSelect: () => favoriteScope(current, true)
             },
             {
               id: 'unfavorite',
               label: many(t('edit.unfavorite')),
-              onSelect: () => favoriteScope(false)
+              onSelect: () => favoriteScope(current, false)
             }
           ]
         : [
             {
               id: 'favorite',
               label: many(allStarred ? t('edit.unfavorite') : t('edit.favorite')),
-              onSelect: toggleFavoriteSelection
+              onSelect: () => toggleFavoriteSelection(current)
             }
           ]),
       {
@@ -1177,10 +1330,9 @@ export function App() {
           current.count === targets.length &&
           targets.every((r) => r.category === UNCATEGORIZED && !r.categoryManual),
         onSelect: () =>
-          void editThenRefresh(
-            () => clearCategoryScope(current.scope),
-            current.scope.kind === 'matching'
-          )
+          void editThenRefresh(() => clearCategoryScope(current.scope), 'clearCategory', {
+            resetSelection: current.scope.kind === 'matching'
+          })
       },
       { id: 'd2', label: '', divider: true },
       {
@@ -1324,28 +1476,30 @@ export function App() {
     const dialog = categoryDialog()
     setCategoryDialog(null)
     if (!dialog) return
-    void editThenRefresh(
-      () => applyCategoryScope(dialog.scope, name, sub),
-      dialog.scope.kind === 'matching'
-    )
+    void editThenRefresh(() => applyCategoryScope(dialog.scope, name, sub), 'setCategory', {
+      resetSelection: dialog.scope.kind === 'matching'
+    })
   }
 
   const applyUcsCategory = (value: UcsCategory) => {
     const dialog = categoryDialog()
     if (!dialog) return
     setCategoryDialog(null)
-    void editThenRefresh(() =>
-      dialog.scope.kind === 'paths'
-        ? api.setUcsCategory(dialog.scope.paths, value)
-        : api.setUcsCategoryMatching(
-            {
-              request: dialog.scope.request,
-              exclude: dialog.scope.exclude,
-              offset: dialog.scope.offset,
-              limit: dialog.scope.limit
-            },
-            value
-          )
+    void editThenRefresh(
+      () =>
+        dialog.scope.kind === 'paths'
+          ? api.setUcsCategory(dialog.scope.paths, value)
+          : api.setUcsCategoryMatching(
+              {
+                request: dialog.scope.request,
+                exclude: dialog.scope.exclude,
+                offset: dialog.scope.offset,
+                limit: dialog.scope.limit
+              },
+              value
+            ),
+      'setUcsCategory',
+      { resetSelection: dialog.scope.kind === 'matching' }
     )
   }
 
@@ -1353,10 +1507,9 @@ export function App() {
     const dialog = categoryDialog()
     setCategoryDialog(null)
     if (!dialog) return
-    void editThenRefresh(
-      () => clearCategoryScope(dialog.scope),
-      dialog.scope.kind === 'matching'
-    )
+    void editThenRefresh(() => clearCategoryScope(dialog.scope), 'clearCategory', {
+      resetSelection: dialog.scope.kind === 'matching'
+    })
   }
 
   /**
@@ -1726,6 +1879,7 @@ export function App() {
               sortAsc={sortAsc()}
               matching={matching()}
               querying={querying()}
+              favoriteOverride={favoriteOverride()}
               onSort={changeSort}
               onSelectionChange={changeSelection}
               onActivate={activate}

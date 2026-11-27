@@ -165,6 +165,13 @@ interface Props {
    * footer so it is not an invisible state.
    */
   querying: boolean
+  /**
+   * A star click that has not been re-queried, applied at read time.
+   *
+   * `null` when the click changed the row set (favourite filter on, sorted by the
+   * star) and a full re-query was the correct answer instead.
+   */
+  favoriteOverride: FavoriteOverride | null
   onSort: (key: SortKey) => void
   onSelectionChange: (count: number, active: SoundRow | null) => void
   /** Clicking a row plays it when auto-play is on. */
@@ -179,6 +186,21 @@ interface Props {
 const SEGMENT_ROWS = 500
 const MAX_SEGMENTS = 24
 const MAX_IN_FLIGHT = 8
+
+/**
+ * Rows whose favourite flag was changed locally after a star click.
+ *
+ * The alternative was a re-query: `setDataEpoch(+1)` drops every cached segment,
+ * so the visible rows go back to skeletons and are fetched again — for a change
+ * that touches one boolean per row and, with no favourite filter and no favourite
+ * sort, reorders nothing. The overrides are applied where a row is read, so only
+ * the rows that actually changed get a new object and `<Show keyed>` rebuilds
+ * exactly those.
+ */
+export interface FavoriteOverride {
+  /** Committed flags since the last table refresh. */
+  flags: ReadonlyMap<string, boolean>
+}
 
 type Selection =
   | { mode: 'paths'; paths: Set<string> }
@@ -305,11 +327,33 @@ export function SoundTable(props: Props) {
     }
   }
 
+  /**
+   * A row as the star click left it.
+   *
+   * A click on the star writes one boolean per row, so the table paints it from
+   * `favoriteOverride` instead of dropping the segment cache and re-querying. Only
+   * the rows whose flags actually changed get a new object, which keeps
+   * `<Show keyed>` rebuilding exactly those DOM rows.
+   */
+  const patchedRows = new WeakMap<SoundRow, SoundRow>()
+  const withFavoriteOverride = (row: SoundRow): SoundRow => {
+    const override = props.favoriteOverride
+    if (!override) return row
+    const flag = override.flags.get(row.path)
+    if (flag === undefined || flag === row.favorite) return row
+    const cached = patchedRows.get(row)
+    if (cached?.favorite === flag) return cached
+    const patched = { ...row, favorite: flag }
+    patchedRows.set(row, patched)
+    return patched
+  }
+
   const rowAt = (index: number): SoundRow | undefined => {
     if (index < 0 || index >= props.matching) return undefined
     if (segmentsEpoch() !== props.epoch || segmentsRequestKey() !== props.requestKey) return undefined
     const segment = segments().get(Math.floor(index / SEGMENT_ROWS))
-    return segment?.[index % SEGMENT_ROWS]
+    const row = segment?.[index % SEGMENT_ROWS]
+    return row ? withFavoriteOverride(row) : undefined
   }
 
   const pathIndex = createMemo(() => {
@@ -348,7 +392,9 @@ export function SoundTable(props: Props) {
   const loadedRows = createMemo(() => {
     const out: { row: SoundRow; index: number }[] = []
     for (const [segment, rows] of segments()) {
-      rows.forEach((row, offset) => out.push({ row, index: segment * SEGMENT_ROWS + offset }))
+      rows.forEach((row, offset) =>
+        out.push({ row: withFavoriteOverride(row), index: segment * SEGMENT_ROWS + offset })
+      )
     }
     return out
   })

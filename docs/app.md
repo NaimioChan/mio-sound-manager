@@ -137,6 +137,7 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `count_matching(request)` | `u64` | 当前过滤命中总数，决定虚拟列表总长度 |
 | `list_folders` | `FolderNodeDto` | 从索引构建的树，不读 `readdir` |
 | `get_sidebar` | `SidebarDto` | facet 计数 + 收藏数 + 总数，一次往返 |
+| `get_summary` | `SidebarSummaryDto` | 只要收藏数与总数，不做 facet 的 `GROUP BY`；星标刷新走这条 |
 | `set_favorite(paths, favorite)` | `u64` | 一个事务，记入 undo |
 | `set_category(paths, category, sub?)` | `u64` | 置 `category_manual`，记入 undo |
 | `clear_category(paths)` | `u64` | 交还分类器，记入 undo |
@@ -202,6 +203,17 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 **右键菜单里不再有「拖进 DAW」。** 拖拽是鼠标动作，菜单条目只能写一句说明、点不动；把一条禁用的说明放在动作中间，读起来像功能坏了。拖拽本身仍在（行 `draggable` → `startDrag`）。
 
 **BPM 是排序列，不是 tag。** 值只从名字和路径取（`crates/mio-index/src/bpm.rs`），四层按优先级：文件名里的 `bpm` 标记 → 文件名里的 Splice 约定 `(90, Em)` → 祖先文件夹名里的标记（区间段跳过）→ 循环类文件名里的裸数字。裸数字这一层要两个条件同时成立才认：名字自称循环，且**时长是整小节**（容差 25ms，真 tempo 命中率 90%，随机数 3%）。所以 `Snare_120.wav` 这类一次性采样仍然是空值——编号和速度猜错一个都会自信地参与排序。时长只用来否决循环，不用来否决一次性采样：采样是一个音头加尾巴，长度不承载音乐信息，拿小节线卡它会把 42 秒的人声长句误杀。显式标记的范围是 20–300，裸数字收窄到 60–200，`126-5 BPM` 和 `BPM_138.4` 这种写法按一位小数读。空值在正反两个方向都排在最后（`ORDER BY s.bpm IS NULL`），和 duration 同一个约定。BPM 不参与侧栏筛选：它连续、取值多，做成 tag 只会多出一排没人点的行。
+
+**单行星标通常不重新查询。** 没开收藏过滤、没按 ★ 排序时，星标只改行上的布尔值。旧路径每次都推进 `dataEpoch`，丢掉所有缓存窗口并重取可见段，同时重算侧栏统计。在 288,955 行的库上，单独测量旧版 CatID 分组查询用了 447 ms。
+
+现在按编辑种类分流（`editThenRefresh(apply, kind, …)`）：
+
+- 单行或按明确路径收藏，且视图不按星标过滤或排序：保留缓存和滚动位置。写入成功后，`SoundTable` 合并对应路径的 `favoriteOverride`，侧栏只读 `get_summary`（收藏数和总数），撤销按钮读 `get_history`。
+- 「只看收藏」、按 ★ 排序，或者按筛选条件批量收藏：重查列表，避免行的位置或未显示的缓存窗口保留旧星标。侧栏仍只读 `get_summary`。
+- `setCategory` / `clearCategory`：刷新 facets 与 summary，不读 UCS 目录；`setUcsCategory` 才读，因为只有它写 `ucs_cat_id`。
+- 编辑返回 0 行（重复点同一个星标、给已经同分类的行再设一次分类）直接返回，不刷新、也不进 undo 栈。批量 setter 因此带 `AND (差异谓词)`：SQLite 的 `changes()` 数的是匹配行，不是变化行。
+
+`list_ucs_categories` 与编辑、撤销、重做都在阻塞工作线程上执行。界面按操作顺序提交写入，后端串行执行编辑及其历史记录。`sounds(ucs_cat_id)` 的索引会在打开库时补建，并在批量装载结束时重建。同一个库上的 SQL 探针中，CatID 计数从 447 ms 降到 0.1 ms。
 
 **波形上的手势由落点决定，不用修饰键。** 三个区域：顶部三分之一是「拖出去」（悬停时高亮并显示 grab 光标）、选区边界 ±5px 是「改边界」（col-resize 光标）、其余是「单击定位、拖拽框选」。原先拖出去要按 Alt，那样每次指针离开窗口都得重新按住修饰键，而拖拽本身是一次连续动作；改成空间分区后，面板自己用高亮带说明哪里是把手。
 

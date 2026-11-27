@@ -310,6 +310,9 @@ pub struct AppState {
     streaming_loop: Arc<std::sync::atomic::AtomicBool>,
 
     /// Undo/redo for library edits. `None` in tests that do not want history.
+    // Keep the snapshot, database write and history entry together when IPC
+    // commands run on different blocking workers.
+    edits: Mutex<()>,
     history: Mutex<History>,
 
     /// Where the open-library list is remembered between runs. `None` in tests,
@@ -403,6 +406,7 @@ impl AppState {
             gain_bits: AtomicU32::new(1.0f32.to_bits()),
             loop_state: Arc::new(Mutex::new(LoopSetting::default())),
             streaming_loop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            edits: Mutex::new(()),
             history: Mutex::new(crate::history::History::new()),
             session: None,
             audio_config: None,
@@ -1886,18 +1890,24 @@ impl AppState {
     }
 
     /// Star or unstar many sounds in one transaction, recording it for undo.
+    ///
+    /// Returns the rows the `UPDATE` actually touched, not `paths.len()`: the
+    /// renderer treats 0 as "nothing on screen changed" and skips a re-query.
     pub fn set_favorite(&self, paths: &[String], favorite: bool) -> AppResult<u64> {
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
         let kind = if favorite {
             EditKind::Favorite
         } else {
             EditKind::Unfavorite
         };
-        let edit = crate::history::run(&library, kind, paths, || {
+        let (edit, changed) = crate::history::run(&library, kind, paths, || {
             Ok(library.set_favorite(paths, favorite)?)
         })?;
-        self.record(edit);
-        Ok(paths.len() as u64)
+        if changed > 0 {
+            self.record(edit);
+        }
+        Ok(changed)
     }
 
     /// Assign one category to many sounds, marking them manual, recording for undo.
@@ -1907,12 +1917,16 @@ impl AppState {
         category: &str,
         subcategory: Option<&str>,
     ) -> AppResult<u64> {
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
-        let edit = crate::history::run(&library, EditKind::SetCategory, paths, || {
-            Ok(library.set_category(paths, category, subcategory)?)
-        })?;
-        self.record(edit);
-        Ok(paths.len() as u64)
+        let (edit, changed) =
+            crate::history::run(&library, EditKind::SetCategory, paths, || {
+                Ok(library.set_category(paths, category, subcategory)?)
+            })?;
+        if changed > 0 {
+            self.record(edit);
+        }
+        Ok(changed)
     }
 
     pub fn set_ucs_category(
@@ -1925,19 +1939,23 @@ impl AppState {
         projected_subcategory: Option<&str>,
     ) -> AppResult<u64> {
         reject_unprojected_ucs(cat_id, projected_category)?;
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
-        let edit = crate::history::run(&library, EditKind::SetUcsCategory, paths, || {
-            Ok(library.set_ucs_category(
-                paths,
-                category,
-                subcategory,
-                cat_id,
-                projected_category,
-                projected_subcategory,
-            )?)
-        })?;
-        self.record(edit);
-        Ok(paths.len() as u64)
+        let (edit, changed) =
+            crate::history::run(&library, EditKind::SetUcsCategory, paths, || {
+                Ok(library.set_ucs_category(
+                    paths,
+                    category,
+                    subcategory,
+                    cat_id,
+                    projected_category,
+                    projected_subcategory,
+                )?)
+            })?;
+        if changed > 0 {
+            self.record(edit);
+        }
+        Ok(changed)
     }
 
     pub fn set_ucs_category_matching(
@@ -1950,6 +1968,7 @@ impl AppState {
         projected_subcategory: Option<&str>,
     ) -> AppResult<u64> {
         reject_unprojected_ucs(cat_id, projected_category)?;
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
         let params = Self::matching_edit_params(&edit)?;
         let (before, changed) = library.set_ucs_category_matching(
@@ -1974,12 +1993,16 @@ impl AppState {
 
     /// Drop the manual category on many sounds, recording for undo.
     pub fn clear_category(&self, paths: &[String]) -> AppResult<u64> {
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
-        let edit = crate::history::run(&library, EditKind::ClearCategory, paths, || {
-            Ok(library.clear_category(paths)?)
-        })?;
-        self.record(edit);
-        Ok(paths.len() as u64)
+        let (edit, changed) =
+            crate::history::run(&library, EditKind::ClearCategory, paths, || {
+                Ok(library.clear_category(paths)?)
+            })?;
+        if changed > 0 {
+            self.record(edit);
+        }
+        Ok(changed)
     }
 
     pub fn set_favorite_matching(
@@ -1987,6 +2010,7 @@ impl AppState {
         edit: MatchingEditRequest,
         favorite: bool,
     ) -> AppResult<u64> {
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
         let params = Self::matching_edit_params(&edit)?;
         let kind = if favorite {
@@ -2009,6 +2033,7 @@ impl AppState {
         category: &str,
         subcategory: Option<&str>,
     ) -> AppResult<u64> {
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
         let params = Self::matching_edit_params(&edit)?;
         let (before, changed) =
@@ -2022,6 +2047,7 @@ impl AppState {
     }
 
     pub fn clear_category_matching(&self, edit: MatchingEditRequest) -> AppResult<u64> {
+        let _edit = self.lock_edit()?;
         let library = self.library()?;
         let params = Self::matching_edit_params(&edit)?;
         let (before, changed) = library.clear_category_matching(&params, &edit.exclude)?;
@@ -2033,6 +2059,12 @@ impl AppState {
         Ok(changed)
     }
 
+    fn lock_edit(&self) -> AppResult<std::sync::MutexGuard<'_, ()>> {
+        self.edits
+            .lock()
+            .map_err(|_| AppError::internal("edit lock poisoned"))
+    }
+
     fn record(&self, edit: crate::history::Edit) {
         if let Ok(mut history) = self.history.lock() {
             history.push(edit);
@@ -2041,6 +2073,7 @@ impl AppState {
 
     /// Undo the last edit. Returns what kind it was, if any.
     pub fn undo(&self) -> AppResult<Option<EditKind>> {
+        let _edit = self.lock_edit()?;
         let libraries = self.all_libraries()?;
         let mut history = self
             .history
@@ -2051,6 +2084,7 @@ impl AppState {
 
     /// Redo the last undone edit.
     pub fn redo(&self) -> AppResult<Option<EditKind>> {
+        let _edit = self.lock_edit()?;
         let libraries = self.all_libraries()?;
         let mut history = self
             .history

@@ -165,6 +165,18 @@ pub struct SidebarDto {
     pub total: u64,
 }
 
+/// The sidebar's two summary numbers on their own.
+///
+/// `get_sidebar` also builds both facet trees, which is two whole-table `GROUP BY`s
+/// a star click cannot affect. This exists so the star refresh pays for `summary()`
+/// only.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarSummaryDto {
+    pub favorites: u64,
+    pub total: u64,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WaveformDto {
@@ -648,8 +660,11 @@ pub async fn add_library(
 
 /// Every open library, for the sidebar's groups.
 #[tauri::command]
-pub fn list_libraries(state: State<'_, AppState>) -> AppResult<Vec<LibraryStatus>> {
-    state.library_list()
+pub async fn list_libraries(app: tauri::AppHandle) -> AppResult<Vec<LibraryStatus>> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().library_list())
+        .await
+        .map_err(|e| AppError::internal(format!("list libraries task failed: {e}")))?
 }
 
 /// Close a library. The remaining one becomes active if this was the active one.
@@ -706,14 +721,24 @@ pub async fn reindex_library(
 
 /// Undo the last library edit. Returns what kind it was, or `None` when there is
 /// nothing to undo.
+///
+/// Async + blocking worker: an undo of a "select all, categorise" edit writes the
+/// same rows back that the edit wrote, and doing that on the main thread would
+/// freeze the window for as long as the edit itself took.
 #[tauri::command]
-pub fn undo(state: State<'_, AppState>) -> AppResult<Option<EditKind>> {
-    state.undo()
+pub async fn undo(app: tauri::AppHandle) -> AppResult<Option<EditKind>> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().undo())
+        .await
+        .map_err(|e| AppError::internal(format!("undo task failed: {e}")))?
 }
 
 #[tauri::command]
-pub fn redo(state: State<'_, AppState>) -> AppResult<Option<EditKind>> {
-    state.redo()
+pub async fn redo(app: tauri::AppHandle) -> AppResult<Option<EditKind>> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().redo())
+        .await
+        .map_err(|e| AppError::internal(format!("redo task failed: {e}")))?
 }
 
 /// What undo and redo would do. The kinds are data; the renderer names them.
@@ -725,12 +750,14 @@ pub struct HistoryState {
 }
 
 #[tauri::command]
-pub fn get_history(state: State<'_, AppState>) -> AppResult<HistoryState> {
-    let (undo_kind, redo_kind) = state.history_state();
-    Ok(HistoryState {
-        undo_kind,
-        redo_kind,
+pub async fn get_history(app: tauri::AppHandle) -> AppResult<HistoryState> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (undo_kind, redo_kind) = app.state::<AppState>().history_state();
+        Ok(HistoryState { undo_kind, redo_kind })
     })
+    .await
+    .map_err(|e| AppError::internal(format!("history task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -804,60 +831,104 @@ pub async fn get_sidebar(app: tauri::AppHandle) -> AppResult<SidebarDto> {
         .map_err(|e| AppError::internal(format!("sidebar task failed: {e}")))?
 }
 
+/// Just the sidebar's two numbers, for an edit that cannot move the facets.
+#[tauri::command]
+pub async fn get_summary(app: tauri::AppHandle) -> AppResult<SidebarSummaryDto> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let (favorites, total) = state.library()?.summary()?;
+        Ok(SidebarSummaryDto { favorites, total })
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("summary task failed: {e}")))?
+}
+
 /// Star or unstar many sounds. One transaction, so a 200-row selection is one
 /// commit rather than 200.
+///
+/// Async + blocking worker: the write also runs the FTS triggers and the undo
+/// snapshot, and Ctrl+A can hand it 280k paths. On the main thread that froze the
+/// window for seconds; the same reason `search` and `get_sidebar` are async.
 #[tauri::command]
-pub fn set_favorite(
-    state: State<'_, AppState>,
+pub async fn set_favorite(
+    app: tauri::AppHandle,
     paths: Vec<String>,
     favorite: bool,
 ) -> AppResult<u64> {
-    state.set_favorite(&paths, favorite)
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>().set_favorite(&paths, favorite)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("set favorite task failed: {e}")))?
 }
 
 /// Assign a category by hand to many sounds. Marks them `category_manual`, so a
 /// later index pass keeps the choice.
 #[tauri::command]
-pub fn set_category(
-    state: State<'_, AppState>,
+pub async fn set_category(
+    app: tauri::AppHandle,
     paths: Vec<String>,
     category: String,
     subcategory: Option<String>,
 ) -> AppResult<u64> {
-    state.set_category(&paths, &category, subcategory.as_deref())
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .set_category(&paths, &category, subcategory.as_deref())
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("set category task failed: {e}")))?
 }
 
 #[tauri::command]
-pub fn list_ucs_categories(state: State<'_, AppState>) -> AppResult<Vec<UcsCategoryDto>> {
-    let counts = state.library()?.ucs_cat_counts()?;
-    Ok(mio_index::classify::UCS_CAT_ID_NATIVE
-        .iter()
-        .map(|(cat_id, category, subcategory)| {
-            // `None` here means "deliberately unprojected", and the DTO says so
-            // instead of inventing `Uncategorized`. The old fallback let the
-            // category dialog write `category = Uncategorized, category_manual
-            // = 1`, after which no reindex could ever correct the row.
-            let projected = mio_index::classify::UCS_CAT_IDS
-                .iter()
-                .find(|(known, _, _)| known == cat_id)
-                .map(|(_, category, subcategory)| (*category, *subcategory));
-            UcsCategoryDto {
-                cat_id: (*cat_id).to_string(),
-                category: (*category).to_string(),
-                subcategory: subcategory.map(str::to_string),
-                projected_category: projected.map(|(category, _)| category.to_string()),
-                projected_subcategory: projected
-                    .and_then(|(_, subcategory)| subcategory)
-                    .map(str::to_string),
-                count: counts.get(*cat_id).copied().unwrap_or(0),
-            }
-        })
-        .collect())
+pub async fn list_ucs_categories(
+    app: tauri::AppHandle,
+) -> AppResult<Vec<UcsCategoryDto>> {
+    // Async + blocking worker: the CatID counts are a GROUP BY over the whole
+    // table. It used to be a sync command, which meant the group ran on the main
+    // thread and every star click queued behind it — `get_sidebar` had already
+    // been moved off for the same reason.
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let counts = state.library()?.ucs_cat_counts()?;
+        Ok(mio_index::classify::UCS_CAT_ID_NATIVE
+            .iter()
+            .map(|(cat_id, category, subcategory)| {
+                // `None` here means "deliberately unprojected", and the DTO says so
+                // instead of inventing `Uncategorized`. The old fallback let the
+                // category dialog write `category = Uncategorized, category_manual
+                // = 1`, after which no reindex could ever correct the row.
+                let projected = mio_index::classify::UCS_CAT_IDS
+                    .iter()
+                    .find(|(known, _, _)| known == cat_id)
+                    .map(|(_, category, subcategory)| (*category, *subcategory));
+                UcsCategoryDto {
+                    cat_id: (*cat_id).to_string(),
+                    category: (*category).to_string(),
+                    subcategory: subcategory.map(str::to_string),
+                    projected_category: projected.map(|(category, _)| category.to_string()),
+                    projected_subcategory: projected
+                        .and_then(|(_, subcategory)| subcategory)
+                        .map(str::to_string),
+                    count: counts.get(*cat_id).copied().unwrap_or(0),
+                }
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("ucs category task failed: {e}")))?
 }
 
+/// Assign an official UCS label plus the 22-category projection by hand.
+///
+/// Async + blocking worker, same reason as `set_favorite`: the write is one
+/// transaction over a selection that can be the whole library.
 #[tauri::command]
-pub fn set_ucs_category(
-    state: State<'_, AppState>,
+pub async fn set_ucs_category(
+    app: tauri::AppHandle,
     paths: Vec<String>,
     category: String,
     subcategory: Option<String>,
@@ -865,19 +936,24 @@ pub fn set_ucs_category(
     projected_category: String,
     projected_subcategory: Option<String>,
 ) -> AppResult<u64> {
-    state.set_ucs_category(
-        &paths,
-        &category,
-        subcategory.as_deref(),
-        &cat_id,
-        &projected_category,
-        projected_subcategory.as_deref(),
-    )
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>().set_ucs_category(
+            &paths,
+            &category,
+            subcategory.as_deref(),
+            &cat_id,
+            &projected_category,
+            projected_subcategory.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("set ucs category task failed: {e}")))?
 }
 
 #[tauri::command]
-pub fn set_ucs_category_matching(
-    state: State<'_, AppState>,
+pub async fn set_ucs_category_matching(
+    app: tauri::AppHandle,
     request: MatchingEditRequest,
     category: String,
     subcategory: Option<String>,
@@ -885,47 +961,72 @@ pub fn set_ucs_category_matching(
     projected_category: String,
     projected_subcategory: Option<String>,
 ) -> AppResult<u64> {
-    state.set_ucs_category_matching(
-        request,
-        &category,
-        subcategory.as_deref(),
-        &cat_id,
-        &projected_category,
-        projected_subcategory.as_deref(),
-    )
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>().set_ucs_category_matching(
+            request,
+            &category,
+            subcategory.as_deref(),
+            &cat_id,
+            &projected_category,
+            projected_subcategory.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("set ucs category matching task failed: {e}")))?
 }
 
 /// Drop the manual category on many sounds, so the next pass reclassifies them.
 #[tauri::command]
-pub fn clear_category(state: State<'_, AppState>, paths: Vec<String>) -> AppResult<u64> {
-    state.clear_category(&paths)
+pub async fn clear_category(app: tauri::AppHandle, paths: Vec<String>) -> AppResult<u64> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().clear_category(&paths))
+        .await
+        .map_err(|e| AppError::internal(format!("clear category task failed: {e}")))?
 }
 
 #[tauri::command]
-pub fn set_favorite_matching(
-    state: State<'_, AppState>,
+pub async fn set_favorite_matching(
+    app: tauri::AppHandle,
     request: MatchingEditRequest,
     favorite: bool,
 ) -> AppResult<u64> {
-    state.set_favorite_matching(request, favorite)
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .set_favorite_matching(request, favorite)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("set favorite matching task failed: {e}")))?
 }
 
 #[tauri::command]
-pub fn set_category_matching(
-    state: State<'_, AppState>,
+pub async fn set_category_matching(
+    app: tauri::AppHandle,
     request: MatchingEditRequest,
     category: String,
     subcategory: Option<String>,
 ) -> AppResult<u64> {
-    state.set_category_matching(request, &category, subcategory.as_deref())
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .set_category_matching(request, &category, subcategory.as_deref())
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("set category matching task failed: {e}")))?
 }
 
 #[tauri::command]
-pub fn clear_category_matching(
-    state: State<'_, AppState>,
+pub async fn clear_category_matching(
+    app: tauri::AppHandle,
     request: MatchingEditRequest,
 ) -> AppResult<u64> {
-    state.clear_category_matching(request)
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>().clear_category_matching(request)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("clear category matching task failed: {e}")))?
 }
 
 /// Native folder picker. Returns `None` when the user cancels.

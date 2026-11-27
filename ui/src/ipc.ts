@@ -178,6 +178,12 @@ export interface Sidebar {
   total: number
 }
 
+/** The sidebar's two summary numbers, without the facet trees. */
+export interface SidebarSummary {
+  favorites: number
+  total: number
+}
+
 /** What an undoable edit was. The words for these live in `locales/`. */
 export type EditKind = 'favorite' | 'unfavorite' | 'setCategory' | 'clearCategory' | 'setUcsCategory'
 
@@ -329,6 +335,14 @@ export const api = {
 
   /** Facet counts, favorites and total for the sidebar. */
   sidebar: () => invoke<Sidebar>('get_sidebar'),
+
+  /**
+   * Favourite count and total, without the two facet `GROUP BY`s.
+   *
+   * A star moves `favorites` and nothing else; `get_sidebar` re-reads the whole
+   * category tree for a number the click cannot have changed.
+   */
+  summary: () => invoke<SidebarSummary>('get_summary'),
 
   ucsCategories: () => invoke<UcsCategory[]>('list_ucs_categories'),
 

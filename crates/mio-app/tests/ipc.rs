@@ -970,6 +970,48 @@ fn favoriting_a_selection_updates_the_rows_and_the_sidebar_in_one_go() {
     drop(root);
 }
 
+/// A star click reports what it changed, not how many paths it was handed.
+///
+/// The renderer treats 0 as "the rows on screen are still valid" and skips the
+/// re-query; reporting `paths.len()` here made a no-op click look like an edit.
+#[test]
+fn re_favoriting_an_already_starred_row_reports_no_change() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "favorite-noop");
+    let rows = state
+        .search(SearchRequest {
+            query: "gunshot".into(),
+            ..Default::default()
+        })
+        .expect("search");
+    let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
+
+    assert_eq!(state.set_favorite(&paths, true).expect("favorite"), 2);
+
+    // Same flag again: the UPDATE matches nothing, so nothing was recorded either.
+    let history_before = state.history_state();
+    assert_eq!(
+        state.set_favorite(&paths, true).expect("favorite again"),
+        0,
+        "an already-starred row is not a change"
+    );
+    assert_eq!(
+        state.history_state(),
+        history_before,
+        "a no-op must not push an undo entry"
+    );
+
+    // A path the index does not know is also 0, not a phantom success.
+    assert_eq!(
+        state
+            .set_favorite(&["C:/lib/not-indexed.wav".into()], true)
+            .expect("unknown path"),
+        0
+    );
+
+    drop(root);
+}
+
 #[test]
 fn a_hand_set_category_survives_a_reindex_and_clearing_it_does_not() {
     let Some(state) = state() else { return };

@@ -245,22 +245,35 @@ pub fn restore(library: &Library, states: &[FieldState]) -> AppResult<u64> {
     Ok(touched)
 }
 
-/// Apply an edit and return it in invertible form.
+/// Apply an edit and return it in invertible form, plus how many rows it changed.
 ///
 /// Reads the previous state first, then runs the edit. The two are not one
 /// transaction; a failure between them leaves the edit unapplied and nothing on
 /// the undo stack, which is the safe direction (no phantom undo entry).
-pub fn run<F>(library: &Library, kind: EditKind, paths: &[String], apply: F) -> AppResult<Edit>
+///
+/// The changed count comes from the caller's `UPDATE` rather than `paths.len()`:
+/// clicking a star that is already on, or re-applying the category a row already
+/// has, reports 0 — and the renderer uses that number to decide whether the rows
+/// on screen are still valid.
+pub fn run<F>(
+    library: &Library,
+    kind: EditKind,
+    paths: &[String],
+    apply: F,
+) -> AppResult<(Edit, u64)>
 where
     F: FnOnce() -> AppResult<u64>,
 {
     let before = snapshot(library, paths)?;
-    apply()?;
-    Ok(Edit {
-        kind,
-        root: library.root().to_path_buf(),
-        before,
-    })
+    let changed = apply()?;
+    Ok((
+        Edit {
+            kind,
+            root: library.root().to_path_buf(),
+            before,
+        },
+        changed,
+    ))
 }
 
 pub fn edit_from_snapshot(

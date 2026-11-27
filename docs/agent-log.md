@@ -8,6 +8,19 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 ## 当前占用
 
+## 2026-11-27 23:54 · opencode · 收藏验收改用临时库
+
+- 改：修正右键菜单关闭后丢失目标的问题。按路径收藏更新缓存，按筛选批量收藏重查窗口。前端按点击顺序提交编辑和切库，后端串行执行编辑与历史记录；历史查询和库列表查询也移到工作线程。
+- 恢复：上轮全选验收误写真实库。根据验收前的零收藏基线，备份留存的星标路径后恢复；只读复核为 288,955 条素材、0 条收藏。备份在 `%LOCALAPPDATA%\Temp\opencode\favorite-test-recovery-20261127-234441.json`。
+- 验证：`cargo test --release --workspace` 228 项通过，前端类型检查和发布构建通过。`node tools/check-favorite.mjs` 用 520 行临时库通过单行、收藏过滤、右键多选、全选和撤销验收，点击到字形更新 57 ms。脚本关闭临时库后切回原库；未再对真实库做全选写入。
+
+## 2026-11-27 22:45 · opencode · 星标点击不再重新搜索
+
+- 因：用户报「点一下星标就要卡一下」。实测 289k 库单次点击 ~0.6s，其中 447 ms 是 `list_ucs_categories` 的 `GROUP BY ucs_cat_id` 全表扫描，而星标不可能改变它；其余是 `get_sidebar` 的两个 facet `GROUP BY`（~50 ms）、`count_matching`（~10 ms）、以及 `setDataEpoch(+1)` 让整个 segment 缓存作废后按 500 行重取（71–105 ms/段）。
+- 改：`crates/mio-index/src/db.rs`（`idx_ucs_cat_id` 索引 + 成对进 `begin_bulk`/`end_bulk`；四个批量 setter 的 `UPDATE` 加差异谓词，`changed` 从此是「真的变了的行」；新增 `ucs_cat_id_filters_and_counts_use_their_index` 计划断言）；`crates/mio-app/src/commands.rs`（`list_ucs_categories` 与全部编辑命令含 `undo`/`redo` 改 async + `spawn_blocking`；新增 `get_summary`）；`state.rs`（`history::run` 返回 `(Edit, changed)`，0 行不记 undo）；`ui/src/App.tsx`（`editThenRefresh(apply, kind, opts)` 按编辑种类分流；`loadSidebar(wantUcsCatalog)`；星标走 `get_summary` + 本地绘制）；`ui/src/SoundTable.tsx`（`FavoriteOverride` 在 `rowAt`/`loadedRows` 合并，只重建改动的行）；`ui/src/ipc.ts`（`SidebarSummary`、`summary()`）。新增 `tools/check-favorite.mjs`。
+- 验证：`cargo test --release --workspace` 228 项通过（新增 `re_favoriting_an_already_starred_row_reports_no_change`、`ucs_cat_id_filters_and_counts_use_their_index`）；`tsc --noEmit` 干净；`npm run build` 通过；CDP `check-favorite` 17/17（点击到字形翻转 **30–36 ms**，epoch 不变、无骨架、无 searching、侧栏计数 +1、undo 回滚、收藏过滤下取消收藏确实重查并移出列表）、`check-interactions`、`check-tags`、`check-layout`、`check-i18n`（175×3）、`check-volume`、`check-themes` 全通过。索引实测：`ucs_cat_counts` 447 → 0.1 ms，CatID 过滤 5.9 s → 0.4 ms，`summary` 9–16 ms。
+- 遗留：`get_sidebar` 的两个 facet `GROUP BY`（~50 ms）仍在每次分类编辑后跑，没有做成增量；`ucs_cat_id` 过滤仍带 `USE TEMP B-TREE FOR ORDER BY`（排序键与过滤列不同，符合预期）；`check-region.mjs` 本轮未跑（它会锁死 webview，须单独跑并重启）。
+
 ## 2026-11-27 12:40 · opencode · 侧栏下拉、列宽/显隐/横向滚动、AUTO PLAY 对比度、库头
 
 - 改：侧栏 Categories/UCS/Folders 由三段按钮改为 `#sidebar-mode`（`ix-select`），模式只由 `App.tsx` 持有，保留 `mio:facet-mode` 一次性迁移，切换后 `blur()` 把焦点还给表格；库头删掉从未生效的折叠三角，活跃态换成 `ghost--selected` + 2px inset 强调条。新增 `ui/src/columns.ts` 作列定义/顺序/宽度/显隐的唯一拥有者：全部像素轨道、表头把手拖动（掐掉 dragstart 与泄漏的 click）、双击复位、设置页 Columns 一节、表头右键菜单（`ContextMenu` 增加 `checked`，行高改 32px 并夹住视口高度）、隐藏排序列回退 Name、`.table-body` 改 `overflow:auto` + 表头 `translateX` 跟随。AUTO PLAY 的 `on`/关态用实心 accent 与描边两套 token 覆盖二级按钮全状态。`settings.showCategory` 从设置、类型与三语字典删除。

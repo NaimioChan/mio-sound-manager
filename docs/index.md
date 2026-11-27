@@ -183,6 +183,8 @@ cargo run --release -p mio-cli -- classify-check expect.json
 - **FTS 的常规维护靠触发器，批量装载靠重建。** 逐行路径上，`sounds` 的 INSERT / UPDATE / DELETE 都由触发器同步到 `sounds_fts`，prune 也走同一条路。批量路径是例外：`begin_bulk` 明确 `DROP TRIGGER`，`prune_scan_missing` 又跑在 `end_bulk` 之前，所以装载期间 `sounds_fts` 不实时；正确性由 `end_bulk` 的最后一次整表 rebuild 兜底（`meta.fts_dirty` 记录这个中间态）。别把"触发器覆盖一切"当成理由去在批量路径里相信 FTS 的中间结果。
 - **WAL 是必须的。** UI 在索引写入时查询。
 
+**`ucs_cat_id` 单独建索引。** 它是 UCS 侧栏的第三级筛选（`s.ucs_cat_id IN (…)`），也是分类对话框里每个 CatID 计数的 `GROUP BY` 键。没有索引时两者都是全表扫描：参考库上 CatID 过滤一页 5.9 s、计数 447 ms，而计数就挂在星标点击的刷新路径上。索引之后是 0.4 ms 与 0.1 ms。它在 `migrate()` 里建一次，并成对出现在 `begin_bulk` 的 DROP 与 `end_bulk` 的 CREATE 列表里——漏了任何一边，批量装载后它就没了或者装载时白维护。
+
 **批量装载与逐行维护的取舍。** 三个 FTS 触发器加七个二级索引，逐行维护对单条编辑是对的，对 28 万行的装载是错的：实测写入阶段 16.9s，其中大部分是索引维护。`begin_bulk` / `end_bulk` 在批量装载时卸掉它们，结束时一次重建，写入降到 6–7s。`meta.fts_dirty` 记录中间状态，进程在中间死掉时下次 `open` 会补齐。
 
 **`bpm` 来自名字与路径，升级时回填。** 取值分四层，先命中先赢：文件名里的 `bpm` 标记（`128BPM`、`174 bpm`、`BPM120`，以及 `126-5 BPM` / `BPM_138.4` 这两种一位小数写法）→ 文件名里的 Splice 约定 `(90, Em)`（括号里必须是一个 tempo 加一个**调名**，`(69, Atonal)` / `(69, C to Fm)` 不算）→ 祖先文件夹名里的同样标记，就近取，**命名区间的段跳过**（`83-98 BPM` 说的是这个包覆盖的范围，不是其中某个文件的速度）→ 循环类文件名里的裸数字。
@@ -204,6 +206,10 @@ cargo run --release -p mio-cli -- classify-check expect.json
 **批量写入仍然触发 FTS 触发器，只是每行一次而不是每事务一次。** 这是对的：`category` 与 `subcategory` 在 `sounds_fts` 里，改了分类必须让搜索跟上。批量装载才需要 `begin_bulk` 那种「先卸掉再重建」的做法，用户编辑的量级用不上。
 
 **`summary()` 一次查两个数。** 侧栏同时显示收藏数与总数，分两条 SQL 会在星标点击后的那一帧里让两个数字互相矛盾。`SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds` 是一趟全表扫描，28 万行实测可接受（它只在编辑后调用，不在滚动路径上）。
+
+收藏那次编辑只需要这两个数，不需要 facet 树，所以 IPC 上另有一条 `get_summary`：`get_sidebar` 的两个 `GROUP BY` 是星标不可能改变的，付一次就是白扫两遍全表。
+
+**批量 setter 的 `UPDATE` 带差异谓词。** `set_favorite_many` / `set_category_many` / `clear_category_many` / `set_ucs_category_many` 的 `WHERE` 除了主键还带着「这个字段确实要变」的条件。SQLite 的 `changes()` 数的是匹配行而不是变化行，没有谓词时重复点同一个星标会报「改了 1 行」，于是记一条逆操作是空操作的 undo 条目、白跑一遍 FTS 触发器，界面也会重查一次什么都没变的列表。
 
 ## folders
 

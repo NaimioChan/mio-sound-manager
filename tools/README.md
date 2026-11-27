@@ -86,6 +86,7 @@ node tools/check-region.mjs         # 行可拖、框选、顶部拖出带、拖
 node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐（含横向滚动后）、dock 控件顺序、无溢出
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/check-tags.mjs           # 侧栏模式下拉/旧键迁移、列宽拖动与显隐、表头菜单、横向滚动、库头无三角、BPM 列、tag 多选、无副标题
+node tools/check-favorite.mjs       # 星标不重查（epoch 不变、无骨架、无 searching）、字形延迟、侧栏计数、undo、收藏过滤下必须重查
 node tools/check-shipped.mjs [port] # 打包产物：版本、ASIO、设备、新控件（跑解压出来的 exe）
 node tools/check-stress.mjs [port]  # 压力测试：仅在前后端数据结构/算法有破坏性改动时运行
 node tools/shot.mjs [out.png]       # 截图
@@ -99,6 +100,8 @@ node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 只断言 DOM 结构与 IPC 应答、不读任何文案，两者都不需要固定 locale。
 
 `check-stress.mjs` 不属于常规检查串。仅当修改前端或后端的数据结构/算法，且改动可能破坏搜索、窗口分页或试听并发行为时运行；它会快速发起查询与试听请求，但不会改动分类或收藏数据。
+
+`check-favorite.mjs` 创建临时库，验证单行和按路径多选收藏保留列表缓存、「只看收藏」中取消星标移出该行，以及全选收藏和撤销会刷新缓存窗口。脚本只编辑临时库，结束后关闭它并切回原来的库。
 
 **`check-region.mjs` 必须单独跑，且跑完要重启应用。** 它最后一项会真的派发一次
 `dragstart`，那会进入原生 OLE 拖拽循环，`start_drag` 直到拖拽结束才返回，之后所有 IPC
