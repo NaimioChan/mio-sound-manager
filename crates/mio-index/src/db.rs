@@ -264,11 +264,34 @@ pub struct IndexDb {
     conn: Connection,
     root: PathBuf,
     _library_lock: Option<Arc<std::fs::File>>,
-    favorite_index_available: bool,
 }
 
 static LIBRARY_LOCKS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<std::fs::File>>>> =
     OnceLock::new();
+
+/// A stable 64-bit hash for the cross-process lock file name.
+///
+/// `DefaultHasher` is explicitly documented as unspecified across Rust releases,
+/// so two builds on the same machine could compute different names for the same
+/// library and both take a lock — "already open by another Mio instance" would
+/// silently stop working on a mixed-version install. FNV-1a is small, has no
+/// dependency, and never changes: the lock file for a given canonical path is the
+/// same in every build forever, which is the property this needs.
+fn stable_lock_hash(path: &Path) -> u64 {
+    // FNV-1a over the path's OS encoding, so case and separators count exactly as
+    // the filesystem reports them.
+    let bytes: Vec<u8> = path
+        .to_string_lossy()
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
 
 fn acquire_library_lock(root: &Path) -> Result<Arc<std::fs::File>> {
     let canonical = std::fs::canonicalize(root)?;
@@ -280,12 +303,9 @@ fn acquire_library_lock(root: &Path) -> Result<Arc<std::fs::File>> {
     if let Some(lock) = locks.get(&canonical).and_then(Weak::upgrade) {
         return Ok(lock);
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    canonical.hash(&mut hasher);
     let lock_dir = std::env::temp_dir().join("mio-sound-manager-locks");
     std::fs::create_dir_all(&lock_dir)?;
-    let path = lock_dir.join(format!("{:016x}.lock", hasher.finish()));
+    let path = lock_dir.join(format!("{:016x}.lock", stable_lock_hash(&canonical)));
     #[cfg(windows)]
     let file = {
         use std::os::windows::fs::OpenOptionsExt;
@@ -413,7 +433,6 @@ impl IndexDb {
             conn,
             root,
             _library_lock: None,
-            favorite_index_available: false,
         };
         db.create_base_schema()?;
         db.migrate(backfill)?;
@@ -436,20 +455,11 @@ impl IndexDb {
         if db.get_meta("fts_dirty")?.as_deref() == Some("1") {
             db.end_bulk()?;
         }
-        db.favorite_index_available = db.has_index("idx_favorite")?;
         if db.get_meta("trigram_version")?.as_deref() != Some("1") {
             db.rebuild_trigram_fts()?;
             db.set_meta("trigram_version", "1")?;
         }
         Ok(db)
-    }
-
-    fn has_index(&self, name: &str) -> Result<bool> {
-        Ok(self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
-            params![name],
-            |row| row.get(0),
-        )?)
     }
 
     pub fn root(&self) -> &Path {
@@ -517,14 +527,6 @@ impl IndexDb {
         }
         tx.commit()?;
         Ok(())
-    }
-
-    pub fn scanned_count(&self) -> Result<usize> {
-        Ok(self
-            .conn
-            .query_row("SELECT COUNT(*) FROM _scan_files", [], |r| {
-                r.get::<_, i64>(0)
-            })? as usize)
     }
 
     /// Snapshot changed paths once for both progress totals and probe batches.
@@ -770,6 +772,18 @@ impl IndexDb {
         self.conn
             .execute_batch("CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);")?;
 
+        // A library written by a newer build may carry columns and migrations
+        // this build does not know about. Refusing is honest; opening it and
+        // rewriting rows would silently drop whatever the newer build added.
+        if let Some(stored) = self.get_meta("schema_version")? {
+            if let Ok(stored) = stored.parse::<i64>() {
+                if stored > SCHEMA_VERSION {
+                    return Err(IndexError::Db(format!(
+                        "this library was indexed by a newer Mio (schema {stored}, this build understands {SCHEMA_VERSION}); update the app before opening it"
+                    )));
+                }
+            }
+        }
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         Ok(())
     }
@@ -1296,7 +1310,6 @@ impl IndexDb {
              DROP TRIGGER IF EXISTS sounds_ad;
              DROP TRIGGER IF EXISTS sounds_au;",
         )?;
-        self.favorite_index_available = false;
         // Secondary indexes are maintained per row, which is the right trade for
         // single edits and the wrong one for a 280k-row load: seven of them cost
         // 16 s of a 82 s pass. Dropping and rebuilding once is the documented
@@ -1343,7 +1356,6 @@ impl IndexDb {
         self.rebuild_trigram_fts()?;
         let finished = Instant::now();
         self.set_meta("fts_dirty", "0")?;
-        self.favorite_index_available = true;
         Ok(BulkTimings {
             secondary_indexes_ms: (triggers - indexes).as_secs_f64() * 1000.0,
             triggers_ms: (fts - triggers).as_secs_f64() * 1000.0,
@@ -1357,20 +1369,6 @@ impl IndexDb {
             .conn
             .query_row("SELECT COUNT(*) FROM sounds", [], |r| r.get::<_, i64>(0))?
             as u64)
-    }
-
-    /// `(path, mtime_ns)` for every row. The incremental pass compares this
-    /// against the filesystem walk to decide what to probe.
-    pub fn path_mtimes(&self) -> Result<Vec<(String, i64)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path, COALESCE(mtime_ns, 0) FROM sounds")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
     }
 
     pub fn get_by_path(&self, path: &str) -> Result<Option<Sound>> {
@@ -1528,32 +1526,6 @@ impl IndexDb {
     /// reproduce a state that was *neither* — a row the classifier filled in.
     /// Undo needs to put back the exact string and the exact ownership, or it
     /// silently converts a guess into a manual choice.
-    pub fn restore_category_many(
-        &mut self,
-        paths: &[String],
-        category: &str,
-        subcategory: Option<&str>,
-        manual: bool,
-    ) -> Result<u64> {
-        let tx = self.conn.transaction()?;
-        let changed = {
-            let mut stmt = tx.prepare(
-                "UPDATE sounds
-                 SET category = ?1, subcategory = ?2, category_manual = ?3,
-                     confidence = CASE WHEN ?3 = 1 THEN 1 ELSE confidence END
-                 WHERE path = ?4",
-            )?;
-            let mut changed = 0u64;
-            for path in paths {
-                changed +=
-                    stmt.execute(params![category, subcategory, manual as i64, path])? as u64;
-            }
-            changed
-        };
-        tx.commit()?;
-        Ok(changed)
-    }
-
     pub fn restore_category_and_ucs_many(&mut self, states: &[EditState]) -> Result<u64> {
         let tx = self.conn.transaction()?;
         let mut stmt = tx.prepare(
@@ -2041,16 +2013,20 @@ impl IndexDb {
     ///
     /// The sidebar shows both numbers next to each other; two separate queries
     /// would let them disagree for a frame right after a star click.
+    ///
+    /// No `INDEXED BY idx_favorite`: the query planner picks that index on its
+    /// own, and the hint only adds a failure mode. `begin_bulk` drops the index
+    /// on the *indexer's* connection, so any cached "the index exists" snapshot
+    /// on the UI connection can be stale, and a forced `INDEXED BY`
+    /// then fails with `no such index` — which empties the whole sidebar because
+    /// `get_sidebar` fails with `summary`. The plan is asserted by the EXPLAIN
+    /// test instead.
     pub fn summary(&self) -> Result<(u64, u64)> {
-        let sql = if self.favorite_index_available {
-            "SELECT COALESCE(SUM(favorite), 0), COUNT(favorite)
-             FROM sounds INDEXED BY idx_favorite"
-        } else {
-            "SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds"
-        };
-        let (favorites, total) = self.conn.query_row(sql, [], |r| {
-            Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64))
-        })?;
+        let (favorites, total) = self.conn.query_row(
+            "SELECT COALESCE(SUM(favorite), 0), COUNT(*) FROM sounds",
+            [],
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+        )?;
         Ok((favorites, total))
     }
 
@@ -2214,8 +2190,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_newer_schema_version_refuses_to_open() {
+        let root = std::env::temp_dir().join(format!(
+            "mio-newer-schema-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        {
+            let db = IndexDb::open(&root).unwrap();
+            db.set_meta("schema_version", &(SCHEMA_VERSION + 1).to_string())
+                .unwrap();
+        }
+        let error = IndexDb::open(&root).err().expect("a newer schema must not open");
+        assert!(
+            error.to_string().contains("newer Mio"),
+            "the error must name the cause: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn db() -> IndexDb {
         IndexDb::open_in_memory("C:/lib").unwrap()
+    }
+
+    #[test]
+    fn the_lock_name_hash_is_stable_fnv1a() {
+        // FNV-1a over the UTF-16LE bytes. Pinned so a future refactor cannot
+        // quietly swap in a hasher whose values differ between builds — that
+        // would let two mixed-version instances both open the same library.
+        let path = std::path::Path::new("C:/lib");
+        // The expected value is this function's own definition, evaluated once;
+        // the assertion that matters is the second one: the same input never
+        // yields two names within a build or across them.
+        let first = stable_lock_hash(path);
+        let second = stable_lock_hash(path);
+        assert_eq!(first, second);
+        assert_ne!(first, stable_lock_hash(std::path::Path::new("C:/other")));
+        // The FNV offset basis must survive: an empty path hashes to it.
+        assert_eq!(stable_lock_hash(std::path::Path::new("")), 0xcbf2_9ce4_8422_2325);
     }
 
     #[cfg(windows)]
@@ -2315,7 +2330,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_uses_indexed_counts_and_stays_consistent_after_favorite_edits() {
+    fn summary_counts_favorites_and_stays_correct_across_connections() {
         let mut db = db();
         db.upsert_batch(&[row("C:/lib/a.wav", "Foley"), row("C:/lib/b.wav", "Music")])
             .unwrap();
@@ -2324,20 +2339,59 @@ mod tests {
             .unwrap();
         assert_eq!(db.summary().unwrap(), (1, 2));
 
+        // The index is still the planner's choice without a hint; the hint is
+        // what made a concurrent DROP INDEX a hard failure.
         let plan: Vec<String> = db
             .connection()
-            .prepare("EXPLAIN QUERY PLAN SELECT COALESCE(SUM(favorite), 0), COUNT(favorite) FROM sounds INDEXED BY idx_favorite")
+            .prepare("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM sounds WHERE favorite = 1")
             .unwrap()
             .query_map([], |row| row.get(3))
             .unwrap()
             .map(|row| row.unwrap())
             .collect();
-        assert!(plan.iter().any(|detail| detail.contains("idx_favorite")));
+        assert!(
+            plan.iter().any(|detail| detail.contains("idx_favorite")),
+            "the planner should still use idx_favorite: {plan:?}"
+        );
+    }
 
-        db.begin_bulk().unwrap();
-        assert_eq!(db.summary().unwrap(), (1, 2));
-        db.end_bulk().unwrap();
-        assert_eq!(db.summary().unwrap(), (1, 2));
+    /// A5: a second connection dropping `idx_favorite` must not break the first.
+    ///
+    /// `begin_bulk` drops the secondary indexes on the *indexer's* connection.
+    /// A UI connection that forced `INDEXED BY idx_favorite` then failed with
+    /// `no such index`, and `get_sidebar` swallowed that as an empty sidebar.
+    #[test]
+    fn a_summary_survives_a_bulk_drop_on_another_connection() {
+        let root = std::env::temp_dir().join(format!(
+            "mio-summary-cross-conn-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let writer = IndexDb::open(&root).unwrap();
+        let reader = IndexDb::open(&root).unwrap();
+        let mut writer = writer;
+        writer
+            .upsert_batch(&[row("C:/lib/a.wav", "Foley"), row("C:/lib/b.wav", "Music")])
+            .unwrap();
+        assert_eq!(reader.summary().unwrap(), (0, 2));
+
+        writer.begin_bulk().unwrap();
+        // The reader was opened before the drop and its connection now sees a
+        // table with no idx_favorite.
+        assert_eq!(
+            reader.summary().unwrap(),
+            (0, 2),
+            "summary must not depend on an index another connection dropped"
+        );
+        writer.end_bulk().unwrap();
+        assert_eq!(reader.summary().unwrap(), (0, 2));
+
+        drop(writer);
+        drop(reader);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

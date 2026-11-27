@@ -19,6 +19,12 @@ and `CHEMICALS` have no home in a sample manager's 22 and are dropped rather
 than forced somewhere wrong; dropping them is visible in the generated file,
 forced fits would not be.
 
+Dropping is spelled out, not implied: `DROPPED` lists the UCS entries that are
+deliberately unmapped with the reason, and `import-ucs.py` refuses to write a
+table that silently loses an entry. A UCS release that adds a category therefore
+fails the import until someone decides where it belongs, instead of producing a
+file that knows a CatID but classifies it as Uncategorized.
+
 `DROP_SYNONYMS` is the measured part. A UCS synonym is only useful if it names
 the sound; the list carries English words that belong to no single class
 (`one`, `shots`, `and`, `morph`) and words that only made sense inside a UCS
@@ -104,6 +110,7 @@ TOP = {
     "VEHICLES": ("Vehicles", "Cars & Trucks"),
     "VOICES": ("Vocals", "Game Characters"),
     "WATER": ("Foley", "Water Foley"),
+    "WEAPONS": ("Weapons", None),
     "WEATHER": ("Nature", "Thunder & Storms"),
     "WHISTLES": ("Foley", "Objects & Props"),
     "WIND": ("Nature", "Wind"),
@@ -428,8 +435,93 @@ SUB = {
     # WINGS: insect and creature wings are creature movement.
     ("WINGS", "CREATURE"): ("Creatures", "Monsters & Beasts"),
     ("WINGS", "INSECT"): ("Nature", "Animals & Birds"),
+
+    # WEAPONS: UCS's melee tree is our Weapons branch, one subcategory each.
+    # Armor and siege are the two entries with no direct counterpart: armor is
+    # worn gear (Foley metal), siege is a weapon mechanism (Machinery).
+    ("WEAPONS", "ARMOR"): ("Foley", "Objects & Props"),
+    ("WEAPONS", "ARROW"): ("Weapons", "Bows & Arrows"),
+    ("WEAPONS", "AXE"): ("Weapons", "Melee & Blades"),
+    ("WEAPONS", "BLUNT"): ("Weapons", "Melee & Blades"),
+    ("WEAPONS", "BOW"): ("Weapons", "Bows & Arrows"),
+    ("WEAPONS", "KNIFE"): ("Weapons", "Melee & Blades"),
+    ("WEAPONS", "MISC"): ("Weapons", None),
+    ("WEAPONS", "POLEARM"): ("Weapons", "Melee & Blades"),
+    ("WEAPONS", "SIEGE"): ("Machinery", "Switches & Mechanisms"),
+    ("WEAPONS", "SWORD"): ("Weapons", "Melee & Blades"),
+    ("WEAPONS", "WHIP"): ("Weapons", "Melee & Blades"),
 }
 
+# UCS entries that deliberately have no projection into our 22 categories.
+# `import-ucs.py` asserts that every entry is either mapped or listed here, so a
+# new UCS release cannot silently produce a CatID that classifies as
+# Uncategorized. The value is the reason, not a target.
+DROPPED = {
+    # Archive and production housekeeping: these describe what a file *is to a
+    # librarian*, not what it sounds like. Mapping them would put a printmaster
+    # in a category the producer browses for material.
+    ("ARCHIVED", "ADR"): "dialogue replacement, not a sound class",
+    ("ARCHIVED", "ASSET"): "file role, not a sound class",
+    ("ARCHIVED", "BOUNCE"): "file role, not a sound class",
+    ("ARCHIVED", "IMPULSE RESPONSE"): "reverb data, not a playable sample class",
+    ("ARCHIVED", "LOOP GROUP"): "file grouping, not a sound class",
+    ("ARCHIVED", "MIX"): "file role, not a sound class",
+    ("ARCHIVED", "PFX"): "file role, not a sound class",
+    ("ARCHIVED", "PRODUCTION"): "file role, not a sound class",
+    ("ARCHIVED", "RAW"): "file role, not a sound class",
+    ("ARCHIVED", "REFERENCE"): "file role, not a sound class",
+    ("ARCHIVED", "SCENE"): "file role, not a sound class",
+    ("ARCHIVED", "TEST TONE"): "calibration signal, not a sound class",
+    ("ARCHIVED", "TRADEMARKED"): "legal marker, not a sound class",
+    ("ARCHIVED", "WORK IN PROGRESS"): "file status, not a sound class",
+    ("ARCHIVED", "WTF"): "file status, not a sound class",
+
+    # Compressed air and chemistry: no category in a producer's 22. The
+    # material impacts they cause are covered by IMPACTS through the files that
+    # name the material; the gas itself is not a class here.
+    ("AIR", "BLOW"): "compressed air has no category here",
+    ("AIR", "BURST"): "compressed air has no category here",
+    ("AIR", "HISS"): "compressed air has no category here",
+    ("AIR", "MISC"): "compressed air has no category here",
+    ("AIR", "SUCTION"): "vacuum has no category here",
+    ("CHEMICALS", "ACID"): "chemistry has no category here",
+    ("CHEMICALS", "MISC"): "chemistry has no category here",
+    ("CHEMICALS", "REACTION"): "chemistry has no category here",
+
+    # Recording-source markers that UCS keeps inside an otherwise mapped branch.
+    ("CREATURES", "SOURCE"): "recording source, not a creature class",
+    ("GORE", "SOURCE"): "recording source, not a gore class",
+    # DESIGNED: the process words. A `granular` or `morph` sound can be any of
+    # several classes; the subcategory names a synthesis technique, and mapping
+    # it would put a pad in Transitions. The entries that name an audible result
+    # (riser, whoosh, boom, braam, stinger, impact, dive, drone, eerie, rumble,
+    # bass) are mapped above.
+    ("DESIGNED", "DISTORTION"): "synthesis technique, not an audible class",
+    ("DESIGNED", "ETHEREAL"): "synthesis technique, not an audible class",
+    ("DESIGNED", "GRANULAR"): "synthesis technique, not an audible class",
+    ("DESIGNED", "MORPH"): "synthesis technique, not an audible class",
+    ("DESIGNED", "RHYTHMIC"): "synthesis technique, not an audible class",
+    ("DESIGNED", "SOURCE"): "recording source, not a designed class",
+    ("DESIGNED", "SYNTHETIC"): "synthesis technique, not an audible class",
+    ("DESIGNED", "TONAL"): "synthesis technique, not an audible class",
+}
+
+# Entries that `SUB` maps, but whose CatID is withheld because the corpus
+# measurement disagrees with that mapping. This is not a taxonomy decision: the
+# sound class is right, the declared prefix is not a reliable signal for it.
+# `tools/ucs-evidence.py` measured 0.0–0.4 precision over 6–22 classified files
+# per ID (see `tools/ucs-catid-evidence.json`); accepting the prefix would put a
+# bass dive in Transitions and a body blow in Creatures. The keyword evidence
+# still classifies those files through the UCS word path. Re-run the evidence
+# script and delete an entry here when its precision clears the cut.
+WITHHELD_CAT_IDS = {
+    ("DESIGNED", "BASS DIVE"): "CatID precision 0.00 over 18 files",
+    ("FIGHT", "IMPACT"): "CatID precision 0.36 over 11 files",
+    ("GORE", "MISC"): "CatID precision 0.00 over 6 files",
+    ("HUMAN", "BREATH"): "CatID precision 0.40 over 10 files",
+    ("MUSICAL", "INSTRUMENT"): "CatID precision 0.00 over 6 files",
+    ("OBJECTS", "MISC"): "CatID precision 0.00 over 22 files",
+}
 # Synonyms cut even though their UCS entry has a home here. Every one was
 # checked against the 280,805-path reference mirror: the counts in the comment
 # are files / packs containing the word. The rule is that a word has to name the

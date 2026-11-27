@@ -151,6 +151,45 @@ def target_for(entry):
     return ucs_mapping.TOP.get(entry["category"])
 
 
+def assert_no_silent_drops(entries):
+    """Every UCS entry must be mapped or named in `DROPPED`.
+
+    A missing `TOP`/`SUB` key used to be invisible: the entry stayed in
+    `UCS_CAT_ID_NATIVE` but vanished from the projected table, so a file whose
+    name carried that CatID declared a category and still classified as
+    Uncategorized. Failing here makes the next UCS sync say which entry needs a
+    decision instead of writing a table that quietly disagrees with itself.
+    """
+    unexplained = [
+        (e["cat_id"], e["category"], e["subcategory"])
+        for e in entries
+        if e["cat_id"]
+        and e["cat_id"].isascii()
+        and target_for(e) is None
+        and (e["category"], e["subcategory"]) not in ucs_mapping.DROPPED
+    ]
+    if unexplained:
+        listed = "\n".join(f"  {cid:10} {cat} / {sub}" for cid, cat, sub in unexplained)
+        raise SystemExit(
+            "these UCS entries have no projection and no entry in "
+            "ucs_mapping.DROPPED:\n" + listed
+        )
+
+    # A withheld entry that no longer exists in the release would be a stale
+    # exemption: it would read as "this CatID is untrustworthy" while the reason
+    # no longer applies. Same for a drop.
+    present = {(e["category"], e["subcategory"]) for e in entries}
+    stale = sorted(
+        key for key in set(ucs_mapping.DROPPED) | set(ucs_mapping.WITHHELD_CAT_IDS)
+        if key not in present
+    )
+    if stale:
+        raise SystemExit(
+            "these DROPPED / WITHHELD_CAT_IDS keys are not in this UCS release:\n"
+            + "\n".join(f"  {cat} / {sub}" for cat, sub in stale)
+        )
+
+
 def normalise(text):
     """Lowercase ASCII words, separators to spaces — the Rust tokenizer's view."""
     return " ".join(
@@ -281,6 +320,17 @@ def build(entries, top_explanations, evidence, catid_evidence):
         for entry in entries
         if entry["cat_id"] and entry["cat_id"].isascii()
     }
+    # CatIDs whose entry is a documented drop. The classifier must not treat one
+    # as a declared category: it has no projection, so scoring it would suppress
+    # the keyword evidence and leave the row Uncategorized.
+    withheld_cat_ids = {}
+    dropped_cat_ids = {
+        entry["cat_id"]: ucs_mapping.DROPPED[(entry["category"], entry["subcategory"])]
+        for entry in entries
+        if entry["cat_id"]
+        and entry["cat_id"].isascii()
+        and target_for(entry) is None
+    }
     for entry in entries:
         target = target_for(entry)
         if target is None:
@@ -288,11 +338,21 @@ def build(entries, top_explanations, evidence, catid_evidence):
         cid = entry["cat_id"]
         if not cid or not cid.isascii():
             continue
+        # A withheld CatID keeps its native label but gains no projection, for
+        # the same reason as a documented drop: it must not outrank keywords.
+        if (entry["category"], entry["subcategory"]) in ucs_mapping.WITHHELD_CAT_IDS:
+            withheld_cat_ids[cid] = ucs_mapping.WITHHELD_CAT_IDS[
+                (entry["category"], entry["subcategory"])
+            ]
+            continue
         if catid_evidence is not None:
             e = catid_evidence.get(cid) or {}
             classified = (e.get("same") or 0) + (e.get("other") or 0)
             if classified >= CATID_HITS_CUT and (e.get("precision") or 0) < CATID_PRECISION_CUT:
                 exclude(cid, "CatID mapping contradicted by the corpus")
+                withheld_cat_ids[cid] = (
+                    f"CatID precision {e.get('precision') or 0:.2f} over {classified} files"
+                )
                 continue
         cat_ids.setdefault(cid, target)
 
@@ -308,6 +368,8 @@ def build(entries, top_explanations, evidence, catid_evidence):
         "native_phrases": native_phrases,
         "cat_ids": cat_ids,
         "native_cat_ids": native_cat_ids,
+        "dropped_cat_ids": dropped_cat_ids,
+        "withheld_cat_ids": withheld_cat_ids,
         "excluded": excluded,
         "examples": examples,
         "top_cats": top_cats,
@@ -405,6 +467,18 @@ def render(result, measured):
         out.append(f"    {cid!r}: ({cat!r}, {sub!r}),")
     out.append("}")
     out.append("")
+    out.append("# UCS CatIDs that are deliberately not projected into the 22 categories.")
+    out.append("# Two reasons: entries with no home here (archive housekeeping,")
+    out.append("# compressed air, chemistry, process words), and entries whose CatID the")
+    out.append("# corpus measurement contradicts. The classifier must not treat either as a")
+    out.append("# declared category. The value is the reason, carried from")
+    out.append("# `ucs_mapping.DROPPED` / `WITHHELD_CAT_IDS` so the lists cannot drift.")
+    out.append("DROPPED_CAT_IDS = {")
+    for cid in sorted(result["dropped_cat_ids"]):
+        out.append(f"    {cid!r}: {result['dropped_cat_ids'][cid]!r},")
+    for cid in sorted(result["withheld_cat_ids"]):
+        out.append(f"    {cid!r}: {result['withheld_cat_ids'][cid]!r},")
+    out.append("}")
     out.append("# Unique UCS synonym -> official native category/subcategory.")
     out.append("# Ambiguous synonyms are omitted rather than assigned a false label.")
     out.append("NATIVE_KEYWORDS = {")
@@ -435,6 +509,7 @@ def main():
     evidence = load_evidence(args.evidence)
     catid_evidence = load_evidence(args.catid_evidence)
     print(f"read {len(entries)} UCS entries, {len(tops)} top categories")
+    assert_no_silent_drops(entries)
     print(f"evidence: {'yes' if evidence else 'MISSING'}"
           f" ({len(evidence) if evidence else 0} word measurements,"
           f" {len(catid_evidence) if catid_evidence else 0} CatID measurements)")

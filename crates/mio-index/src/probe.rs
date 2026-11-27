@@ -238,17 +238,6 @@ fn probe_with_options(
     meta
 }
 
-/// Read only embedded metadata using the size and mtime already returned by the
-/// directory scan. The filesystem values are carried by the caller so this API
-/// does not perform another `stat` before the guarded database update.
-pub fn metadata_only_with_meta(
-    path: &Path,
-    _filesize: u64,
-    _mtime_ns: i64,
-) -> EmbeddedMetadata {
-    read_metadata(path).into()
-}
-
 /// Read from a single open handle. `Ok(None)` means the file fingerprint changed
 /// since the base index; leave that row pending for the next pass.
 pub fn metadata_only_with_meta_checked(
@@ -768,11 +757,6 @@ pub fn walk_audio_entries(root: &Path) -> crate::error::Result<Vec<FileEntry>> {
     })?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
-}
-
-/// Walk every directory or fail; callers that prune must never use a partial scan.
-pub fn try_walk_audio_entries(root: &Path) -> crate::error::Result<Vec<FileEntry>> {
-    walk_audio_entries(root)
 }
 
 pub fn walk_audio_entries_into<F>(root: &Path, visit: F) -> crate::error::Result<usize>

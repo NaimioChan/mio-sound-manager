@@ -186,6 +186,13 @@ def emit_cat_ids(module):
         sub_expr = "None" if subcategory is None else f"Some({rust_string(subcategory)})"
         out.append(f"    ({rust_string(cid)}, {rust_string(category)}, {sub_expr}),\n")
     out.append("];\n\n")
+    out.append("/// UCS CatIDs that are deliberately not projected. A filename that opens\n")
+    out.append("/// with one carries a native UCS label but declares no category here, so the\n")
+    out.append("/// classifier must not let it outrank keyword evidence.\n")
+    out.append("pub static UCS_CAT_ID_DROPPED: &[(&str, &str)] = &[\n")
+    for cid in sorted(module.DROPPED_CAT_IDS):
+        out.append(f"    ({rust_string(cid)}, {rust_string(module.DROPPED_CAT_IDS[cid])}),\n")
+    out.append("];\n\n")
     out.append(f"/// The UCS release this vocabulary was derived from.\n"
                f"pub const UCS_VERSION: &str = {rust_string(module.UCS_VERSION)};\n")
     out.append("\n/// Unique UCS keyword -> official native category and subcategory.\n")

@@ -67,8 +67,8 @@ use std::collections::HashMap;
 
 pub use dictionary::CATEGORY_DICTIONARY;
 pub use ucs::{
-    UCS_CAT_IDS, UCS_CAT_ID_NATIVE, UCS_DICTIONARY, UCS_NATIVE_KEYWORDS, UCS_NATIVE_PHRASES,
-    UCS_VERSION,
+    UCS_CAT_ID_DROPPED, UCS_CAT_IDS, UCS_CAT_ID_NATIVE, UCS_DICTIONARY, UCS_NATIVE_KEYWORDS,
+    UCS_NATIVE_PHRASES, UCS_VERSION,
 };
 
 /// One row of the dictionary: a category, an optional subcategory, and the words
@@ -251,7 +251,15 @@ impl Classifier {
         let (haystack, mut tokens, filename_start) = tokenize_path_spans(full_path, description);
         let filename = &full_path[filename_start..];
         let native_ucs = native_ucs_for_filename(filename);
-        let has_explicit_cat_id = native_ucs.is_some();
+        // A CatID only suppresses the other evidence when it actually projects
+        // into our 22. `ARCHIVED`/`AIR`/`CHEMICALS` and the process words under
+        // `DESIGNED` have no home here on purpose; treating them as declared
+        // categories would let an unmappable prefix beat a keyword the corpus
+        // agrees with, and leave the row Uncategorized while its own name says
+        // what it is.
+        let has_explicit_cat_id = native_ucs
+            .as_ref()
+            .is_some_and(|(_, _, cat_id)| self.cat_id_to_target.contains_key(cat_id.as_str()));
         let metadata_ucs = metadata_ucs_category.map(|category| {
             let subcategory = metadata_ucs_subcategory.filter(|value| !value.is_empty());
             (
@@ -661,7 +669,6 @@ fn build_pattern_matcher(
     ] {
         for (order, phrase) in phrases.iter().enumerate() {
             let normalized = normalise(phrase.phrase).trim().to_string();
-            let normalized = normalized.replace(' ', " ");
             patterns.push((
                 normalized.clone(),
                 KeywordPattern {
@@ -1486,6 +1493,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_native_cat_id_is_either_projected_or_an_explicit_drop() {
+        // The projection is allowed to be lossy on purpose, but never silently:
+        // an entry in `UCS_CAT_ID_NATIVE` without a row in `UCS_CAT_IDS` must be
+        // a deliberate drop, or a filename carrying that CatID declares a
+        // category and then classifies as Uncategorized — and a manual pick of
+        // that CatID writes Uncategorized with `category_manual = 1`, locking the
+        // row against the classifier forever.
+        let projected: std::collections::HashSet<&str> =
+            UCS_CAT_IDS.iter().map(|(cat_id, _, _)| *cat_id).collect();
+        let dropped: std::collections::HashSet<&str> =
+            UCS_CAT_ID_DROPPED.iter().map(|(cat_id, _)| *cat_id).collect();
+        let unexplained: Vec<&str> = UCS_CAT_ID_NATIVE
+            .iter()
+            .filter(|(cat_id, _, _)| !projected.contains(cat_id) && !dropped.contains(*cat_id))
+            .map(|(cat_id, _, _)| *cat_id)
+            .collect();
+        assert!(
+            unexplained.is_empty(),
+            "CatIDs in UCS_CAT_ID_NATIVE with no projection and no documented drop: {unexplained:?}"
+        );
+    }
+
+    #[test]
+    fn every_projected_cat_id_has_a_native_label() {
+        // The reverse direction: a projection row without a native label would
+        // match a filename prefix but report no UCS category, so the table could
+        // never explain the classification it produced.
+        let native: std::collections::HashSet<&str> = UCS_CAT_ID_NATIVE
+            .iter()
+            .map(|(cat_id, _, _)| *cat_id)
+            .collect();
+        let orphaned: Vec<&str> = UCS_CAT_IDS
+            .iter()
+            .filter(|(cat_id, _, _)| !native.contains(cat_id))
+            .map(|(cat_id, _, _)| *cat_id)
+            .collect();
+        assert!(
+            orphaned.is_empty(),
+            "projected CatIDs with no native label: {orphaned:?}"
+        );
+    }
+
+    #[test]
+    fn a_dropped_cat_id_is_not_also_projected() {
+        let projected: std::collections::HashSet<&str> =
+            UCS_CAT_IDS.iter().map(|(cat_id, _, _)| *cat_id).collect();
+        let both: Vec<&str> = UCS_CAT_ID_DROPPED
+            .iter()
+            .map(|(cat_id, _)| *cat_id)
+            .filter(|cat_id| projected.contains(cat_id))
+            .collect();
+        assert!(
+            both.is_empty(),
+            "CatIDs listed as dropped but also projected: {both:?}"
+        );
+    }
+
+    #[test]
+    fn a_weapons_filename_projects_into_the_weapons_category() {
+        let c = classify(r"D:\lib\WEAPSwrd_SwordDraw_01.wav");
+        assert_eq!(c.category, "Weapons");
+        assert_eq!(c.subcategory.as_deref(), Some("Melee & Blades"));
+        assert_eq!(c.ucs_category.as_deref(), Some("WEAPONS"));
+        assert_eq!(c.ucs_cat_id.as_deref(), Some("WEAPSwrd"));
+    }
+
+    #[test]
+    fn an_unmapped_cat_id_does_not_suppress_the_keyword_evidence() {
+        // `ARCHIVED/TEST TONE` has no home here. Before the fix its CatID set
+        // `has_explicit_cat_id`, which skipped the keyword path and left the row
+        // Uncategorized even when the filename named a real class.
+        let c = classify(r"D:\lib\TESTSilence_Engine_Rumble.wav");
+        assert_ne!(
+            c.category, "Uncategorized",
+            "an unmappable CatID must not beat a keyword the corpus agrees with"
+        );
     }
 
     #[test]

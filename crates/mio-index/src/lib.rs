@@ -41,7 +41,6 @@ pub use indexer::{
 };
 pub use probe::{
     AudioMeta, EmbeddedMetadata, FileEntry, SkippedDir, WalkReport, is_audio_path,
-    metadata_only_with_meta, metadata_only_with_meta_checked, probe_basic_with_meta, probe_file,
-    probe_with_meta, walk_audio_entries,
-    walk_audio_entries_with_report, walk_audio_files,
+    metadata_only_with_meta_checked, probe_basic_with_meta, probe_file, probe_with_meta,
+    walk_audio_entries, walk_audio_entries_with_report, walk_audio_files,
 };
