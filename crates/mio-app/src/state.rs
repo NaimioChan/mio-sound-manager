@@ -128,6 +128,23 @@ where
     }
 }
 
+/// Refuse a UCS pick that would write `Uncategorized` as if a human had chosen
+/// it. A CatID with no projection means the category column has nothing true to
+/// say; `category_manual = 1` then locks the row against the classifier forever,
+/// which is the exact failure the category dialog used to cause for the
+/// WEAPONS branch and still could for every archive marker.
+fn reject_unprojected_ucs(cat_id: &str, projected_category: &str) -> AppResult<()> {
+    if mio_index::classify::UCS_CAT_IDS
+        .iter()
+        .any(|(known, _, _)| *known == cat_id)
+    {
+        return Ok(());
+    }
+    Err(AppError::invalid(format!(
+        "UCS CatID {cat_id} has no category projection; assigning it would lock the row and set '{projected_category}'. Use a mapped CatID, or set the category by hand."
+    )))
+}
+
 impl AudioSlot {
     fn open(backend: Backend, device_filter: Option<String>, asio_frames: Option<u32>) -> Self {
         let opened = Engine::start(EngineConfig {
@@ -207,22 +224,25 @@ impl LatestSlot {
             return;
         };
         if let Some(previous) = slot.replace(job) {
-            let _ = previous
-                .reply
-                .send(Err(AppError::internal("superseded by a newer request")));
+            let _ = previous.reply.send(Err(AppError::Superseded));
         }
         self.ready.notify_one();
     }
 
     /// Block until a job arrives, then take it.
+    ///
+    /// `closed` is checked before the slot so a shutdown that arrives while a
+    /// job is sitting unclaimed does not wait for that job to be decoded first.
+    /// The decoder re-checks after every job as well; together they bound
+    /// shutdown to one decode rather than one queue.
     fn take(&self) -> Option<DecodeJob> {
         let mut slot = self.inner.lock().ok()?;
         loop {
-            if let Some(job) = slot.take() {
-                return Some(job);
-            }
             if *self.closed.lock().ok()? {
                 return None;
+            }
+            if let Some(job) = slot.take() {
+                return Some(job);
             }
             slot = self.ready.wait(slot).ok()?;
         }
@@ -233,6 +253,12 @@ impl LatestSlot {
             *closed = true;
         }
         self.ready.notify_all();
+    }
+
+    /// Whether `close` has been called. The decoder checks this between jobs so a
+    /// queued job is abandoned rather than decoded during shutdown.
+    fn is_closed(&self) -> bool {
+        self.closed.lock().map(|closed| *closed).unwrap_or(true)
     }
 }
 
@@ -262,10 +288,6 @@ pub struct AppState {
     playback_error: Arc<Mutex<Option<PlaybackError>>>,
     playback_error_seq: Arc<AtomicU64>,
 
-    /// Publishes the render thread never reached (superseded inside one engine
-    /// period). Diagnostic for the status bar.
-    dropped_publishes: AtomicU64,
-
     /// Bumped on every play/stop so a decode that finishes late can be discarded
     /// instead of starting stale audio.
     play_epoch: Arc<AtomicU64>,
@@ -279,8 +301,10 @@ pub struct AppState {
     gain_bits: AtomicU32,
 
     /// The loop switch and region, mirrored outside the audio lock for the same
-    /// reason as the gain: a device switch must not lose them.
-    loop_state: Mutex<LoopSetting>,
+    /// reason as the gain: a device switch must not lose them. Shared with the
+    /// long-file window chain, which reads the region on every step to wrap at
+    /// the selection instead of at zero.
+    loop_state: Arc<Mutex<LoopSetting>>,
     /// Lock-free copy used by a long-file window chain. The chain must observe
     /// loop toggles without taking the control mutex on its worker thread.
     streaming_loop: Arc<std::sync::atomic::AtomicBool>,
@@ -375,10 +399,9 @@ impl AppState {
             failed_decodes,
             playback_error,
             playback_error_seq: Arc::new(AtomicU64::new(0)),
-            dropped_publishes: AtomicU64::new(0),
             play_epoch: Arc::new(AtomicU64::new(0)),
             gain_bits: AtomicU32::new(1.0f32.to_bits()),
-            loop_state: Mutex::new(LoopSetting::default()),
+            loop_state: Arc::new(Mutex::new(LoopSetting::default())),
             streaming_loop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             history: Mutex::new(crate::history::History::new()),
             session: None,
@@ -386,8 +409,7 @@ impl AppState {
         }
     }
 
-    /// Point the state at a session file and reopen the libraries it remembers.
-    ///
+    /// Point the state at a session file and reopen the libraries it remembers.    ///
     /// Called once from Tauri's `setup` with the app's config directory. Tests do
     /// not call it, so a test run never reads or writes the user's real session.
     ///
@@ -396,6 +418,10 @@ impl AppState {
     /// after a long absence would otherwise block the window for a minute before
     /// it could paint; instead the UI asks for a pass and shows its bar.
     pub fn attach_session(&mut self, dir: impl AsRef<Path>) {
+        // The audio config lives beside the session so a device choice survives a
+        // restart. Attaching it here keeps both files under one rule: tests never
+        // touch the user's real ones.
+        self.audio_config = Some(AudioStore::new(&dir));
         let store = SessionStore::new(&dir);
         let session = store.load();
 
@@ -520,22 +546,44 @@ impl AppState {
 
     /// Switch device and remember the choice. `device` is the name the picker
     /// showed, which is what `EngineConfig::device_filter` matches.
+    ///
+    /// `asio_frames` of `None` means "keep whatever is stored". The picker always
+    /// calls this when the user picks a device, and it has no reason to know the
+    /// block size — sending `None` there used to erase a 64-frame setting chosen
+    /// in the CLI back to the driver default, which is the number this project's
+    /// latency claims are about.
     pub fn set_audio_device(
         &self,
         backend: Backend,
         device: Option<String>,
         asio_frames: Option<u32>,
     ) -> AppResult<AppStatus> {
-        let error = self.open_audio(backend, device.clone(), asio_frames);
-        if let Some(store) = self.audio_config.as_ref() {
-            let config = AudioConfig {
-                backend: Some(backend.label().to_lowercase()),
-                device,
-                asio_buffer_frames: asio_frames,
-            };
-            if let Err(e) = store.save(&config) {
-                log::warn!("could not write the audio config: {e}");
+        let stored_frames = self
+            .audio_config
+            .as_ref()
+            .map(|store| store.load().asio_buffer_frames)
+            .unwrap_or(None);
+        let frames = asio_frames.or(stored_frames);
+        let error = self.open_audio(backend, device.clone(), frames);
+        // Persist only a choice that actually opened. Writing a failed one means
+        // the next launch reopens the same broken driver from `setup`, where a
+        // hung `ASIOInit` blocks the window before it paints.
+        if error.is_none() {
+            if let Some(store) = self.audio_config.as_ref() {
+                let config = AudioConfig {
+                    backend: Some(backend.label().to_lowercase()),
+                    device,
+                    asio_buffer_frames: frames,
+                };
+                if let Err(e) = store.save(&config) {
+                    log::warn!("could not write the audio config: {e}");
+                }
             }
+        } else if let Some(reason) = error.as_deref() {
+            log::warn!(
+                "audio device {device:?} on {} did not open ({reason}); keeping the previous audio config",
+                backend.label()
+            );
         }
         // A failed open is not a command failure: the state now describes a
         // device that is not there, and `status` is how the window finds out.
@@ -679,6 +727,9 @@ impl AppState {
     pub fn stop_playback(&self) -> AppResult<()> {
         self.play_epoch.fetch_add(1, Ordering::AcqRel);
         self.clear_playback_error();
+        // Nothing is chained after a stop; `play` arms this again when it
+        // publishes a window.
+        self.streaming_loop.store(false, Ordering::Release);
         self.with_engine(|engine| engine.stop())
     }
 
@@ -697,8 +748,7 @@ impl AppState {
         self.with_engine(|engine| engine.paused()).unwrap_or(false)
     }
 
-    /// Set the output gain on the live engine.
-    ///
+    /// Set the output gain on the live engine.    ///
     /// Returns the value the engine actually holds, which is the clamped one. When
     /// no device is open the call is not an error: the value is remembered so that
     /// opening a device later starts at the volume the user set, and the returned
@@ -735,22 +785,18 @@ impl AppState {
             enabled,
             region: region.filter(|(from, to)| to > from),
         };
-        let incomplete = self
-            .last_clip
-            .lock()
-            .ok()
-            .and_then(|slot| {
-                slot.as_ref()
-                    .and_then(|(_, clip)| clip.upgrade())
-                    .map(|clip| !clip.complete)
-            })
-            .unwrap_or(false);
-        self.streaming_loop
-            .store(enabled && incomplete, Ordering::Release);
+        // `streaming_loop` says "a window chain owns the boundary". Only `play`
+        // knows that, because it is the one that decides long vs short from the
+        // probe; `set_loop` runs before it in the normal flow (a region is drawn
+        // while nothing is loaded) and after it when the user drags on a playing
+        // file. Turning looping off also ends the chain's ownership, so the
+        // callback can wrap (or finish) inside the active buffer again.
+        let streaming = self.streaming_loop.load(Ordering::Acquire) && enabled;
+        self.streaming_loop.store(streaming, Ordering::Release);
         if let Ok(audio) = self.audio.lock() {
             if let Some(engine) = audio.engine.as_ref() {
                 engine.set_loop(enabled, region);
-                let _ = engine.set_streaming_loop(enabled && incomplete);
+                let _ = engine.set_streaming_loop(streaming);
             }
         }
         Ok(LoopState {
@@ -931,14 +977,6 @@ impl AppState {
         }
     }
 
-    pub fn note_dropped_publish(&self) {
-        self.dropped_publishes.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn dropped_publishes(&self) -> u64 {
-        self.dropped_publishes.load(Ordering::Relaxed)
-    }
-
     /// Queue a decode, replacing any request that has not started yet.
     ///
     /// The returned receiver yields the clip, or an error. A receiver whose job
@@ -1113,11 +1151,12 @@ impl AppState {
         // A superseded decode-ahead may have parked a window in the engine.
         self.with_engine(|engine| engine.clear_queued()).ok();
 
-        let looping = self
+        let loop_setting = self
             .loop_state
             .lock()
-            .map(|state| state.enabled)
-            .unwrap_or(false);
+            .map(|state| *state)
+            .unwrap_or_default();
+        let looping = loop_setting.enabled;
         let probe = mio_index::probe_file(std::path::Path::new(path));
         let duration_s = probe.duration_s;
         // A missing duration is not evidence that a file is short. Large files
@@ -1127,6 +1166,14 @@ impl AppState {
             || full_decode_bytes(&probe, self.output_format())
                 .is_some_and(|bytes| bytes > mio_engine::MAX_PCM_BYTES);
         let start = start_at.unwrap_or(0.0).max(0.0);
+        // A region loop on a long file is a selection to play, not a full-file
+        // pass with a decorative overlay: the first window starts at the region
+        // start, and the chain keeps it between the two edges. Only for the long
+        // path, and only when the user asked for no other position.
+        let region_start = (looping && long_file && start_at.is_none())
+            .then(|| loop_setting.region.map(|(from, _)| from.max(0.0)))
+            .flatten();
+        let start = region_start.unwrap_or(start);
 
         // A complete cached clip serves any position (it holds the whole file).
         // A prefix window only serves its own start.
@@ -1146,21 +1193,30 @@ impl AppState {
                     / clip.source_rate as f64;
             let window_end_s = window_start_s + clip.frames as f64 / clip.format.sample_rate as f64;
             if !long_file || (start >= window_start_s && start < window_end_s) {
-                let result = match start_at {
-                    Some(at) if at > 0.0 => self.publish_at(Arc::clone(&clip), at),
-                    _ => self.publish(Arc::clone(&clip), PublishSource::Initial),
+                // A cached window that covers the region start plays from the
+                // requested position, not from its own head.
+                let result = if start > window_start_s {
+                    self.publish_at(Arc::clone(&clip), start)
+                } else {
+                    self.publish(Arc::clone(&clip), PublishSource::Initial)
                 };
                 result?;
                 self.remember_clip(path.to_string(), Arc::clone(&clip));
-                if looping && !clip.complete {
-                    let _ = self.with_engine(|engine| engine.set_streaming_loop(true));
+                if !clip.complete {
+                    self.arm_streaming_loop();
+                    self.start_window_chain(path.to_string(), Arc::clone(&clip), epoch);
                 }
-                self.start_window_chain(path.to_string(), Arc::clone(&clip), epoch);
                 return Ok(());
             }
         }
 
-        let window = long_file.then(|| mio_engine::DecodeWindow::at(start, WINDOW_SECONDS));
+        let window = long_file.then(|| {
+            let span = region_start
+                .and_then(|from| loop_setting.region.map(|(_, to)| (to - from).max(0.05)))
+                .map(|remaining| WINDOW_SECONDS.min(remaining))
+                .unwrap_or(WINDOW_SECONDS);
+            mio_engine::DecodeWindow::at(start, span)
+        });
         let clip = match self.await_decode(self.request_decode(path.to_string(), None, window)?) .await {
             Ok(clip) => clip,
             Err(error) if window.is_none() && matches!(&error, AppError::Engine(e) if e.is_memory_budget()) => {
@@ -1181,8 +1237,20 @@ impl AppState {
             // The decode starts exactly at the window's first frame, so the
             // buffer plays from frame 0 of the clip.
             self.with_engine(|engine| engine.publish_from(Arc::clone(&clip), 0))?;
-            if looping {
-                let _ = self.with_engine(|engine| engine.set_streaming_loop(true));
+            // The chain owns the boundary of this file for as long as this
+            // playback lasts, loop or not. `set_loop` cannot know that (it runs
+            // before this), so the flag is armed here, once, both in the app and
+            // in the engine. Without it a region loop would be handled by the
+            // callback wrapping inside the active window — i.e. in 15 s — instead
+            // of at the selection.
+            //
+            // A window that already reached the end of the file has no successor,
+            // though: if the chain flag were armed for it, the callback would be
+            // forbidden from declaring `finished` and the transport would sit at
+            // the duration looking like it is still playing. Leave the boundary to
+            // the callback in that case.
+            if !clip.complete {
+                self.arm_streaming_loop();
             }
         } else {
             match start_at {
@@ -1195,6 +1263,16 @@ impl AppState {
             self.start_window_chain(path.to_string(), Arc::clone(&clip), epoch);
         }
         Ok(())
+    }
+
+    /// Mark the current playback as window-chained, in the app and in the engine.
+    ///
+    /// Called by every path that publishes a bounded window: the chain owns the
+    /// boundary of the file from then on, so the render callback must not wrap
+    /// inside the active window. `stop`/`play` of a short file clear it again.
+    fn arm_streaming_loop(&self) {
+        self.streaming_loop.store(true, Ordering::Release);
+        let _ = self.with_engine(|engine| engine.set_streaming_loop(true));
     }
 
     /// Decode the following windows of a long file and queue each for the
@@ -1215,10 +1293,16 @@ impl AppState {
         let requested_generation = prefetch_generation.load(Ordering::Acquire);
         let engine_format = self.output_format();
         let play_epoch = Arc::clone(&self.play_epoch);
-        let streaming_loop = Arc::clone(&self.streaming_loop);
+        let loop_state_for_chain = Arc::clone(&self.loop_state);
         let decoder = self.decoder();
         let total_frames = first.total_frames;
         let total_frames_known = first.total_frames_known;
+        let sample_rate = engine_format.sample_rate as f64;
+        // The window chain owns the boundary of a long file, so it also owns the
+        // loop: wrapping a 3-minute file at 0 while the user selected 0:12–0:18
+        // made the dock lie about the region. The region is read on every step,
+        // not once here, because the user can move the selection while the file
+        // is already playing.
         let first_window_start = (first
             .window_start_frames
             .saturating_sub(first.trimmed_leading_frames) as f64
@@ -1233,23 +1317,107 @@ impl AppState {
                     play_epoch.load(Ordering::Acquire) == epoch
                         && prefetch_generation.load(Ordering::Acquire) == requested_generation
                 };
+                let loop_region_frames = |setting: &LoopSetting| -> Option<(usize, usize)> {
+                    if !setting.enabled {
+                        return None;
+                    }
+                    let (from, to) = setting.region?;
+                    let start = (from.max(0.0) * sample_rate).round() as usize;
+                    let end = (to.max(0.0) * sample_rate).round() as usize;
+                    (end > start).then_some((start, end))
+                };
                 // `total_frames` and the chain cursor are both in device frames.
                 let total_device_frames = total_frames;
-                // Frames already covered by published or queued windows. The
-                // chain stops when that reaches the file's total; the render
-                // callback reports `finished` on its own for the last segment.
-                while alive(epoch)
-                    && (streaming_loop.load(Ordering::Acquire)
-                        || !total_frames_known
-                        || next_start < total_device_frames)
+                // Wait for the already-queued final window to play out, then park
+                // the transport at the end. Bounded so a stalled decode cannot
+                // hold this thread forever.
+                let park_at_end = || {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    loop {
+                        let monitor = audio.lock().ok().and_then(|slot| slot.monitor.clone());
+                        let Some(monitor) = monitor else { break };
+                        let snapshot = monitor.snapshot();
+                        if snapshot.finished
+                            || snapshot.position_s + 0.25 >= snapshot.duration_s.max(0.0)
+                            || std::time::Instant::now() >= deadline
+                        {
+                            if let Ok(slot) = audio.lock() {
+                                if let Some(engine) = slot.engine.as_ref() {
+                                    engine.stop_playback_at_end();
+                                }
+                            }
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                };
+                // A file whose first window already reaches the end has nothing
+                // left to chain: the `while` below never runs, and the render
+                // callback was told not to declare `finished` (the chain owns the
+                // boundary). Park the transport after the last window plays, or
+                // a seek to 0:63 of a 1:05 file would sit at 1:05 forever.
                 {
-                    let decode_start = if total_frames_known && next_start >= total_device_frames {
-                        0
+                    let looping_now = loop_state_for_chain
+                        .lock()
+                        .map(|setting| setting.enabled)
+                        .unwrap_or(false);
+                    let done = !looping_now
+                        && total_frames_known
+                        && next_start >= total_device_frames;
+                    if done {
+                        park_at_end();
+                        return;
+                    }
+                }
+                // Frames already covered by published or queued windows. The
+                // chain stops when that reaches the file's total (or the loop
+                // region's end); the render callback reports `finished` on its
+                // own for the last segment.
+                //
+                // `streaming_loop` is "a chain owns the boundary", true for every
+                // long file; the stop condition must be the user's loop switch,
+                // read fresh, or a non-looping file would chain forever.
+                while alive(epoch) && {
+                    let looping_now = loop_state_for_chain
+                        .lock()
+                        .map(|setting| setting.enabled)
+                        .unwrap_or(false);
+                    looping_now || !total_frames_known || next_start < total_device_frames
+                } {
+                    // Re-read each round: the user may turn the loop on or move
+                    // the selection while the file is already playing.
+                    let region = loop_state_for_chain
+                        .lock()
+                        .ok()
+                        .and_then(|setting| loop_region_frames(&setting));
+                    let looping = region.is_some();
+                    let (wrap_start_frames, loop_end_frames) =
+                        region.unwrap_or((0, total_frames));
+                    // With a region the chain wraps at its end, and the window is
+                    // cut there, so nothing past the selection is ever handed to
+                    // the render callback.
+                    let decode_start = if looping
+                        && loop_end_frames > wrap_start_frames
+                        && next_start >= loop_end_frames
+                    {
+                        wrap_start_frames
+                    } else if looping
+                        && total_frames_known
+                        && next_start >= total_device_frames
+                    {
+                        wrap_start_frames
                     } else {
                         next_start
                     };
+                    let span_s = if looping {
+                        let remaining = loop_end_frames.saturating_sub(decode_start) as f64
+                            / engine_format.sample_rate as f64;
+                        WINDOW_SECONDS.min(remaining)
+                    } else {
+                        WINDOW_SECONDS
+                    };
                     let window_start_s = decode_start as f64 / engine_format.sample_rate as f64;
-                    let window = mio_engine::DecodeWindow::at(window_start_s, WINDOW_SECONDS);
+                    let window = mio_engine::DecodeWindow::at(window_start_s, span_s.max(0.05));
                     let mut attempts = 0;
                     let mut last_error = None;
                     let decoded = retry_decode(|| {
@@ -1306,6 +1474,16 @@ impl AppState {
                         return;
                     }
                     let clip = Arc::new(clip);
+                    // Where this window starts in the file, in device frames. The
+                    // render callback needs it: a queued window's playhead is its
+                    // own buffer offset plus this origin, otherwise a handoff
+                    // would report the file starting over at zero.
+                    let actual_start = (clip
+                        .window_start_frames
+                        .saturating_sub(clip.trimmed_leading_frames) as f64
+                        * engine_format.sample_rate as f64
+                        / clip.source_rate as f64)
+                        .round() as usize;
                     // Queue for the render callback. The queue holds one
                     // window; wait until the callback has consumed the
                     // previous one before queueing the next. Pause freezes
@@ -1322,7 +1500,7 @@ impl AppState {
                         if !queued {
                             if let Ok(slot) = audio.lock() {
                                 if let Some(engine) = slot.engine.as_ref() {
-                                    engine.queue_next(Arc::clone(&clip));
+                                    engine.queue_next(Arc::clone(&clip), actual_start as u64);
                                     queued = true;
                                 } else {
                                     return;
@@ -1352,13 +1530,6 @@ impl AppState {
                     if !alive(epoch) {
                         return;
                     }
-                    let actual_start = (clip
-                        .window_start_frames
-                        .saturating_sub(clip.trimmed_leading_frames)
-                        as f64
-                        * engine_format.sample_rate as f64
-                        / clip.source_rate as f64)
-                        .round() as usize;
                     let actual_end = actual_start.saturating_add(clip.frames);
                     // The final window is `complete`; remember it so a replay
                     // of this file serves any position without a decode.
@@ -1371,12 +1542,31 @@ impl AppState {
                         }
                     }
                     if clip.complete {
-                        if streaming_loop.load(Ordering::Acquire) {
-                            next_start = 0;
+                        // `streaming_loop` alone is not the loop switch: it means
+                        // "the chain owns the boundary", which is true for every
+                        // long file. Looping is the user's switch, read fresh so a
+                        // toggle mid-file takes effect at this boundary.
+                        let looping_now = loop_state_for_chain
+                            .lock()
+                            .map(|setting| setting.enabled)
+                            .unwrap_or(false);
+                        if looping_now {
+                            // Reached a complete buffer (either the file end or a
+                            // region-trimmed tail): wrap to the region start.
+                            next_start = wrap_start_frames;
                         } else {
+                            // The chain owned the boundary for this whole file, so
+                            // the render callback was told not to declare
+                            // `finished` at a window end — including the last one.
+                            // The final window is still playing when this breaks
+                            // (it was just queued), so park after it has played.
+                            park_at_end();
                             break;
                         }
                     } else {
+                        // The next window continues from this one's end. If that
+                        // end reached the selection's end, the next iteration's
+                        // `decode_start` wraps it back to the region start.
                         next_start = actual_end;
                     }
                 }
@@ -1734,6 +1924,7 @@ impl AppState {
         projected_category: &str,
         projected_subcategory: Option<&str>,
     ) -> AppResult<u64> {
+        reject_unprojected_ucs(cat_id, projected_category)?;
         let library = self.library()?;
         let edit = crate::history::run(&library, EditKind::SetUcsCategory, paths, || {
             Ok(library.set_ucs_category(
@@ -1758,6 +1949,7 @@ impl AppState {
         projected_category: &str,
         projected_subcategory: Option<&str>,
     ) -> AppResult<u64> {
+        reject_unprojected_ucs(cat_id, projected_category)?;
         let library = self.library()?;
         let params = Self::matching_edit_params(&edit)?;
         let (before, changed) = library.set_ucs_category_matching(
@@ -1880,13 +2072,17 @@ impl AppState {
 impl Drop for AppState {
     fn drop(&mut self) {
         self.close_libraries();
+        // Close both queues first, then join. Closing after the first join left
+        // the second worker free to pick up a fresh job while the window was
+        // already shutting down; with a 30 s decode timeout on the queue it could
+        // hold the process open for tens of seconds.
+        self.jobs.close();
+        self.prefetch_closed.store(true, Ordering::Release);
         if let Ok(mut slot) = self.prefetch_worker.lock() {
             if let Some(handle) = slot.take() {
-                self.prefetch_closed.store(true, Ordering::Release);
                 let _ = handle.join();
             }
         }
-        self.jobs.close();
         if let Ok(mut slot) = self.worker.lock() {
             if let Some(handle) = slot.take() {
                 let _ = handle.join();
@@ -1916,6 +2112,14 @@ fn spawn_decoder(
         .name("mio-decode".into())
         .spawn(move || {
             while let Some(job) = jobs.take() {
+                // A close can land between taking a job and starting it. Drop it
+                // with an error rather than paying a decode the caller will never
+                // see; `Drop` joins this thread, so whatever is decoded here is
+                // time the window spends closing.
+                if jobs.is_closed() {
+                    let _ = job.reply.send(Err(AppError::Superseded));
+                    continue;
+                }
                 let path = job.path.clone();
                 let mut decoder = job
                     .decoder
@@ -1967,6 +2171,14 @@ fn spawn_prefetcher(
                         cache.finish_request(&path);
                         continue;
                     }
+                }
+                // A close may have landed while waiting for this item; do not
+                // spend five seconds decoding for a window that is going away.
+                if closed.load(Ordering::Acquire) {
+                    if let Ok(mut cache) = cache.lock() {
+                        cache.finish_request(&path);
+                    }
+                    break;
                 }
                 let max_duration_s = mio_index::probe_file(std::path::Path::new(&path))
                     .duration_s
@@ -2173,9 +2385,68 @@ mod state_tests {
         assert_eq!(calls, 2);
     }
 
+    /// A9: a device that fails to open must not be written to `audio.json`.
+    ///
+    /// The next launch reopens the stored choice from `setup`, and an unplugged
+    /// ASIO driver can block inside `ASIOInit` for seconds — so a failed pick
+    /// would hang the window *before it paints*, with no way to reach the
+    /// settings dialog that would undo it.
     #[test]
-    fn window_decode_retry_stops_after_two_failures() {
-        let mut calls = 0;
+    fn a_failed_device_switch_does_not_overwrite_the_stored_choice() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = AudioStore::new(dir.path());
+        store
+            .save(&AudioConfig {
+                backend: Some("wasapi".into()),
+                device: Some("TOKENS Speakers".into()),
+                asio_buffer_frames: Some(64),
+            })
+            .expect("seed the config");
+
+        let mut state = AppState::with_device(None);
+        state.audio_config = Some(AudioStore::new(dir.path()));
+        // A name no endpoint can match, so `open_audio` fails.
+        let status = state
+            .set_audio_device(Backend::Wasapi, Some("definitely-not-a-device".into()), None)
+            .expect("a failed open is a status, not a command error");
+        assert!(!status.audio_available, "the status reports the failure");
+
+        let stored = store.load();
+        assert_eq!(
+            stored.device.as_deref(),
+            Some("TOKENS Speakers"),
+            "the previous, workable choice is still the one on disk"
+        );
+        assert_eq!(stored.asio_buffer_frames, Some(64));
+    }
+
+    /// A9: a picker that sends no frame count must not erase the stored one.
+    ///
+    /// `SettingsDialog` calls `setAudioDevice(backend, device, null)`; before
+    /// this, picking any device reset a 64-frame setting chosen elsewhere back
+    /// to the driver default.
+    #[test]
+    fn a_device_switch_without_a_frame_count_keeps_the_stored_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = AudioStore::new(dir.path());
+        store
+            .save(&AudioConfig {
+                backend: Some("asio".into()),
+                device: Some("TOPPING".into()),
+                asio_buffer_frames: Some(64),
+            })
+            .expect("seed the config");
+
+        let mut state = AppState::with_device(None);
+        state.audio_config = Some(AudioStore::new(dir.path()));
+        // The device cannot open here (no ASIO in a default test build), which is
+        // exactly why the config must be left alone.
+        let _ = state.set_audio_device(Backend::Asio, Some("TOPPING".into()), None);
+        assert_eq!(store.load().asio_buffer_frames, Some(64));
+    }
+
+    #[test]
+    fn window_decode_retry_stops_after_two_failures() {        let mut calls = 0;
         let value: Result<i32, &str> = retry_decode(|| {
             calls += 1;
             Err("broken")

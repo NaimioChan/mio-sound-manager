@@ -69,14 +69,24 @@ fn write_wav(path: &Path, sample_rate: u32, channels: u16, frames: u32) {
 
 /// Boot the state against the device named by `MIO_TEST_DEVICE`, or the
 /// system default.
+///
+/// `None` means this machine has no output device, which is a legitimate state
+/// for a dev box but not for CI: the ~15 playback tests below would every one of
+/// them return early and still report as passing, so "playback passes" could mean
+/// nothing at all. Set `MIO_REQUIRE_AUDIO=1` to turn a missing device into a
+/// failure; the normal run prints one line per skipped test so the skip is
+/// visible rather than implicit.
 fn state() -> Option<AppState> {
     let device = std::env::var("MIO_TEST_DEVICE").ok();
     let state = AppState::with_device(device);
-    if state.engine_error().is_some() {
-        eprintln!(
-            "note: no audio device ({}); playback assertions skipped",
-            state.engine_error().unwrap_or_default()
-        );
+    if let Some(error) = state.engine_error() {
+        if std::env::var("MIO_REQUIRE_AUDIO").is_ok_and(|value| value != "0") {
+            panic!(
+                "MIO_REQUIRE_AUDIO is set but no output device opened ({error}); \
+                 this run would have skipped every playback assertion"
+            );
+        }
+        eprintln!("SKIP: no audio device ({error}); playback assertions skipped");
         return None;
     }
     Some(state)
@@ -278,9 +288,25 @@ fn a_superseded_play_does_not_start_stale_audio() {
     state.stop_playback().ok();
 }
 
+/// A10: a superseded decode is distinguishable from a failure.
+///
+/// The renderer recognises it and stays quiet. It has to be a stable string
+/// because the IPC boundary serialises an error as its `Display` text, and the
+/// UI's constant must match this one.
 #[test]
-fn non_audio_paths_are_rejected_before_any_work() {
-    let Some(state) = state() else { return };
+fn a_superseded_decode_reports_a_supersede_not_a_failure() {
+    let error = mio_app::AppError::Superseded;
+    assert_eq!(error.to_string(), "superseded by a newer request");
+    assert!(matches!(error, mio_app::AppError::Superseded));
+
+    // The other variants must not share that text, or the UI would hide real
+    // failures.
+    let other = mio_app::AppError::internal("superseded by a newer request");
+    assert!(!matches!(other, mio_app::AppError::Superseded));
+}
+
+#[test]
+fn non_audio_paths_are_rejected_before_any_work() {    let Some(state) = state() else { return };
     let root = scratch("reject");
     let text = root.join("notes.txt");
     std::fs::write(&text, b"not audio").unwrap();
@@ -392,6 +418,38 @@ fn waveform_bucket_count_is_clamped_not_trusted() {
 }
 
 #[test]
+fn a_non_looping_long_file_finishes_at_its_end() {
+    let Some(state) = state() else { return };
+    let root = scratch("long-finish");
+    let audio = root.join("finish.wav");
+    write_wav(&audio, 44_100, 2, 65 * 44_100);
+    let path = audio.to_string_lossy().into_owned();
+
+    // Near the end, so the test does not wait a minute: the chain must stop
+    // when the file ends rather than wrap. This is the regression test for
+    // "streaming_loop means a chain owns the boundary, not that the user asked
+    // for a loop" — treating the two as one made every long file loop forever.
+    tauri::async_runtime::block_on(state.play(&path, Some(63.0))).expect("play near the end");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut position = state.playback_position();
+    while !position.playing && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        position = state.playback_position();
+    }
+    while !position.finished && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        position = state.playback_position();
+    }
+    assert!(
+        position.finished,
+        "a long file must finish at its end, position {:.2}s",
+        position.position_s
+    );
+    state.stop_playback().ok();
+}
+
+#[test]
 fn long_file_play_publishes_a_short_prefix_with_full_duration() {
     let Some(state) = state() else { return };
     let root = scratch("long-prefix");
@@ -496,9 +554,55 @@ fn looping_long_file_uses_a_window_chain_instead_of_full_decode() {
     state.stop_playback().expect("stop long loop");
 }
 
+/// A4: a region on a long file must constrain the window chain.
+///
+/// The chain used to wrap at frame 0 no matter what the user selected, so a
+/// 0:05–0:10 loop on a 65-second file actually played the whole file while the
+/// dock said "loop 0:05–0:10". The chain now reads the region on every step and
+/// wraps at its start.
 #[test]
-fn looping_short_file_still_wraps_inside_the_active_clip() {
+fn a_long_file_region_loop_wraps_at_the_region_start() {
     let Some(state) = state() else { return };
+    let root = scratch("long-region-loop");
+    let audio = root.join("region.wav");
+    write_wav(&audio, 44_100, 2, 65 * 44_100);
+    let path = audio.to_string_lossy().into_owned();
+
+    state
+        .set_loop(true, Some((5.0, 10.0)))
+        .expect("enable a region loop before playback");
+    tauri::async_runtime::block_on(state.play(&path, None)).expect("play long region loop");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !state.playback_position().playing && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(state.playback_position().playing, "the chain should start playing");
+
+    // Watch long enough that a whole-file wrap would have been visible: the
+    // selection is 5 seconds, so any position outside it means it escaped.
+    let watch_until = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut outside = Vec::new();
+    while std::time::Instant::now() < watch_until {
+        let position = state.playback_position();
+        assert!(!position.finished, "a region loop must not finish");
+        if !(4.9..=10.5).contains(&position.position_s) {
+            outside.push(position.position_s);
+            if outside.len() > 3 {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        outside.is_empty(),
+        "the playhead left the selected region: {outside:?}"
+    );
+    state.stop_playback().expect("stop region loop");
+}
+
+#[test]
+fn looping_short_file_still_wraps_inside_the_active_clip() {    let Some(state) = state() else { return };
     let root = scratch("short-loop");
     let audio = root.join("loop.wav");
     write_wav(&audio, 44_100, 2, 44_100);

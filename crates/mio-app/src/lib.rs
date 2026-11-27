@@ -39,6 +39,24 @@ use tauri::Manager;
 /// Build and run the desktop window.
 pub fn run() {
     tauri::Builder::default()
+        // A file logger, because release builds are `windows_subsystem = "windows"`:
+        // with no `set_logger` every `log::warn!` in this crate and the engine went
+        // straight to /dev/null, so "this driver would not open", "audio.json is
+        // corrupt" and "the index pass failed" left no trace for the user or the
+        // next person debugging. Writes below the app config dir, at WARN and up by
+        // default, rotating at 2 MB with one old file kept.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .max_file_size(2 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("mio".into()),
+                    },
+                ))
+                .build(),
+        )
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

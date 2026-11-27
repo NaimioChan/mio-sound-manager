@@ -42,6 +42,11 @@ pub enum MetadataStatus {
 pub struct MetadataProgress {
     pub indexing: bool,
     pub indexed: usize,
+    /// Rows skipped because the file's fingerprint changed between the base pass
+    /// and this metadata pass. They are not indexed: the next pass will pick them
+    /// up. Counting them as `indexed` made the bar reach 100% while rows were
+    /// still outstanding.
+    pub deferred: usize,
     pub total: usize,
     pub failed: usize,
     pub status: MetadataStatus,
@@ -53,6 +58,7 @@ impl Default for MetadataProgress {
         Self {
             indexing: false,
             indexed: 0,
+            deferred: 0,
             total: 0,
             failed: 0,
             status: MetadataStatus::Idle,
@@ -164,6 +170,10 @@ pub struct Library {
     metadata: Mutex<MetadataTask>,
     folder_tree_cache: Mutex<Option<(i64, FolderNode)>>,
     last_skipped_dirs: Arc<Mutex<Vec<SkippedDir>>>,
+    /// Set by `close` before it joins anything. A metadata worker must check it
+    /// after taking the slot, or `close` can join the old worker, drop the slot,
+    /// and have the index thread start a new one that nobody will ever join.
+    closed: Arc<AtomicBool>,
 }
 
 impl Library {
@@ -184,6 +194,7 @@ impl Library {
             metadata: Mutex::new(MetadataTask::default()),
             folder_tree_cache: Mutex::new(None),
             last_skipped_dirs: Arc::new(Mutex::new(Vec::new())),
+            closed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -221,7 +232,10 @@ impl Library {
 
     fn start_metadata(&self) {
         let Ok(mut task) = self.metadata.lock() else { return };
-        if self.index_cancel.load(Ordering::Acquire) {
+        // `close` may have joined the previous worker while this thread was
+        // between its `upgrade` and its `start_metadata`; starting here would
+        // create a worker with no join owner.
+        if self.closed.load(Ordering::Acquire) || self.index_cancel.load(Ordering::Acquire) {
             return;
         }
         task.cancel_and_join();
@@ -231,6 +245,7 @@ impl Library {
         let status = Arc::new(Mutex::new(MetadataProgress {
             indexing: true,
             indexed: 0,
+            deferred: 0,
             total: 0,
             failed: 0,
             status: MetadataStatus::Indexing,
@@ -561,18 +576,6 @@ impl Library {
     /// Undo needs this rather than `set_category`: a row the classifier filled in
     /// must go back to being the classifier's, not become a manual choice with the
     /// same string.
-    pub fn restore_category(
-        &self,
-        paths: &[String],
-        category: &str,
-        subcategory: Option<&str>,
-        manual: bool,
-    ) -> AppResult<u64> {
-        Ok(self
-            .db()?
-            .restore_category_many(paths, category, subcategory, manual)?)
-    }
-
     pub fn restore_category_and_ucs(&self, states: &[EditState]) -> AppResult<u64> {
         Ok(self.db()?.restore_category_and_ucs_many(states)?)
     }
@@ -597,6 +600,12 @@ impl Library {
     }
 
     pub(crate) fn close(&self) {
+        // Set the flag *before* cancelling or joining: the index thread calls
+        // `start_metadata` through a `Weak::upgrade` when its pass ends, and
+        // without this a worker could be spawned after `close` took the slot,
+        // leaving it unjoined and still writing into the library's database file
+        // after the library was removed.
+        self.closed.store(true, Ordering::Release);
         self.index_cancel.store(true, Ordering::Release);
         self.cancel_metadata();
         // Release the slot before joining. The startup worker may be dropping
@@ -636,6 +645,7 @@ fn run_metadata_worker(
     }
     let classifier = mio_index::Classifier::new();
     let mut indexed = 0usize;
+    let mut deferred = 0usize;
     let mut failed = 0usize;
     const BATCH: usize = 5_000;
     let mut after_path: Option<String> = None;
@@ -662,9 +672,14 @@ fn run_metadata_worker(
             ) {
                 Ok(Some(metadata)) => metadata,
                 Ok(None) => {
-                    indexed += 1;
+                    // The file's fingerprint changed while the pass was running,
+                    // so this row was deliberately left alone and will be picked
+                    // up by the next base pass. It is not indexed; counting it as
+                    // such reached 100% with rows still outstanding and made
+                    // `total` and `indexed` mean different things.
+                    deferred += 1;
                     if let Ok(mut state) = status.lock() {
-                        state.indexed = indexed;
+                        state.deferred = deferred;
                     }
                     continue;
                 }
@@ -782,7 +797,14 @@ mod tests {
         let cancel = AtomicBool::new(false);
         run_metadata_worker(root, 1, &generation, &cancel, &status).unwrap();
         let first = status.into_inner().unwrap();
-        assert_eq!((first.indexed, first.total, first.failed), (3, 3, 1));
+        // One row (the changed file) is deferred, one failed, the other two
+        // indexed. The deferred row is *not* counted as indexed: it will be
+        // picked up by the next base pass, and counting it here made the bar
+        // claim it was done.
+        assert_eq!(
+            (first.indexed, first.deferred, first.total, first.failed),
+            (2, 1, 3, 1)
+        );
         assert!(db.index_version().unwrap() > base_version);
         let row = db.search(&SearchParams::new("rusty")).unwrap().pop().unwrap();
         assert_eq!(row.path, path);

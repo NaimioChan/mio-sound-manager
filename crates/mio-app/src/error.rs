@@ -31,6 +31,20 @@ pub enum AppError {
     #[error("not an audio file: {0}")]
     NotAudio(String),
 
+    /// A request that is well-formed but contradicts the data model — a CatID
+    /// with no category projection, for example. Distinct from `Internal` so the
+    /// UI can tell "you asked for something impossible" from "we broke".
+    #[error("{0}")]
+    Invalid(String),
+
+    /// A request superseded by a newer one before it ran.
+    ///
+    /// Not a failure the user should see: holding an arrow key or clicking the
+    /// waveform repeatedly cancels in-flight decodes by design. The renderer
+    /// recognises this message and drops it instead of raising a notice.
+    #[error("superseded by a newer request")]
+    Superseded,
+
     #[error("{0}")]
     Internal(String),
 }
@@ -38,6 +52,11 @@ pub enum AppError {
 impl AppError {
     pub fn internal(message: impl fmt::Display) -> Self {
         Self::Internal(message.to_string())
+    }
+
+    /// A request the data model cannot honour, phrased for the caller.
+    pub fn invalid(message: impl fmt::Display) -> Self {
+        Self::Invalid(message.to_string())
     }
 }
 

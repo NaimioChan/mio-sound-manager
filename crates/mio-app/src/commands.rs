@@ -82,6 +82,9 @@ pub struct LibraryStatus {
     pub files_written: usize,
     pub metadata_indexing: bool,
     pub metadata_indexed: usize,
+    /// Rows whose file changed during the pass and were left for the next one.
+    /// Shown separately so "indexed" never claims work that was not done.
+    pub metadata_deferred: usize,
     pub metadata_total: usize,
     pub metadata_failed: usize,
     pub metadata_status: MetadataStatus,
@@ -142,7 +145,12 @@ pub struct UcsCategoryDto {
     pub cat_id: String,
     pub category: String,
     pub subcategory: Option<String>,
-    pub projected_category: String,
+    /// The 22-category target, or `None` when this CatID is deliberately not
+    /// projected (an archive marker, compressed air, a process word, or a CatID
+    /// the corpus measurement contradicts). `None` is not `Uncategorized`: the
+    /// UI must say "not mapped" rather than offer a pick that would write a
+    /// manual Uncategorized and lock the row against the classifier.
+    pub projected_category: Option<String>,
     pub projected_subcategory: Option<String>,
     pub count: u64,
 }
@@ -360,6 +368,7 @@ pub fn library_status(library: &Library) -> AppResult<LibraryStatus> {
         files_written: progress.files_written,
         metadata_indexing: metadata.indexing,
         metadata_indexed: metadata.indexed,
+        metadata_deferred: metadata.deferred,
         metadata_total: metadata.total,
         metadata_failed: metadata.failed,
         metadata_status: metadata.status,
@@ -383,9 +392,17 @@ pub fn get_status(state: State<'_, AppState>) -> AppResult<AppStatus> {
 }
 
 /// Every output device, WASAPI endpoints and ASIO drivers alike.
+///
+/// Async + blocking worker: with `probe_asio` the ASIO half opens every installed
+/// driver, and a driver whose hardware is unplugged can block inside `ASIOInit`
+/// for seconds (`asio.rs` says so itself). On the main thread that is a frozen
+/// window before the settings dialog paints.
 #[tauri::command]
-pub fn list_audio_devices(state: State<'_, AppState>) -> Vec<AudioDeviceDto> {
-    state.list_audio_devices()
+pub async fn list_audio_devices(app: tauri::AppHandle) -> AppResult<Vec<AudioDeviceDto>> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().list_audio_devices())
+        .await
+        .map_err(|e| AppError::internal(format!("device listing task failed: {e}")))
 }
 
 /// Whether this binary was built with ASIO support.
@@ -757,16 +774,34 @@ pub async fn count_matching(app: tauri::AppHandle, request: SearchRequest) -> Ap
     .map_err(|e| AppError::internal(format!("count task failed: {e}")))?
 }
 
+/// The folder tree under the library root.
+///
+/// Async + blocking worker: it reads every row's path (280k for the reference
+/// library) and builds the tree in Rust, and the first call after each index
+/// version change does all of it. On the main thread the webview's own IPC queued
+/// behind it and the window froze while Folders was being expanded.
 #[tauri::command]
-pub fn list_folders(state: State<'_, AppState>) -> AppResult<FolderNodeDto> {
-    let library = state.library()?;
-    Ok(library.folder_tree()?.into())
+pub async fn list_folders(app: tauri::AppHandle) -> AppResult<FolderNodeDto> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let library = state.library()?;
+        Ok(library.folder_tree()?.into())
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("folder tree task failed: {e}")))?
 }
 
 /// Facet counts, favorites and total for the sidebar, in one round trip.
+///
+/// Async + blocking worker, same reason as `search`: two whole-table `GROUP BY`
+/// queries plus `summary`, which is the query whose failure emptied the sidebar.
 #[tauri::command]
-pub fn get_sidebar(state: State<'_, AppState>) -> AppResult<SidebarDto> {
-    state.sidebar()
+pub async fn get_sidebar(app: tauri::AppHandle) -> AppResult<SidebarDto> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().sidebar())
+        .await
+        .map_err(|e| AppError::internal(format!("sidebar task failed: {e}")))?
 }
 
 /// Star or unstar many sounds. One transaction, so a 200-row selection is one
@@ -798,17 +833,22 @@ pub fn list_ucs_categories(state: State<'_, AppState>) -> AppResult<Vec<UcsCateg
     Ok(mio_index::classify::UCS_CAT_ID_NATIVE
         .iter()
         .map(|(cat_id, category, subcategory)| {
+            // `None` here means "deliberately unprojected", and the DTO says so
+            // instead of inventing `Uncategorized`. The old fallback let the
+            // category dialog write `category = Uncategorized, category_manual
+            // = 1`, after which no reindex could ever correct the row.
             let projected = mio_index::classify::UCS_CAT_IDS
                 .iter()
                 .find(|(known, _, _)| known == cat_id)
-                .map(|(_, category, subcategory)| (*category, *subcategory))
-                .unwrap_or(("Uncategorized", None));
+                .map(|(_, category, subcategory)| (*category, *subcategory));
             UcsCategoryDto {
                 cat_id: (*cat_id).to_string(),
                 category: (*category).to_string(),
                 subcategory: subcategory.map(str::to_string),
-                projected_category: projected.0.to_string(),
-                projected_subcategory: projected.1.map(str::to_string),
+                projected_category: projected.map(|(category, _)| category.to_string()),
+                projected_subcategory: projected
+                    .and_then(|(_, subcategory)| subcategory)
+                    .map(str::to_string),
                 count: counts.get(*cat_id).copied().unwrap_or(0),
             }
         })
