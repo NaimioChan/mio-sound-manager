@@ -72,7 +72,12 @@ try {
   await wait((root) => document.querySelector('.row[data-path]')?.dataset.path.startsWith(`${root}\\`), root)
   await wait(async () => {
     const active = (await window.__TAURI_INTERNALS__.invoke('list_libraries')).find((library) => library.active)
-    return active && !active.indexing && !active.metadataIndexing
+    // Wait for the renderer's final metadata refresh as well as the worker.
+    // That refresh can invalidate the table even when a star edit does not.
+    const table = document.querySelector('.table')
+    return active && !active.indexing && !active.metadataIndexing &&
+      !document.querySelector('.metadata-progress') && table?.dataset.querying === 'false' &&
+      table.dataset.epoch === table.dataset.segmentsEpoch
   })
   await favorites(0)
   assert.equal(await invoke('count_matching', { request: {} }), size)
