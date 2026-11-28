@@ -31,6 +31,24 @@ import { ICON } from './icons'
  */
 export type SidebarMode = 'categories' | 'ucs' | 'folders'
 
+/**
+ * A filter applied from the details panel, asking the rail to show and reveal the
+ * row it just lit.
+ *
+ * `seq` exists because a second click on the same value changes nothing else:
+ * without it the effect would compare equal and not scroll again.
+ */
+export interface SidebarReveal {
+  seq: number
+  mode: SidebarMode
+  /** Categories tree: the category. UCS tree: the parent UCS category. */
+  category?: string
+  /** A subcategory row; its parent has to be expanded before the row exists. */
+  subcategory?: string
+  /** A folder row, by absolute path. */
+  folder?: string
+}
+
 /** Expanded folders, remembered per library root. */
 const EXPANDED_PREFIX = 'mio:folders-expanded:'
 
@@ -78,6 +96,8 @@ interface Props {
   mode: SidebarMode
   folder: string | null
   favoritesOnly: boolean
+  /** A filter clicked in the inspector: switch here and scroll the lit row into view. */
+  reveal: SidebarReveal | null
   onActivate: (root: string) => void
   /** `additive` is true when Ctrl (or Cmd) was held. */
   onCategory: (category: string | null, additive: boolean) => void
@@ -153,6 +173,89 @@ export function Sidebar(props: Props) {
     else next.add(name)
     setExpandedCats(next)
   }
+
+  /**
+   * Reveal a row the inspector just lit.
+   *
+   * The filter itself is set in `App`; the rail only has to be on the right tree
+   * and scrolled to the entry, which is what makes the click feel like it moved
+   * the user to that category or folder instead of silently changing a query. A
+   * `querySelector` rather than a map of refs: facet rows and folder nodes are
+   * generated lists whose membership changes with the index, and a ref map would
+   * have to be rebuilt on every rail render.
+   */
+  let rail: HTMLElement | undefined
+  let lastReveal = 0
+
+  const selectorValue = (value: string) => CSS.escape(value)
+
+  /** Paths above `target` in the folder tree, so its row can be drawn. */
+  function folderTrail(node: FolderNode | null, target: string, trail: string[] = []): string[] | null {
+    if (!node) return null
+    if (node.path === target) return trail
+    for (const child of node.children) {
+      const found = folderTrail(child, target, [...trail, node.path])
+      if (found) return found
+    }
+    return null
+  }
+
+  const revealRow = (target: SidebarReveal): HTMLElement | null => {
+    if (!rail) return null
+    if (target.folder !== undefined) {
+      return rail.querySelector<HTMLElement>(`.folder[data-folder="${selectorValue(target.folder)}"]`)
+    }
+    if (target.subcategory !== undefined && target.category !== undefined) {
+      return rail.querySelector<HTMLElement>(
+        `.facet.sub[data-category="${selectorValue(target.category)}"][data-subcategory="${selectorValue(
+          target.subcategory
+        )}"]`
+      )
+    }
+    if (target.category !== undefined) {
+      return rail.querySelector<HTMLElement>(
+        `.facet[data-category="${selectorValue(target.category)}"]:not(.sub)`
+      )
+    }
+    return null
+  }
+
+  createEffect(() => {
+    const target = props.reveal
+    if (!target || target.mode !== props.mode || target.seq === lastReveal) return
+    lastReveal = target.seq
+    if (
+      target.subcategory !== undefined &&
+      target.category !== undefined &&
+      !expandedCats().has(target.category)
+    ) {
+      setExpandedCats(new Set([...expandedCats(), target.category]))
+    }
+    if (target.folder !== undefined) {
+      const trail = folderTrail(props.folders, target.folder)
+      if (trail && trail.length > 0) {
+        const next = new Set(expandedFolders())
+        let changed = false
+        for (const path of trail) {
+          if (!next.has(path)) {
+            next.add(path)
+            changed = true
+          }
+        }
+        if (changed) {
+          setExpandedFolders(next)
+          saveExpanded(activeRoot(), next)
+        }
+      }
+    }
+    const seq = target.seq
+    // Expanding a category or folder above added rows in this same run; one frame
+    // lets the browser lay them out before the query looks for the target.
+    requestAnimationFrame(() => {
+      if (props.reveal?.seq !== seq) return
+      revealRow(target)?.scrollIntoView({ block: 'nearest' })
+    })
+  })
 
   /**
    * The index returns one row per `(category, subcategory)`. The rail wants
@@ -293,7 +396,7 @@ export function Sidebar(props: Props) {
   }
 
   return (
-    <aside class="sidebar" data-sidebar-mode={props.mode}>
+    <aside class="sidebar" data-sidebar-mode={props.mode} ref={(el) => (rail = el)}>
       <div class="side-modes">
         <ix-select
           id="sidebar-mode"

@@ -88,15 +88,31 @@ try {
     // outside the scrolling body stay inside the window.
     const body = await page.evaluate(() => {
       const el = document.querySelector('.table-body')
+      const table = document.querySelector('.table')
       const main = document.querySelector('.main')
+      const mainBox = main?.getBoundingClientRect()
+      const tableBox = table?.getBoundingClientRect()
       return {
         scrollWidth: el?.scrollWidth ?? 0,
         clientWidth: el?.clientWidth ?? 0,
-        mainWidth: main?.clientWidth ?? 0
+        mainRight: mainBox?.right ?? 0,
+        tableRight: tableBox?.right ?? 0
       }
     })
-    if (body.scrollWidth < body.mainWidth) {
-      problems.push(`${width}px: table is narrower than its own container (${body.scrollWidth} < ${body.mainWidth})`)
+    // The table sits inside its grid column, with the closed inspector's 26px
+    // strip to its right. Comparing the body's scrollWidth with the whole main
+    // column used to pass only because the default columns overflowed it; with
+    // the shipped column set they may not, and the strip is still reserved.
+    const stripGap = body.mainRight - body.tableRight
+    if (Math.abs(stripGap - 26) > 1) {
+      problems.push(
+        `${width}px: table right ${body.tableRight} leaves ${stripGap}px before main right ${body.mainRight}`
+      )
+    }
+    if (body.scrollWidth < body.clientWidth) {
+      problems.push(
+        `${width}px: table content is narrower than its viewport (${body.scrollWidth} < ${body.clientWidth})`
+      )
     }
     for (const [key, value] of Object.entries(long)) {
       if (key === 'dockRight' || key === 'versionRight') {

@@ -57,6 +57,20 @@ const check = (ok, label, detail = '') => {
 const rowCount = () => page.locator('.row').count()
 
 /**
+ * The shipped column set for a profile that has never touched visibility. The
+ * script cleared `mio:column-hidden` above, so this is what a new install gets:
+ * no UCS columns and no Description, in the stated order.
+ */
+const defaultHeads = await page.evaluate(() =>
+  [...document.querySelectorAll('.head-cell')].map((el) => el.dataset.sortKey)
+)
+check(
+  defaultHeads.join(',') === 'favorite,cover,filename,category,durationS,channels,bpm,sampleRate,filesize',
+  'the default columns are Cover … Size without UCS/Description',
+  defaultHeads.join(',')
+)
+
+/**
  * Drive the rail's mode select the way the search field is driven: set the host's
  * property and dispatch the event iX would. Clicking an option inside the shadow
  * root needs the list to open and scroll first, which is flaky on CI machines.
@@ -699,11 +713,16 @@ await page.evaluate(() => {
 await page.waitForTimeout(500)
 const hiddenNow = await page.evaluate(() => ({
   heads: document.querySelectorAll('.head-cell[data-sort-key="bpm"]').length,
+  visibleHeads: document.querySelectorAll('.head-cell').length,
   cells: document.querySelector('.row[data-path]')?.querySelectorAll('.cell').length ?? 0,
   stored: localStorage.getItem('mio:column-hidden')
 }))
 check(hiddenNow.heads === 0, 'unchecking BPM removes its header')
-check(hiddenNow.cells === 11, 'and its cell from every row', String(hiddenNow.cells))
+check(
+  hiddenNow.cells === hiddenNow.visibleHeads,
+  'and its cell from every row',
+  `${hiddenNow.cells} cells / ${hiddenNow.visibleHeads} headers`
+)
 check(
   typeof hiddenNow.stored === 'string' && hiddenNow.stored.includes('bpm'),
   'the hidden set is stored',
@@ -758,7 +777,11 @@ check(
   'the last entry opens column settings',
   headerMenu.ids.join(',')
 )
-check(headerMenu.checked === 12, 'every visible column is ticked', String(headerMenu.checked))
+check(
+  headerMenu.checked === 9,
+  'every visible column is ticked (UCS and Description start hidden)',
+  String(headerMenu.checked)
+)
 
 // Clicking a column entry toggles it and closes the menu.
 await page.locator('.menu-item[data-menu-id="column-bpm"]').click()

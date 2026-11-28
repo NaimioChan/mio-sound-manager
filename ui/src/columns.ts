@@ -57,8 +57,8 @@ export const COLUMNS: Column[] = [
   { key: 'ucsCategory', label: () => t('col.ucsCategory'), defaultWidth: 92, minWidth: 56, resizable: true },
   { key: 'ucsSubcategory', label: () => t('col.ucsSubcategory'), defaultWidth: 104, minWidth: 64, resizable: true },
   { key: 'durationS', label: () => t('col.length'), defaultWidth: 74, minWidth: 56, numeric: true, resizable: true },
-  { key: 'bpm', label: () => t('col.bpm'), defaultWidth: 52, minWidth: 44, numeric: true, resizable: true },
   { key: 'channels', label: () => t('col.channels'), defaultWidth: 46, minWidth: 44, resizable: true },
+  { key: 'bpm', label: () => t('col.bpm'), defaultWidth: 52, minWidth: 44, numeric: true, resizable: true },
   { key: 'sampleRate', label: () => t('col.rate'), defaultWidth: 62, minWidth: 48, numeric: true, resizable: true },
   { key: 'filesize', label: () => t('col.size'), defaultWidth: 70, minWidth: 56, numeric: true, resizable: true },
   { key: 'description', label: () => t('col.description'), defaultWidth: 156, minWidth: 80, resizable: true }
@@ -160,28 +160,41 @@ function loadColumnOrder(): SortKey[] {
 /**
  * Hidden columns. The star and the filename are never hidden: a list with no name
  * column is a list of numbers.
+ *
+ * On a profile that has never touched column visibility the shipped view is
+ * Cover / Name / Category / Length / Ch / BPM / Rate / Size. The UCS columns and
+ * the description are still available from the header menu and Settings, but as
+ * defaults they take width away from the columns a sample hunt actually reads.
+ * A stored array — including an empty one — is the user's own arrangement and
+ * wins over these defaults.
  */
+const DEFAULT_HIDDEN: SortKey[] = ['ucsCategory', 'ucsSubcategory', 'description']
+
 function loadHidden(): Set<SortKey> {
-  const hidden = new Set<SortKey>()
+  const defaults = () => new Set<SortKey>(DEFAULT_HIDDEN)
   try {
     const raw = localStorage.getItem(HIDDEN_KEY)
-    if (raw) {
+    if (raw !== null) {
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) {
+        const hidden = new Set<SortKey>()
         for (const key of parsed) {
           if (ALL_KEYS.includes(key as SortKey) && !PINNED_KEYS.has(key as SortKey)) {
             hidden.add(key as SortKey)
           }
         }
+        return hidden
       }
-      return hidden
+      // A corrupt value costs the arrangement, not the list.
+      return defaults()
     }
   } catch {
-    return hidden
+    return defaults()
   }
   // The old build had one switch for the category column. A profile that had it
   // off should open with the column hidden, and the stale key is written out the
   // next time the settings dialog saves.
+  const hidden = defaults()
   try {
     const raw = localStorage.getItem(SETTINGS_KEY)
     const parsed = raw ? (JSON.parse(raw) as { showCategory?: unknown }) : null

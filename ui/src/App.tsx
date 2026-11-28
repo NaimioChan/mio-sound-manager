@@ -30,7 +30,7 @@ import {
   type SortKey
 } from './columns'
 import { WaveformDock, type Region } from './WaveformDock'
-import { Sidebar, type SidebarMode } from './Sidebar'
+import { Sidebar, type SidebarMode, type SidebarReveal } from './Sidebar'
 import { Inspector } from './Inspector'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
@@ -257,6 +257,14 @@ export function App() {
   const [folder, setFolder] = createSignal<string | null>(null)
   const [favoritesOnly, setFavoritesOnly] = createSignal(false)
   const [sidebarMode, setSidebarMode] = createSignal<SidebarMode>(loadSidebarMode())
+  /**
+   * A filter clicked in the details panel, for the rail to reveal.
+   *
+   * `seq` is bumped per click so a second click on the same value scrolls again;
+   * without it the rail would see an equal value and skip the scroll.
+   */
+  const [sidebarReveal, setSidebarReveal] = createSignal<SidebarReveal | null>(null)
+  let sidebarRevealSeq = 0
 
   /**
    * The channel-count, sample-rate, tempo and exact-cover filters.
@@ -1158,10 +1166,27 @@ export function App() {
     void runSearch()
   }
 
+  /**
+   * Point the rail at the tree the inspector just filtered by.
+   *
+   * Deliberately not `changeSidebarMode`: that helper clears every filter that
+   * belonged to the tree being left, which would undo the click that asked for
+   * the reveal. The callers have already reset the search, so only the stored
+   * mode has to follow.
+   */
+  const revealInSidebar = (mode: SidebarMode, target: Omit<SidebarReveal, 'seq' | 'mode'>) => {
+    if (sidebarMode() !== mode) {
+      setSidebarMode(mode)
+      localStorage.setItem(SIDEBAR_MODE_KEY, mode)
+    }
+    setSidebarReveal({ seq: ++sidebarRevealSeq, mode, ...target })
+  }
+
   /** A filter that replaces the whole search: clear, set one thing, one query. */
   const showCategoryExclusive = (category: string) => {
     clearSearchState()
     setCategories([category])
+    revealInSidebar('categories', { category })
     void runSearch()
   }
 
@@ -1169,12 +1194,14 @@ export function App() {
     clearSearchState()
     setCategories([category])
     setSubcategories([{ category, sub }])
+    revealInSidebar('categories', { category, subcategory: sub })
     void runSearch()
   }
 
   const showUcsCategoryExclusive = (category: string) => {
     clearSearchState()
     setUcsCategories([category])
+    revealInSidebar('ucs', { category })
     void runSearch()
   }
 
@@ -1182,6 +1209,7 @@ export function App() {
     clearSearchState()
     setUcsCategories([category])
     setUcsSubcategories([{ category, sub }])
+    revealInSidebar('ucs', { category, subcategory: sub })
     void runSearch()
   }
 
@@ -1201,6 +1229,7 @@ export function App() {
   const showFolderExclusive = (absolute: string | null) => {
     clearSearchState()
     setFolder(absolute)
+    if (absolute !== null) revealInSidebar('folders', { folder: absolute })
     void runSearch()
   }
 
@@ -2030,6 +2059,7 @@ export function App() {
             mode={sidebarMode()}
             folder={folder()}
             favoritesOnly={favoritesOnly()}
+            reveal={sidebarReveal()}
             onActivate={(root) => void switchLibrary(root)}
             onCategory={toggleCategory}
             onSubcategory={toggleSubcategory}

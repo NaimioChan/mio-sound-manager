@@ -43,8 +43,7 @@ export const zh: Record<MessageKey, string> = {
 
   'empty.backendError': '后端错误',
   'empty.noLibrary': '未打开任何库',
-  'empty.body':
-    '指向一个存放采样的文件夹。首次索引会扫描其中每个文件，28 万个文件约需一分钟，之后只需几秒。',
+  'empty.body': '选择你的采样文件夹。首次索引所需时间略久，请耐心等待。',
   'empty.open': '打开库…',
 
   'status.noDevice': '音频设备不可用',

@@ -125,9 +125,38 @@ try {
           channels: 2,
           sampleFormat: 'F32',
         },
-        get_sidebar: { facets: [], ucsFacets: [], favorites: 1, total: rows.length },
+        get_sidebar: {
+          facets: [
+            { category: 'Foley', subcategory: 'Doors', count: 1 },
+            { category: 'Ambience', subcategory: null, count: 1 },
+            { category: 'Weapons', subcategory: null, count: 1 },
+          ],
+          ucsFacets: [{ category: 'MECHANICAL', subcategory: 'DOORS', count: 1 }],
+          favorites: 1,
+          total: rows.length,
+        },
         get_summary: { favorites: 1, total: rows.length },
-        list_folders: { path: root, name: 'inspector-fixture', count: rows.length, children: [] },
+        list_folders: {
+          path: root,
+          name: 'inspector-fixture',
+          count: rows.length,
+          children: [
+            // Enough siblings that Pack_1 starts below the rail's viewport: the
+            // inspector's folder click then has to scroll, not just switch modes.
+            ...Array.from({ length: 40 }, (_, i) => ({
+              path: `${root}\\Filler_${i}`,
+              name: `Filler_${i}`,
+              count: 1,
+              children: [],
+            })),
+            ...['Pack_1', 'Pack_2', 'Pack_3'].map((name) => ({
+              path: `${root}\\${name}`,
+              name,
+              count: 1,
+              children: [],
+            })),
+          ],
+        },
         list_ucs_categories: [],
         get_history: {},
         count_matching: rows.length,
@@ -216,16 +245,65 @@ try {
     await page.waitForTimeout(120)
   }
 
+  /**
+   * The rail's mode and lit rows. An inspector filter is supposed to move the
+   * rail to the matching tree and light the entry there, so this is the state
+   * those clicks have to leave behind.
+   */
+  const sidebarState = () =>
+    page.evaluate(() => ({
+      mode: document.querySelector('.sidebar')?.getAttribute('data-sidebar-mode') ?? '',
+      facets: [...document.querySelectorAll('.facet.selected')].map(
+        (el) => el.getAttribute('data-category') ?? ''
+      ),
+      folders: [...document.querySelectorAll('.folder.selected')].map(
+        (el) => el.getAttribute('data-folder') ?? ''
+      ),
+    }))
+
   // --- closed by default: only the strip
+  if (isUrl) {
+    // The fixture browser starts with an empty profile, so this is the shipped
+    // column set rather than one the user arranged.
+    const defaultHeads = await page.evaluate(() =>
+      [...document.querySelectorAll('.head-cell')].map((el) => el.dataset.sortKey)
+    )
+    check(
+      defaultHeads.join(',') ===
+        'favorite,cover,filename,category,durationS,channels,bpm,sampleRate,filesize',
+      'a fresh profile shows Cover … Size without UCS/Description',
+      defaultHeads.join(',')
+    )
+  }
   check((await page.locator('.inspector-strip').count()) === 1, 'the inspector starts closed')
   check((await page.locator('.inspector').count()) === 0, 'a closed inspector renders no panel')
   const strip = await page.locator('.inspector-strip').evaluate((el) => {
     const r = el.getBoundingClientRect()
-    return { width: r.width, writing: getComputedStyle(el).writingMode, expanded: el.getAttribute('aria-expanded') }
+    return {
+      width: r.width,
+      writing: getComputedStyle(el).writingMode,
+      expanded: el.getAttribute('aria-expanded'),
+      children: [...el.children].map((child) => {
+        const box = child.getBoundingClientRect()
+        return { tag: child.tagName.toLowerCase(), top: box.top, height: box.height }
+      })
+    }
   })
   check(strip.width === 26, 'the strip is 26px wide', `${strip.width}`)
   check(strip.writing.startsWith('vertical'), 'the strip text is vertical', strip.writing)
   check(strip.expanded === 'false', 'the closed strip announces aria-expanded=false')
+  const [topChevron, label, bottomChevron] = strip.children
+  check(
+    topChevron?.tag === 'ix-icon' &&
+      label?.tag === 'span' &&
+      bottomChevron?.tag === 'ix-icon' &&
+      topChevron.height > 0 &&
+      bottomChevron.height > 0 &&
+      topChevron.top < label.top &&
+      bottomChevron.top > label.top,
+    'a chevron sits above and below the label',
+    JSON.stringify(strip.children)
+  )
 
   // --- open it
   await page.locator('.inspector-strip').click()
@@ -287,6 +365,17 @@ try {
   const categoryText = await categoryRow.locator('.inspector-value').textContent()
   await categoryRow.locator('.inspector-value').click()
   await waitQuery()
+  const categoryRail = await sidebarState()
+  check(
+    categoryRail.mode === 'categories',
+    'a category click switches the rail to Categories',
+    categoryRail.mode
+  )
+  check(
+    categoryRail.facets.includes((categoryText ?? '').trim()),
+    'the rail lights the clicked category',
+    JSON.stringify(categoryRail.facets)
+  )
   const afterCategory = await lastRequest()
   if (isUrl) {
     check(
@@ -312,6 +401,33 @@ try {
   const folderRow = page.locator('.inspector-row').filter({ hasText: 'FOLDER' }).first()
   await folderRow.locator('.inspector-value').click()
   await waitQuery()
+  const folderRail = await sidebarState()
+  check(folderRail.mode === 'folders', 'a folder click switches the rail to Folders', folderRail.mode)
+  check(
+    folderRail.folders.some((path) => path.endsWith(firstFolder)),
+    'the rail lights the clicked folder',
+    JSON.stringify(folderRail.folders)
+  )
+  if (isUrl) {
+    // The fixture puts Pack_1 below 40 sibling folders, so switching modes alone
+    // would leave the lit row outside the rail's viewport.
+    const railScroll = await page.evaluate(() => {
+      const list = document.querySelector('.side-section.grow')
+      const row = document.querySelector('.folder.selected')
+      if (!list || !row) return { top: 0, visible: false }
+      const listBox = list.getBoundingClientRect()
+      const rowBox = row.getBoundingClientRect()
+      return {
+        top: list.scrollTop,
+        visible: rowBox.top >= listBox.top - 1 && rowBox.bottom <= listBox.bottom + 1,
+      }
+    })
+    check(
+      railScroll.top > 0 && railScroll.visible,
+      'the rail scrolled the clicked folder into view',
+      JSON.stringify(railScroll)
+    )
+  }
   const afterFolder = await lastRequest()
   if (isUrl) {
     check(
@@ -340,6 +456,22 @@ try {
       'copying the path shows the notice'
     )
   }
+
+  // --- UCS category: same exclusive filter, on the UCS tree
+  const ucsCategoryRow = page
+    .locator('.inspector-row')
+    .filter({ has: page.locator('.inspector-label', { hasText: /^UCS$/ }) })
+    .first()
+  const ucsText = (await ucsCategoryRow.locator('.inspector-value').textContent())?.trim() ?? ''
+  await ucsCategoryRow.locator('.inspector-value').click()
+  await waitQuery()
+  const ucsRail = await sidebarState()
+  check(ucsRail.mode === 'ucs', 'a UCS category click switches the rail to UCS', ucsRail.mode)
+  check(
+    ucsRail.facets.includes(ucsText),
+    'the rail lights the clicked UCS category',
+    JSON.stringify(ucsRail.facets)
+  )
 
   // --- channels: appends to the other filters and toggles off on a second click
   const channelRow = page.locator('.inspector-row').filter({ hasText: 'CHANNELS' }).first()

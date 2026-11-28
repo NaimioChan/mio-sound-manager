@@ -45,9 +45,10 @@ try {
   await page.evaluate(() => localStorage.setItem('mio:locale', 'zh'))
   // This script assumes every column is visible to index header cells by key
   // position; a hidden column from an earlier run would make the failures look
-  // like an index bug.
+  // like an index bug. An explicit empty hidden set says "show all", which the
+  // shipped profile no longer does by default (UCS and Description are hidden).
   await page.evaluate(() => {
-    localStorage.removeItem('mio:column-hidden')
+    localStorage.setItem('mio:column-hidden', '[]')
     localStorage.removeItem('mio:column-widths')
     localStorage.removeItem('mio:column-order')
     // The inspector is a layout column; an open one narrows the table and moves

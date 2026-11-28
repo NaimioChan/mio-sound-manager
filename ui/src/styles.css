@@ -805,6 +805,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   width: 26px;
   padding: 8px 0;
   border-left: 1px solid var(--theme-color-3);
@@ -819,6 +820,17 @@ button {
 .inspector-strip:hover {
   color: var(--theme-color-std-text);
   background: var(--theme-color-ghost--hover);
+}
+
+/* The chevrons sit at the strip's two ends because it is written vertically:
+   they bracket the label and point at the panel's opening direction. Muted until
+   hovered, like the closed strip itself. */
+.inspector-strip ix-icon {
+  opacity: 0.6;
+}
+
+.inspector-strip:hover ix-icon {
+  opacity: 1;
 }
 
 .inspector-strip:focus-visible {

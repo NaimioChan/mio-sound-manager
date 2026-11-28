@@ -21,6 +21,7 @@
 // into `src/assets/icons/` and import it below. A name with no entry here is a
 // compile error rather than a blank square.
 
+import chevronLeft from './assets/icons/chevron-left.svg?raw'
 import chevronRight from './assets/icons/chevron-right.svg?raw'
 import cogwheel from './assets/icons/cogwheel.svg?raw'
 import database from './assets/icons/database.svg?raw'
@@ -60,6 +61,7 @@ export const ICON = {
   redo: asDataUrl(redo),
   database: asDataUrl(database),
   error: asDataUrl(error),
+  chevronLeft: asDataUrl(chevronLeft),
   chevronRight: asDataUrl(chevronRight)
 } as const
 

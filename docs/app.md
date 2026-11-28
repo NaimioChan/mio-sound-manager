@@ -190,7 +190,7 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 **排序名和行字段名是两套。** 渲染层按行字段排序（`durationS`、`sampleRate`），索引层白名单用的是 SQL 列名（`duration`、`sample_rate`）。`SORT_WIRE`（`ui/src/columns.ts`）是唯一做这个翻译的地方。第一版把行字段名直接当 `sortBy` 发出去，`search` 报 `unknown sort column durationS`；而且因为失败那次之后排序值没变，后续每次搜索都带着同一个坏名字，于是点一次 Length 之后分类和文件夹筛选也一起失效——直到用户改去点 Name。
 
-**列宽可拖、列可显隐、宽表横向滚动。** 列定义、顺序、显隐与宽度只有一个拥有者：`ui/src/columns.ts`（`SortKey`、`COLUMNS`、`SORT_WIRE`、`DEFAULT_DIR` 都在那里，`SoundTable` 不再导出）。表头、骨架行、真实行三处用同一个 `gridTemplate()`，并且**全部是像素轨道**——`fr` 会随窗口重算，用户拖出来的宽度换一个窗口尺寸就变成另一个值。代价是窗口收窄或界面缩放时会出现横向滚动条，这是有意的取舍（Explorer 同理），不要为了消灭滚动条把 `fr` 加回来。宽度存 `mio:column-widths`、显隐存 `mio:column-hidden`、顺序存 `mio:column-order`，各自容错、各自整体替换（原地改 `Set` / 对象不会触发 Solid 通知）。表头每列右侧有 5px 的 `.head-resize` 把手：拖动时窗口级监听、`pointercancel` 也收尾、`pointerup` 时落盘；拖宽期间必须把表头的 `draggable` 关掉（把手是排序按钮的子元素，不关就会把拖宽变成拖列序），松手后还要吞掉一次 click（否则顺手排了个序）。双击把手恢复默认宽。隐藏排序列时回退到 Name 排序，否则列表按一个看不见的列排序、箭头也消失。设置页的 Columns 一节与表头右键菜单都能切换显隐；`favorite` / `filename` 不可隐藏、不可拖、不可缩放。
+**列宽可拖、列可显隐、宽表横向滚动。** 列定义、顺序、显隐与宽度只有一个拥有者：`ui/src/columns.ts`（`SortKey`、`COLUMNS`、`SORT_WIRE`、`DEFAULT_DIR` 都在那里，`SoundTable` 不再导出）。**新 profile 默认显示 Cover / Name / Category / Length / Ch / BPM / Rate / Size**：UCS 两列与 Description 仍可从表头菜单和设置打开，但它们占的是采样浏览最常读的列宽；`mio:column-hidden` 里已有数组（包括空数组）时以用户自己的排列为准。表头、骨架行、真实行三处用同一个 `gridTemplate()`，并且**全部是像素轨道**——`fr` 会随窗口重算，用户拖出来的宽度换一个窗口尺寸就变成另一个值。代价是窗口收窄或界面缩放时会出现横向滚动条，这是有意的取舍（Explorer 同理），不要为了消灭滚动条把 `fr` 加回来。宽度存 `mio:column-widths`、显隐存 `mio:column-hidden`、顺序存 `mio:column-order`，各自容错、各自整体替换（原地改 `Set` / 对象不会触发 Solid 通知）。表头每列右侧有 5px 的 `.head-resize` 把手：拖动时窗口级监听、`pointercancel` 也收尾、`pointerup` 时落盘；拖宽期间必须把表头的 `draggable` 关掉（把手是排序按钮的子元素，不关就会把拖宽变成拖列序），松手后还要吞掉一次 click（否则顺手排了个序）。双击把手恢复默认宽。隐藏排序列时回退到 Name 排序，否则列表按一个看不见的列排序、箭头也消失。设置页的 Columns 一节与表头右键菜单都能切换显隐；`favorite` / `filename` 不可隐藏、不可拖、不可缩放。
 
 **横向滚动时表头被 `translateX` 平移跟随，不做 `sticky`。** 表头在滚动容器之外，`sticky` 会让它占掉 28px 滚动内容高度，于是 `viewportSegments`、`scrollToRow`、spacer 高度全部要改；包装层（`.table-head-wrap` 裁切 + 表头 `translateX(-scrollLeft)`）只多一个平移量。表头宽 `max(totalWidth, 100% - scrollbar)`，行的占位 div 用同一个 `min-width`，所以溢出与否两边右边界都对得上——`check-layout` 会在 `scrollLeft=120` 时再断言一次，因为不滚动的表头在偏移 0 处看不出问题。
 
@@ -320,7 +320,7 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 主面板右侧一个可折叠的 Inspector：`main-head / main-body（SoundTable + Inspector）/ WaveformDock`。
 
-**关闭时只渲染 26px 的竖排窄条。** 它是个 `button`，不是装饰：面板关掉之后，那是唯一回到面板的路。打开后窄条消失，面板头上有收起按钮，`aria-expanded` / `aria-controls` 两侧都写对。宽度默认 300、夹在 240–480 之间，左边缘可拖；`mio:inspector-open` / `mio:inspector-width` 各存一份。
+**关闭时只渲染 26px 的竖排窄条。** 它是个 `button`，不是装饰：面板关掉之后，那是唯一回到面板的路。竖排标题的上下各有一个朝左的小尖号，指向面板拉出的方向；只有一个会被读成滚动箭头。打开后窄条消失，面板头上有收起按钮，`aria-expanded` / `aria-controls` 两侧都写对。宽度默认 300、夹在 240–480 之间，左边缘可拖；`mio:inspector-open` / `mio:inspector-width` 各存一份。
 
 **它是布局列，不是 overlay。** 所以表格变窄走 CSS grid + `ResizeObserver`，不重查、不重建 segment。窄窗口里 `max-width: min(480px, 30vw)`，否则 600px 窗口会被面板吃掉一半。
 
@@ -329,6 +329,7 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 - **TEXT 追加**：文件名（去扩展名的 stem）、description、`matchedTerms`、可搜索的原始标签值 → 加进当前查询词，保留已有词与过滤器。值里没有字母数字就不做（会生成空 FTS 查询）；大小写不敏感去重。
 - **清空后应用**：分类/子类、UCS 分类/子类/CatID、文件夹、封面 → 先 `clearSearchState()`（一次状态重置，**不在这里查询**），再设目标值，最后只调一次 `runSearch()`。这里刻意不复用侧栏的 `toggleCategory` / `setFolderFilter`：它们各自清不同的邻居（那是一次点击侧栏行的含义），拼起来会丢掉这次点击没提到的过滤器，而且每步查一遍。
 - **文件夹是绝对路径**：`SoundRow.folder` 相对库根，后端过滤比较的是绝对路径区间；点击时从 `path` 取目录，不能用相对值。
+- **侧栏跟着走**：分类/子分类/UCS/文件夹的点击把侧栏切到对应的树，并滚动到刚点亮的那一行（`SidebarReveal`，`seq` 让同一个值再点一次也会重新滚）。这里**不**走 `changeSidebarMode`——那个函数会清掉离开那棵树时的筛选，等于撤销这次点击。CatID 不参与：它没有对应的树行，筛选状态由 chip 表达。
 - **数值**（声道 / 采样率 / BPM）追加：每个字段一个值，点不同值替换、点同值取消，其他过滤器不动。**完整路径、时长、大小只复制**，不改变搜索。
 - **`active` 在 `clearSearchState` 里保留**：被点的文件按定义就在新结果里，清掉会让面板在用户正看着的那一行上消失。
 

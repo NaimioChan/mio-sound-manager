@@ -14,6 +14,16 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 ## 当前占用
 
+## 2026-11-28 19:57 · opencode · 欢迎页文案、详情引导、默认列与侧栏同步
+
+- 改：未开库欢迎页正文三语改为「选择你的采样文件夹。首次索引所需时间略久，请耐心等待。」（en/ja 同步，删掉 28 万文件约一分钟的旧说法）。详情面板关闭后的 26px 竖排窄条，在标题上下各加一个朝左的 `chevron-left`（新增图标资源与 `ICON.chevronLeft`），窄条 vertical-rl 的行轴让它们落在上下两端。
+- 改：`columns.ts` 的新 profile 默认显隐为 `cover / filename / category / durationS / channels / bpm / sampleRate / filesize`，即 UCS 两列与 Description 默认隐藏；列顺序把 Ch 放到 BPM 前。`mio:column-hidden` 已有数组（含空数组）时以用户自己的排列为准，旧 `showCategory` 迁移仍保留。`COLUMNS` 总数仍是 12，设置页 12 个复选框不变。
+- 改：详情面板的分类/子分类/UCS/子分类/文件夹点击现在同步侧栏：切到对应的 Categories/UCS/Folders 树并 `scrollIntoView` 到刚点亮的那一行（`SidebarReveal` + `seq`，子分类自动展开父组，文件夹自动展开祖先并持久化展开集）。`App.revealInSidebar` 不调用 `changeSidebarMode`，因为后者会清掉当前树的筛选、等于撤销这次点击。CatID 不参与（没有对应树行）。
+- 验证：`ui && npm run build` 通过；`check-i18n` 282×3 通过；`node tools/check-inspector.mjs http://127.0.0.1:1420` 全部通过（新增：窄条上下尖号的实际布局、新 profile 的默认列、分类/文件夹/UCS 点击后的侧栏 mode+点亮+滚动）。`check-responsive-layout` 在默认列不再撑满 1280 窗口后修正了它的容器比较（改为「表格右缘 = 主区右缘 − 26px 窄条」）并复跑通过。
+- 构建：`./tools/build-app.sh`（ASIO，SDK + libclang 检查通过）产出 `target/release/mio-sound-manager.exe`；`tauri build --features asio --bundles nsis` 产出 `target/release/bundle/nsis/Mio Sound Manager_0.3.0_x64-setup.exe`（4.76 MiB）。
+- 未跑：`check-tags` / `check-inspector-live` / `check-indexing-feedback` 需要重新打包的桌面窗口或真实库，本轮只按新默认列更新了它们的断言（默认列、隐藏 BPM 后的 cell 数、表头菜单勾选数、`mio:column-hidden='[]'` 表示全显），未实际执行。
+- 注意：#4 按「左侧=侧栏树」实现。若原意是让中间的**声音列表**滚到当前行，那需要后端返回当前查询下某 path 的 rank；现有 `SidebarReveal` 不覆盖这个语义。
+
 ## 2026-11-28 09:20 · opencode · 详情面板、封面索引与原始标签
 
 - 改：`docs/details-panel-todo.md` 的 Phase 1–4 落地。前端新增 `ui/src/Inspector.tsx`（右侧可折叠面板，窄条 toggle、宽度持久化与拖动）、`ui/src/format.ts`（表格/面板共用格式化）、表格封面列（`columns.ts` 新 `cover`、旧 profile 一次性插入到星标后、`CoverCell` 与可见行批量缩略图、隐藏列零请求）；`App.tsx` 新增 `addQueryTerm` / `clearSearchState` 与分类/UCS/文件夹/封面/声道/采样率/BPM 专用 helper，点击语义只在 App 一处拥有。

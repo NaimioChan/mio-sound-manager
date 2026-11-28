@@ -304,7 +304,12 @@ export function Inspector(props: InspectorProps) {
           title={t('inspector.open')}
           onClick={() => props.onOpen()}
         >
+          {/* The strip is vertical, so a chevron above and below the title reads as
+              "this panel pulls out to the left". One at the far end only would look
+              like a scroll arrow. */}
+          <ix-icon name={ICON.chevronLeft} size="12" />
           <span>{t('inspector.title')}</span>
+          <ix-icon name={ICON.chevronLeft} size="12" />
         </button>
       }
     >

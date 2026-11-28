@@ -80,10 +80,12 @@ check(
 const grips = await page.evaluate(
   () => document.querySelectorAll('.head-cell .head-resize').length
 )
-// The star and the cover column are fixed; every other column carries a grip.
-// Written as a lower bound with the cover column asserted separately, so adding
-// another fixed column is a visible decision here rather than a silent failure.
-check(grips >= 10, 'every resizable column carries a resize grip', String(grips))
+// The star and the cover column are fixed; every other visible column carries a
+// grip. UCS and Description start hidden, so a fresh shipped profile shows seven
+// resizable columns. Written as a lower bound with the cover column asserted
+// separately, so adding another fixed column is a visible decision here rather
+// than a silent failure.
+check(grips >= 7, 'every resizable column carries a resize grip', String(grips))
 check(
   (await page.evaluate(() => document.querySelectorAll('.head-cell[data-sort-key="cover"]').length)) === 1,
   'the cover column shipped',

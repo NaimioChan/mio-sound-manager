@@ -43,7 +43,7 @@ export const en = {
   'empty.backendError': 'Backend error',
   'empty.noLibrary': 'No library open',
   'empty.body':
-    'Point Mio at a folder of samples. The first pass indexes every file it finds, which takes about a minute for 280k files and a few seconds after that.',
+    'Choose your samples folder. The first index takes a little longer, so please be patient.',
   'empty.open': 'Open library…',
 
   // --------------------------------------------------------------- status bar
