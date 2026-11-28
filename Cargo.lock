@@ -2445,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "mio-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "image",
  "log",
@@ -2465,7 +2465,7 @@ dependencies = [
 
 [[package]]
 name = "mio-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "mio-engine",
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "mio-engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arc-swap",
  "asio-sys",
@@ -2493,7 +2493,7 @@ dependencies = [
 
 [[package]]
 name = "mio-index"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aho-corasick",
  "log",

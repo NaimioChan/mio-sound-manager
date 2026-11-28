@@ -137,7 +137,7 @@ check(
 // returns the string compiled in from `tauri.conf.json`, so a build made before the
 // version bump fails here instead of shipping under the wrong number.
 const version = await invoke('plugin:app|version')
-check(version === '0.3.0', 'the shipped binary reports 0.3.0', String(version))
+check(version === '0.3.1', 'the shipped binary reports 0.3.1', String(version))
 
 // The colour scheme, which is what this release changed. Asserting the applied
 // default rather than the picker's contents: a build with the old `classic-*`

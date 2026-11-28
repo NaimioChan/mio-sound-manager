@@ -14,6 +14,12 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 
 ## 当前占用
 
+## 2026-11-28 21:00 · antigravity · 打包并发布 v0.3.1
+
+- 改：同步 `Cargo.toml` / `Cargo.lock`、`crates/mio-app/tauri.conf.json`、`tools/check-shipped.mjs` 版本号至 `0.3.1`，构建含 ASIO 的 Windows x64 NSIS 安装包（4.76 MiB）。
+- 验证：`(cd ui && npm run build)` 与 `check-i18n.mjs`（282×3）通过；静默安装覆盖升级后，装机版 `check-shipped.mjs` 21 项全过（含 `0.3.1`、ASIO 编入、cover 列、inspector、`get_cover_thumbnails`）。未重跑 Rust 全量测试（本轮仅改版本号）。
+- 发布：以审阅通过的说明更新 `v0.3.1` 预发布草稿目标至发版提交，上传 `Mio-Sound-Manager_0.3.1_x64-setup.exe`、`LICENSE` 与 `THIRD-PARTY-NOTICES.md` 并核对 SHA-256 一致后发布。
+
 ## 2026-11-28 19:57 · opencode · 欢迎页文案、详情引导、默认列与侧栏同步
 
 - 改：未开库欢迎页正文三语改为「选择你的采样文件夹。首次索引所需时间略久，请耐心等待。」（en/ja 同步，删掉 28 万文件约一分钟的旧说法）。详情面板关闭后的 26px 竖排窄条，在标题上下各加一个朝左的 `chevron-left`（新增图标资源与 `ICON.chevronLeft`），窄条 vertical-rl 的行轴让它们落在上下两端。
