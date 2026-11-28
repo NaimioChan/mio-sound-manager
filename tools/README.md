@@ -87,11 +87,29 @@ node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐（�
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/check-tags.mjs           # 侧栏模式下拉/旧键迁移、列宽拖动与显隐、表头菜单、横向滚动、库头无三角、BPM 列、tag 多选、无副标题
 node tools/check-favorite.mjs       # 星标不重查（epoch 不变、无骨架、无 searching）、字形延迟、侧栏计数、undo、收藏过滤下必须重查
+node tools/check-inspector.mjs      # 详情面板布局/宽度/点击语义；封面列、批量缩略图、隐藏列零请求（加 http://localhost:1420 时也测 inspect_sound）
+node tools/check-inspector-live.mjs # 真实文件：内嵌/sidecar 封面、48px 缩略图、512px 面板图、四源标签、标签与封面点击
 node tools/check-shipped.mjs [port] # 打包产物：版本、ASIO、设备、新控件（跑解压出来的 exe）
 node tools/check-stress.mjs [port]  # 压力测试：仅在前后端数据结构/算法有破坏性改动时运行
 node tools/shot.mjs [out.png]       # 截图
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 ```
+
+**`check-inspector*` 需要一个有封面也有标签的小库**，自己造，不要拿真实库做开发性的 details pass：
+
+```bash
+python tools/make-inspector-fixture.py C:\Users\Naimio\AppData\Local\Temp\mio-inspector-lib
+```
+
+19 个文件：一个带 bext + iXML + LIST + ID3（内嵌 PNG 封面）的 WAV、一组共用 sidecar `cover.png`
+的 WAV、若干无封面 WAV，其中两个文件名带 BPM、每个文件 5 秒。会话指向它之后窗口会自己跑一次
+details pass（19/19 约 54ms）。`check-scroll-deep.mjs` 需要真实 28 万行库，这个 fixture 会让它以
+退出码 2 结束。
+
+**`check-inspector.mjs` 的两种模式。** 不带参数时它连 9223 的真实窗口，只做布局与点击语义（通过
+query chip、filter chip 判断一次点击实际改了什么）；传 `http://localhost:1420` 时它用注入的 IPC
+fixture 自己开一个 Vite 页面，因此能直接读 `search` 的 payload、`inspect_sound` 的标签和
+`get_cover_thumbnails` 的 key 集合。要测封面列与批量请求就传 URL。
 
 常规 `check-*.mjs` 都以退出码表示结果，可以串起来跑。它们互不干扰（每个都先 `reload()`），
 顺序任意。需要驱动窗口的检查会断言英文文案，所以开头会把 `mio:locale` 固定成 `en`——在中文

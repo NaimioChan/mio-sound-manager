@@ -40,6 +40,26 @@ const invoke = (cmd, args) =>
     [cmd, args ?? null]
   )
 
+/**
+ * The profile's settings blob, restored at the end.
+ *
+ * The region checks need AUTO PLAY on (a row click is what loads the clip), and a
+ * previous run may have left it off. Turning it on and leaving it on would change
+ * what the next person's click does, so the blob is snapshotted here and put back
+ * on the way out.
+ */
+const SETTINGS_KEY = 'mio:settings'
+const settingsSnapshot = await page.evaluate((key) => localStorage.getItem(key), SETTINGS_KEY)
+const restoreSettings = async () => {
+  await page.evaluate(
+    ([key, value]) => {
+      if (value === null) localStorage.removeItem(key)
+      else localStorage.setItem(key, value)
+    },
+    [SETTINGS_KEY, settingsSnapshot]
+  )
+}
+
 // --- 1. drag-out: the row must be a real drag source
 await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
 await page.reload()
@@ -110,8 +130,30 @@ await page.waitForTimeout(300)
 check((await readout()) === '64%', 'un-mute after a reload returns to 64%', await readout())
 
 // --- 4. region: drag across the waveform selects
+//
+// A row click only auditions the clip when AUTO PLAY is on, and the clip's
+// duration reaches the dock through the playhead poll. An earlier check may have
+// left the setting off in the real profile, so this turns it on for the run and
+// restores the blob on the way out (see the snapshot at the top).
+await page.evaluate(() => {
+  const settings = JSON.parse(localStorage.getItem('mio:settings') ?? '{}')
+  localStorage.setItem('mio:settings', JSON.stringify({ ...settings, autoPlay: true }))
+})
+await page.reload()
+await page.waitForSelector('.row', { timeout: 60_000 })
+await page.waitForTimeout(800)
 await page.locator('.row').first().click()
-await page.waitForTimeout(900)
+await page.waitForFunction(
+  () => {
+    const text = document.querySelector('.wave-time')?.textContent ?? ''
+    const total = text.split('/')[1]?.trim() ?? '0:00.00'
+    const [m, s] = total.split(':').map(Number)
+    return m * 60 + s > 0
+  },
+  undefined,
+  { timeout: 30_000 }
+)
+await page.waitForTimeout(200)
 const wave = await page.locator('.wave').boundingBox()
 check(!!wave, 'the waveform canvas has a box', JSON.stringify(wave))
 
@@ -460,6 +502,10 @@ const dragProbe = await page.evaluate(async () => {
   return `dragstart fired ${seen}`
 })
 check(dragProbe === 'dragstart fired 1', 'a DOM dragstart reaches the row', dragProbe)
+
+// The native drag loop has started by now; nothing after this may depend on IPC,
+// so the profile is restored first and the browser handle closed last.
+await restoreSettings()
 
 await browser.close()
 if (problems.length === 0) {

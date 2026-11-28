@@ -80,7 +80,15 @@ check(
 const grips = await page.evaluate(
   () => document.querySelectorAll('.head-cell .head-resize').length
 )
-check(grips === 10, 'every resizable column carries a resize grip', String(grips))
+// The star and the cover column are fixed; every other column carries a grip.
+// Written as a lower bound with the cover column asserted separately, so adding
+// another fixed column is a visible decision here rather than a silent failure.
+check(grips >= 10, 'every resizable column carries a resize grip', String(grips))
+check(
+  (await page.evaluate(() => document.querySelectorAll('.head-cell[data-sort-key="cover"]').length)) === 1,
+  'the cover column shipped',
+  String(grips)
+)
 
 // The product mark next to the name. A build from before this release has the
 // name alone, so the element existing is a fact about the shipped code.
@@ -92,6 +100,28 @@ const brandMark = await page.evaluate(() => {
 check(brandMark !== null, 'the top bar shows the product mark')
 check(brandMark?.src.includes('brand'), 'the mark is the bundled brand asset', brandMark?.src ?? '')
 check((brandMark?.w ?? 0) >= 16, 'the mark is drawn, not a collapsed box', `${brandMark?.w ?? 0}px`)
+
+// The details inspector and the cover pipeline. Both are new IPC surface: a
+// build from before this release does not register the commands at all, so
+// calling one fails rather than returning an empty answer.
+const inspector = await page.evaluate(() => ({
+  strip: document.querySelectorAll('.inspector-strip').length,
+  panel: document.querySelectorAll('.inspector').length
+}))
+check(
+  inspector.strip + inspector.panel === 1,
+  'the details inspector shipped (strip or open panel)',
+  JSON.stringify(inspector)
+)
+const covers = await page.evaluate(async () => {
+  try {
+    const answer = await window.__TAURI_INTERNALS__.invoke('get_cover_thumbnails', { keys: [] })
+    return { ok: true, isArray: Array.isArray(answer), length: answer?.length ?? null }
+  } catch (error) {
+    return { ok: false, error: String(error) }
+  }
+})
+check(covers.ok && covers.isArray, 'get_cover_thumbnails answers', JSON.stringify(covers))
 
 // The loop command exists and round-trips.
 const loop = await invoke('get_loop')

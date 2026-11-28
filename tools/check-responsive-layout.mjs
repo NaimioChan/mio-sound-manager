@@ -15,12 +15,21 @@ try {
     localStorage.setItem('mio:locale', 'zh')
     localStorage.setItem('mio:settings', JSON.stringify({ autoPlay: false }))
     localStorage.setItem('mio:sidebar-width', '520')
+    // The inspector is a layout column now; a profile that left it open would
+    // move the table's right edge and make the width checks read a different
+    // layout than the one they describe.
+    localStorage.removeItem('mio:inspector-open')
+    localStorage.removeItem('mio:inspector-width')
+    localStorage.removeItem('mio:column-hidden')
+    localStorage.removeItem('mio:column-widths')
+    localStorage.removeItem('mio:column-order')
     const root = 'C:\\layout-fixture'
     const rows = ['a.wav', 'b_' + 'LongFileName_'.repeat(12) + '.wav'].map((filename, i) => ({
       filename, path: `${root}\\${filename}`, durationS: 3, durationLabel: '0:03.00', channels: 2,
       sampleRate: 48000, filesize: 48000, favorite: false, category: 'Foley', matchedTerms: [], bpm: null,
       subcategory: i ? 'LongCategoryNameWithoutBreaks'.repeat(12) : null,
       description: i ? 'A long sound description with words and many details. '.repeat(12) : null,
+      coverKey: null,
     }))
     let library = {
       root, name: 'layout-fixture', count: rows.length, active: true, indexing: false, skippedDirs: [],
@@ -35,7 +44,7 @@ try {
       list_ucs_categories: [], get_history: {}, count_matching: rows.length, search: rows,
       get_waveform: { peaks: [0, 1, 0], lanes: [], durationS: 3 }, get_loop: { enabled: false, region: null },
       get_playback_position: { positionS: 0, durationS: 0, playing: false, paused: false, errorSeq: 0 },
-      'plugin:app|version': '0.2.0',
+      'plugin:app|version': '0.3.0',
     }
     window.__TAURI_INTERNALS__ = { invoke: async (command) => command === 'list_libraries' ? [library] : values[command] }
   })

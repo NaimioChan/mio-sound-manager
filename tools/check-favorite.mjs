@@ -36,6 +36,28 @@ const waitForEpoch = (previous) => wait((was) => {
   return table && table.dataset.epoch !== was && table.dataset.querying === 'false' &&
     table.dataset.epoch === table.dataset.segmentsEpoch
 }, previous)
+/**
+ * Wait until no background pass is invalidating the table.
+ *
+ * `App`'s library poll re-queries once when it observes `metadataIndexing` going
+ * from true to false — the results may have changed because the pass wrote
+ * descriptions. That is correct, and it can land *after* this script's own
+ * "settled" wait: the pass finishes, the poll notices up to 350ms later. The
+ * epoch then moves for a reason that is not the star click under test, and the
+ * "known paths keep their cached positions" assertion fails on timing rather
+ * than behaviour. Wait for the epoch to hold still before capturing it.
+ */
+const settle = async () => {
+  let previous = await epoch()
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await page.waitForTimeout(900)
+    const current = await epoch()
+    const querying = await table.getAttribute('data-querying')
+    if (current === previous && querying === 'false') return current
+    previous = current
+  }
+  throw new Error('the table never stopped re-querying')
+}
 const expectStars = (count, starred) => wait(({ count, starred }) => {
   const cells = [...document.querySelectorAll('.row[data-path] .cell.favorite')].slice(0, count)
   return cells.length === count && cells.every((cell) => cell.classList.contains('on') === starred)
@@ -82,7 +104,7 @@ try {
   await favorites(0)
   assert.equal(await invoke('count_matching', { request: {} }), size)
 
-  const firstEpoch = await epoch()
+  const firstEpoch = await settle()
   const started = performance.now()
   await star(0).click()
   await expectStars(1, true)
@@ -105,7 +127,7 @@ try {
   await favoritesFilter.click()
   await waitForEpoch(emptyEpoch)
 
-  const pathsEpoch = await epoch()
+  const pathsEpoch = await settle()
   await rows.nth(0).click()
   await rows.nth(1).click({ modifiers: ['Control'] })
   await rows.nth(2).click({ modifiers: ['Control'] })
@@ -119,7 +141,7 @@ try {
   await favorites(0)
   await expectStars(3, false)
 
-  const matchingEpoch = await epoch()
+  const matchingEpoch = await settle()
   await page.keyboard.press('Control+a')
   await rows.nth(0).click({ button: 'right' })
   await page.locator('[data-menu-id="favorite"]').click()
@@ -127,7 +149,7 @@ try {
   await favorites(size)
   await page.keyboard.press('End')
   await wait(() => Boolean(document.querySelector('.row[data-index="519"] .cell.favorite.on')))
-  const undoEpoch = await epoch()
+  const undoEpoch = await settle()
   await page.locator('#undo-button').click()
   await waitForEpoch(undoEpoch)
   await favorites(0)

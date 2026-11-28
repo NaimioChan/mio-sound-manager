@@ -22,7 +22,11 @@ if (!page) {
 // the only reliable starting state for a script that drives a real window.
 // These checks assert on English copy, so the locale is pinned before the reload.
 // Copy coverage is `check-i18n.mjs`'s job, not this script's.
-await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
+await page.evaluate(() => {
+  localStorage.setItem('mio:locale', 'en')
+  localStorage.removeItem('mio:inspector-open')
+  localStorage.removeItem('mio:inspector-width')
+})
 await page.reload()
 await page.waitForSelector('.row[data-path]', { timeout: 60_000 })
 await page.waitForTimeout(1000)
@@ -126,7 +130,10 @@ const kickCount = await rowCount()
 check(kickCount > 0, 'searching "kick" finds rows', `${kickCount}`)
 check((await page.locator('.query-chip').count()) === 1, 'Enter adds a search-term chip')
 const matchLabel = (await page.locator('#match-count').textContent()) ?? ''
-check(/matches/.test(matchLabel), 'the header reports the full match count', matchLabel.trim())
+// One match is rendered by the `matchesOne` string ("1 match"), which the
+// plural pattern missed on any library where the query happens to hit once.
+// A test fixture is exactly such a library.
+check(/match/i.test(matchLabel), 'the header reports the full match count', matchLabel.trim())
 await search('zzzznotasoundzzz')
 check((await rowCount()) === 0, 'a query with no hits empties the list')
 check((await page.locator('.table-empty').count()) === 1, 'an empty result shows the empty state')

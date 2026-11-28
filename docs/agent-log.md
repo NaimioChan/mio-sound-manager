@@ -5,8 +5,37 @@ Shared handoff log. Newest entry on top. One entry per work session: what change
 > **2026-11-27:** `docs/indexing-todo.md` has been deleted. References to it below are historical
 > records of the session that used it; its open items were the metadata bugs fixed in the next
 > entry (deferred-vs-indexed progress, and the `close()`/`start_metadata` race).
+>
+> **2026-11-28:** `docs/details-panel-todo.md` has been deleted after implementation. Its durable
+> design reasoning now lives in `docs/app.md` § 详情面板 and `docs/index.md` § details. Its three
+> open items are recorded in the 09:20 entry below: the front-end thumbnail map's resident memory
+> was never measured on its own, the old-profile column-order migration was only verified against a
+> fixture, and AIFF reads only an embedded `ID3 ` chunk.
 
 ## 当前占用
+
+## 2026-11-28 09:20 · opencode · 详情面板、封面索引与原始标签
+
+- 改：`docs/details-panel-todo.md` 的 Phase 1–4 落地。前端新增 `ui/src/Inspector.tsx`（右侧可折叠面板，窄条 toggle、宽度持久化与拖动）、`ui/src/format.ts`（表格/面板共用格式化）、表格封面列（`columns.ts` 新 `cover`、旧 profile 一次性插入到星标后、`CoverCell` 与可见行批量缩略图、隐藏列零请求）；`App.tsx` 新增 `addQueryTerm` / `clearSearchState` 与分类/UCS/文件夹/封面/声道/采样率/BPM 专用 helper，点击语义只在 App 一处拥有。
+- 改：schema 5（`sounds.tags` / `cover_hash` / `details_indexed`、`sound_details`、`covers`、`idx_cover_hash`、`idx_sample_rate`），`fts_version` 4（`sounds_fts` 加 tags 列并重建），`details_rule` 独立于 `metadata_rule`。新模块 `crates/mio-index/src/details.rs`（标签清洗、`searchable` 与搜索文本同源、封面 SHA-256 前 16 字节）与 `crates/mio-app/src/covers.rs`（48px 缩略图、sidecar 逐目录缓存、512px 面板图、base64）。details pass 与 metadata pass 同 worker 两分支，候选查询覆盖全部格式，缩略图只对库里没有的 hash 解码，全量结束后清孤儿。
+- 新 IPC：`inspect_sound`（详情 pass 有就用，没有就懒读当前文件并标 `lazy`；64 条 LRU 按 path + 文件指纹）、`get_cover_thumbnails`（≤128 key，只读 `covers`）。`SearchRequest` 加 `coverHash` / `sampleRate` / `bpm`，`SoundDto` 加 `coverKey`。
+- 验证：`cargo test --release --workspace` 263 项通过（app 38 + ipc 39 + engine 32 + index 154）；`(cd ui && npm run build)` 通过；`check-i18n`（282 键 × 3 语）。CDP 对真实窗口：`check-inspector` / `check-inspector-live` / `check-layout` / `check-interactions` / `check-tags` / `check-themes` / `check-volume` / `check-favorite` 全部通过。真实库文件（`tools/make-inspector-fixture.py` 造的 19 文件库）实测：details pass 19/19 54ms，内嵌 APIC 与 sidecar 各出 48px 缩略图、面板解 320px 源图、ID3/bext/iXML/LIST 标签全在、封面过滤命中 1 行。
+- 已知：`check-scroll-deep` 需要真实 28 万库，本轮未跑（fixture 太小会以退出码 2 退出）；未对真实库执行 details pass，也未测 28 万行全库 pass 耗时与 `covers` 表体积。`check-shipped` 未重跑。旧 profile 的列顺序迁移只在 fixture 上验证过。
+
+## 2026-11-28 18:05 · opencode · 补跑未跑测试、全量测试与压力测试
+
+- 改：修订随版本漂移的断言——`check-responsive-layout` 的 fixture 版本 0.2.0→0.3.0 并清 inspector/列键；`check-shipped` 的「恰好 10 个 grip」改为下界并新增 cover 列、inspector、`get_cover_thumbnails` 三项断言；`check-indexing-feedback` 的「十一列」注释、`argv[4]` 把 flag 当路径、以及 100k 行前提改为可覆盖的 `--min-rows=N`；`check-favorite` 的 epoch 断言改为先等后台轮询稳定（details pass 把「索引完成」推到了断言之后，那是一次合法的重查）。`check-layout` / `check-interactions` / `check-tags` / `check-inspector` 已在上一轮清理 inspector 键。
+- 跑：`cargo test --release --workspace` 263 项通过；`npm run build`；`check-i18n` 282×3。CDP：`check-responsive-layout`（4 宽度）、`check-stress`（14 项）、`check-scroll-deep`（14,000 行，5 次深跳 105–140ms）、`check-indexing-acceptance`（14,000 行全量 1267ms）、`check-indexing-lifecycle`、`check-indexing-multilib`、`check-indexing-feedback`、`check-shipped`（21 项）全部通过。
+- 发版验证：`tools/build-app.sh`（ASIO）通过，`tauri build --features asio --bundles nsis` 出 4.76 MiB 安装包，静默安装覆盖 0.3.0 后 `check-shipped` 与全部窗口检查在装机版上通过。发现并修正 `Mio-Sound-Manager_0.3.0_x64-setup.exe` 实为 0.1.0 副本（哈希相同）的历史遗留文件。
+- 实测：14,000 行增量索引 2.8s、details pass 3.7s（0 失败）；13,000 行 `--full` 重建 1267ms；星标点击 28–52ms。
+- 仍未跑：前端 thumb Map 的常驻内存（§8.2 的其余项都已在真实 289k 库副本上测得）。
+
+## 2026-11-28 11:40 · opencode · 真实库副本上的 details pass 与 check-region
+
+- 改：修订 `check-region.mjs`——它依赖 AUTO PLAY 为开（点击行才加载 clip），且波形时长要等播放头轮询到达；原先固定等 900ms，在真实库上读到 `0:00.00 / 0:00.00` 后所有手势都空转。现在脚本自己打开 AUTO PLAY、等时长非零、结束时还原 `mio:settings`。新增只读统计与测量脚本：`tools/lib-stats.py`、`lib-size.py`、`lib-tagprobe.py`、`measure-details.mjs`、`measure-details2.mjs`。
+- 实测（**真实库副本 `SoundLibrary-copy`，原库只读、未被写入**）：schema 4→5 迁移 + 全量 details pass **288,955/288,955，0 失败，0 deferred，455,844 ms**；有封面 73,032 行 / 191 张；`covers` 330 KB（均值 1.7 KB/张）；库 712→1,020 MB（`sound_details.tags_json` 208 MB、`sounds.tags` 63 MB 是大头，缩略图仅 0.3 MB）；一屏 33 key 批量缩略图 p50 9.8 / p95 18.6 ms、69 KB；`inspect_sound` 冷 18.5 / 热 8.9 ms；封面过滤 6.0 ms、封面排序 23.7 ms；FTS `Vintage` 1,274 行 / 15.2 ms。
+- 验证：`check-scroll-deep` 在真实 289k 库上通过（5 次深跳 134–217 ms）；`check-region` 在 19 文件库上通过 30 项（跑完已按约定重启）；`cargo test --release --workspace` 263 项、`npm run build`、`check-i18n` 复跑通过。
+- 注意：副本只复制了数据库、没有复制 710 GB 音频，所以行数据与缩略图可用，但播放/波形不可用（路径不存在）。需要真实音频的检查（`check-region`）仍用 `tools/make-inspector-fixture.py` 的小库。
 
 ## 2026-11-28 00:20 · opencode · 打包 v0.3.0
 

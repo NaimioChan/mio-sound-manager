@@ -21,6 +21,10 @@ if (!page) {
 // a longer translation would shift the cluster this script measures. Pin English so
 // the numbers mean the same thing on every machine.
 await page.evaluate(() => localStorage.setItem('mio:locale', 'en'))
+await page.evaluate(() => {
+  localStorage.removeItem('mio:inspector-open')
+  localStorage.removeItem('mio:inspector-width')
+})
 await page.reload()
 await page.waitForSelector('.app', { timeout: 20_000 })
 // The table is populated by an async search, so waiting on `.app` alone measures an
@@ -28,7 +32,7 @@ await page.waitForSelector('.app', { timeout: 20_000 })
 await page.waitForSelector('.row', { timeout: 30_000 }).catch(() => {})
 await page.waitForTimeout(800)
 
-const report = await page.evaluate(() => {
+const report = await page.evaluate(async () => {
   const problems = []
   const facts = {}
 
@@ -172,6 +176,15 @@ const report = await page.evaluate(() => {
       facts.overflow = `${body.scrollWidth} > ${body.clientWidth}`
       const saved = body.scrollLeft
       body.scrollLeft = 120
+      // The header is translated from `scrollLeft` on the scroll *event*. WebView2
+      // can dispatch that after the assignment returns, so a synchronous read here
+      // compares the header before the event with a row after the scroll. Wait for
+      // two frames — the scroll handler runs in the first — and only then measure.
+      const settle = () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        )
+      await settle()
       const scrolledAt = edgeDelta()
       if (body.scrollLeft > 0 && Math.abs(scrolledAt.delta) > 9) {
         problems.push(
@@ -188,6 +201,7 @@ const report = await page.evaluate(() => {
         }
       }
       body.scrollLeft = saved
+      await settle()
     }
   } else {
     problems.push('no table header or row to compare')

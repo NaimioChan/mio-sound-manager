@@ -25,8 +25,16 @@ if (!page) {
 // behind, and every test after this one indexes `.row .cell` by the header order.
 // Column state is per machine, not per library, so it has to be cleared here and
 // restored at the end: a profile with a deliberately hidden column should survive a
-// test run unchanged.
-const COLUMN_KEYS = ['mio:column-hidden', 'mio:column-widths', 'mio:column-order']
+// test run unchanged. The inspector is layout too, and a profile that left it open
+// puts the table's right-hand drag targets under the panel — the drag then works,
+// the pointer lands somewhere else, and the failure reads as "the resize broke".
+const COLUMN_KEYS = [
+  'mio:column-hidden',
+  'mio:column-widths',
+  'mio:column-order',
+  'mio:inspector-open',
+  'mio:inspector-width'
+]
 const columnSnapshot = await page.evaluate((keys) => {
   const saved = {}
   for (const key of keys) saved[key] = localStorage.getItem(key)
@@ -408,8 +416,10 @@ const sortBeforeDrag = await page.evaluate(() => {
 const beforeDrag = await headerKeys()
 await dragHeader('durationS', 'filename', 'left')
 const afterDrag = await headerKeys()
+const durationAt = afterDrag.indexOf('durationS')
+const filenameAt = afterDrag.indexOf('filename')
 check(
-  afterDrag[1] === 'durationS' && afterDrag[0] === 'favorite',
+  durationAt >= 0 && durationAt < filenameAt && afterDrag[0] === 'favorite',
   'dragging a header moves that column, and the star stays first',
   `${beforeDrag.join(',')} → ${afterDrag.join(',')}`
 )
@@ -665,11 +675,11 @@ const columnsSection = await page.evaluate(() => {
   }
 })
 check(columnsSection !== null && columnsSection.visible, 'settings has a Columns section')
-check(columnsSection?.boxes === 11, 'the section has one checkbox per column', String(columnsSection?.boxes))
+check(columnsSection?.boxes === 12, 'the section has one checkbox per column', String(columnsSection?.boxes))
 check(
-  columnsSection?.hydrated === 11,
+  columnsSection?.hydrated === 12,
   'every column checkbox is a real iX control, not an unupgraded tag',
-  `${columnsSection?.hydrated}/11 hydrated`
+  `${columnsSection?.hydrated}/12 hydrated`
 )
 check(
   columnsSection?.boxHeights.every((height) => height > 8),
@@ -693,7 +703,7 @@ const hiddenNow = await page.evaluate(() => ({
   stored: localStorage.getItem('mio:column-hidden')
 }))
 check(hiddenNow.heads === 0, 'unchecking BPM removes its header')
-check(hiddenNow.cells === 10, 'and its cell from every row', String(hiddenNow.cells))
+check(hiddenNow.cells === 11, 'and its cell from every row', String(hiddenNow.cells))
 check(
   typeof hiddenNow.stored === 'string' && hiddenNow.stored.includes('bpm'),
   'the hidden set is stored',
@@ -739,7 +749,7 @@ const headerMenu = await page.evaluate(() => ({
   disabled: [...document.querySelectorAll('.menu-item')].filter((el) => el.disabled).length
 }))
 check(
-  headerMenu.ids.length === 12,
+  headerMenu.ids.length === 13,
   'the header menu lists every column plus the settings entry',
   `${headerMenu.ids.length} items`
 )
@@ -748,7 +758,7 @@ check(
   'the last entry opens column settings',
   headerMenu.ids.join(',')
 )
-check(headerMenu.checked === 11, 'every visible column is ticked', String(headerMenu.checked))
+check(headerMenu.checked === 12, 'every visible column is ticked', String(headerMenu.checked))
 
 // Clicking a column entry toggles it and closes the menu.
 await page.locator('.menu-item[data-menu-id="column-bpm"]').click()
@@ -800,11 +810,16 @@ await page.waitForSelector('.row', { timeout: 90_000 })
 await page.waitForTimeout(900)
 const overflow = await page.evaluate(() => {
   const body = document.querySelector('.table-body')
+  // The filename track by *key*, not by position: a new column inserted before it
+  // (the cover) would make a fixed index read someone else's width.
+  const at = [...document.querySelectorAll('.head-cell')].findIndex(
+    (el) => el.dataset.sortKey === 'filename'
+  )
   return {
     scrollWidth: body?.scrollWidth ?? 0,
     clientWidth: body?.clientWidth ?? 0,
     tracks: Number.parseFloat(
-      getComputedStyle(document.querySelector('.table-head')).gridTemplateColumns.split(' ')[1]
+      getComputedStyle(document.querySelector('.table-head')).gridTemplateColumns.split(' ')[at]
     )
   }
 })

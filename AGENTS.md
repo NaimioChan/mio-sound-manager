@@ -46,17 +46,40 @@ node tools/check-layout.mjs         # DOM 几何：区域拼合、列对齐、do
 node tools/check-i18n.mjs           # 三语字典：键集齐平、占位符不丢不多
 node tools/check-tags.mjs           # 侧栏模式下拉/旧键迁移、列宽拖动与显隐、表头菜单、横向滚动、库头无三角、BPM 列、tag 多选、无副标题
 node tools/check-favorite.mjs       # 星标不重查（epoch/骨架/searching）、字形延迟、侧栏计数、undo、收藏过滤下必须重查
+node tools/check-inspector.mjs      # 详情面板布局与点击语义；封面列与批量缩略图（fixture 模式还测 inspect_sound 的标签）
+node tools/check-inspector-live.mjs # 对着真实文件：内嵌/sidecar 封面、512px 面板图、四个来源的标签、标签/封面点击
 node tools/check-stress.mjs         # 压力测试：仅在前后端数据结构/算法有破坏性改动时运行
 node tools/check-shipped.mjs [port] # 对着打包产物验版本/ASIO/设备/新控件（解压 zip 后起那个 exe 再跑）
 node tools/shot.mjs [out.png]       # 截图（给人看）
 node tools/shot-themes.mjs [dir]    # 每套主题一张截图
 ```
 
+详情/封面验收要先造一个自己的小库（**不要拿真实库做开发性的 details pass**）：
+
+```bash
+python tools/make-inspector-fixture.py C:\\Users\\Naimio\\AppData\\Local\\Temp\\mio-inspector-lib
+```
+
+它写 19 个文件：一个带 bext + iXML + LIST + ID3（含内嵌 PNG 封面）的 WAV、一组共用 sidecar
+`cover.png` 的 WAV、若干无封面 WAV，其中两个文件名带 BPM。
+
+**大库检查要一个按类型命名的合成库，不是 `sound_0000.wav`。** `check-stress` 的查询词是 `kick` /
+`snare` / `hat`，文件名不带这些词时它会以为「移除过滤器没有恢复行」。按类型命名（`kick_0001.wav`
+等）并做到一万行以上，`check-scroll-deep` 与 `check-stress` 就都能在合成库上跑，不需要真实 28 万库。
+
 They resolve `playwright-core` from `slip-sound/package.json` through `createRequire`, so they run from any directory — that module is not a dependency of this repo. See `docs/app.md`.
 
 The seven window-driving `check-*.mjs` assert on English copy and pin `mio:locale` to `en` before reloading — on a Chinese or Japanese machine they would otherwise fail on a missing locator rather than a broken feature. Column headers and menu items are also addressable by `data-sort-key` / `data-menu-id`, so a selector never depends on translated text. Copy coverage belongs to `check-i18n.mjs`; run `check-stress.mjs` only for destructive data-structure or algorithm changes.
 
-**`check-region.mjs` 会进入原生 OLE 拖拽循环，跑完 webview 不再响应 IPC**：它必须单独跑，之后要 `kill-app.sh` 再起窗口。详情见 `tools/README.md`。
+- **`check-region.mjs` 会进入原生 OLE 拖拽循环，跑完 webview 不再响应 IPC**：它必须单独跑，之后要 `kill-app.sh` 再起窗口。详情见 `tools/README.md`。
+
+**详情面板验收要多跑两个脚本。** `check-inspector.mjs` 测布局和点击语义（含封面列与批量缩略图），
+`check-inspector-live.mjs` 对着真实文件测内嵌/sidecar 封面、512px 面板图和四个来源的标签。两者都
+依赖上面的 fixture 库。**开发性的 details pass 不许对真实库跑**——`D:\Users\Naimio\Documents\SoundLibrary`
+只做只读统计。
+
+**`check-scroll-deep.mjs` 要一万行以上。** 用 19 文件的 fixture 跑会以退出码 2 结束，那是"库太小"不是
+"冻结"；造一个按类型命名的一万多行合成库就能验证同一行为：它只要求行数够、并在每次跳转后 5s 内绘出真实行。
 
 ## Stack (decided)
 
@@ -85,6 +108,10 @@ The seven window-driving `check-*.mjs` assert on English copy and pin `mio:local
 - **The theme has one owner.** `ui/src/theme.ts` writes `mio:theme`; it must not also live in the settings blob — two writers made a reload fall back to the default.
 - **Volume is engine state, not renderer state.** `set_gain` writes one atomic the render callback reads; the slider's signal is a mirror. A volume control that only updated the UI would pass a DOM check and do nothing.
 - **列状态只有一个拥有者：`ui/src/columns.ts`。** `SortKey` / `COLUMNS` / `SORT_WIRE` / `DEFAULT_DIR` 与顺序、宽度、显隐都从那里读；`SoundTable` 不再导出它们，设置页和表头菜单也不另存一份。表头、骨架行、真实行必须继续用同一个 `gridTemplate()`，轨道全是像素（`fr` 会让拖出来的宽度随窗口变）。三个信号整体替换，原地改 `Set`/对象不会触发 Solid 通知。
+- **详情面板的点击语义只有一个拥有者：`App.tsx`。** `Inspector` 渲染值、调用回调，不改 `queryTerms`、不设过滤器。TEXT 追加（queryTerms 保留过滤器）；分类/UCS/文件夹/封面走 `clearSearchState()` 再设一个值、只查一次——**不要复用 `toggleCategory` / `setFolderFilter`**，它们各自清不同的邻居。文件夹过滤要传绝对路径（`SoundRow.folder` 是相对库根的）。
+- **同封面是图片字节的精确哈希，不是视觉相似。** `sha256(b"mio-cover\0" + bytes)` 前 16 字节；重新编码/改分辨率不算同一张。不要偷偷换成 perceptual hash。
+- **表格缩略图只走 `get_cover_thumbnails` 批量请求**，只对可见行、只读 `covers` 表；封面列隐藏时零请求。禁止每个 cell 自己 invoke，禁止滚动时打开音频文件。
+- **`SoundDto` 只带 `coverKey`，不带标签 JSON 或封面 BLOB。** 详情单独查 `inspect_sound`；标签只在 `details_indexed=1` 时展示。
 - **iX 组件上只用 `classList`，不要用 `class`。** Solid 把 `class={…}` 写成 `className` 的整体赋值，会抹掉 Stencil 的 `hydrated` 与 `sc-*` 类；iX 对 `:not(.hydrated)` 的 host 是 `visibility:hidden`，症状是「点一下就消失」而不是样式错。
 - **新增 `<ix-*>` 元素要同步 `ui/vite.config.ts` 的 `IX_TAGS`。** 漏了会被 `trimIxChunks` 裁成 `data:text/javascript,`，CSP 拒绝后元素永不升级——症状是一整块空白区域，控制台只有一行 `Constructor for "ix-x#undefined" was not found`。
 - **Nothing user-facing is written as a literal string.** Every label goes through `t()`; the backend sends *kinds* (`EditKind`), never English prose for the renderer to display — a string born in Rust can never be translated. Category names, file names and sample rates are data and stay untranslated; `Uncategorized` is the one exception, because it is a schema sentinel rather than a classifier guess.
@@ -103,6 +130,9 @@ The seven window-driving `check-*.mjs` assert on English copy and pin `mio:local
 | Tauri 外壳（IPC 命令、应用状态、库生命周期） | `crates/mio-app/` |
 | 前端（SolidJS + Vite + @siemens/ix，构建产物编进 exe） | `ui/` |
 | 列定义、顺序、宽度、显隐（唯一拥有者） | `ui/src/columns.ts` |
+| 详情面板（文件信息、分类/UCS、原始标签、封面、点击回调） | `ui/src/Inspector.tsx` |
+| 标签与封面提取、封面哈希（不解码图片） | `crates/mio-index/src/details.rs` |
+| 缩略图生成、sidecar 解析、512px 面板图 | `crates/mio-app/src/covers.rs` |
 | 配色主题系统（八色调色板 → iX token 推导） | `ui/src/theme.ts` |
 | 多语言（语言信号 + `t()`，三语字典） | `ui/src/i18n.ts`、`ui/src/locales/` |
 | 图标资源（从 `@siemens/ix-icons` 复制，离线可用） | `ui/src/assets/icons/` |

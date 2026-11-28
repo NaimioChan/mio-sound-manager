@@ -23,6 +23,7 @@ ui/                  // SolidJS + Vite + @siemens/ix，构建产物被编进 exe
   src/SoundTable.tsx     // 虚拟列表、多选、键盘、拖拽起点、无限滚动
   src/Sidebar.tsx        // 按库分组的分类 facet / 文件夹树
   src/WaveformDock.tsx   // 波形、播放头、框选区、循环与暂停、输出音量、手势图例
+  src/Inspector.tsx      // 右侧详情面板：文件信息、分类/UCS、原始标签、封面
   src/ContextMenu.tsx    // 右键菜单（视口坐标，非 iX dropdown）
   src/CategoryDialog.tsx // 手动分类（iX modal）
   src/SettingsDialog.tsx // 设置页（iX modal，含主题选择）
@@ -31,6 +32,7 @@ ui/                  // SolidJS + Vite + @siemens/ix，构建产物被编进 exe
   src/icons.ts           // 图标 SVG（仓库内 src/assets/icons/），转 data URL 给 ix-icon
   src/i18n.ts            // 语言信号 + t()；locale 存 mio:locale
   src/locales/{en,zh,ja}.ts // 三语字典，en 是键集基准
+  src/format.ts          // 表格/面板共用的字节、采样率、BPM 格式化
   src/ix-elements.d.ts   // iX 自定义元素的 Solid JSX 类型
   src/styles.css         // 布局与几何，颜色一律取自 iX token
   src/ipc.ts             // 线上类型 + 命令封装
@@ -149,6 +151,8 @@ tools/               // run-app / kill-app / CDP 驱动与验收脚本
 | `get_library` | `LibraryStatus?` | 活跃库的状态；无库时 `null`。`get_status` 里也带一份，这条给只关心库的调用方 |
 | `pick_library_folder` | `string?` | 原生目录选择，取消返回 `null` |
 | `reveal_in_folder(path)` | `()` | Explorer 里选中该文件 |
+| `inspect_sound(path)` | `SoundDetailsDto` | 详情面板的一行：原始标签（按来源分组，带 `searchable`）、封面身份与 512px data URL、`lazy` |
+| `get_cover_thumbnails(keys)` | `CoverThumbDto[]` | 一批封面身份对应的 48px 缩略图，只查 `covers` 表；最多 128 个，找不到的不返回 |
 
 线上字段一律 camelCase（`#[serde(rename_all = "camelCase")]`），前端类型手写在 `ui/src/ipc.ts`，与 Rust 侧一一对应。
 
@@ -312,6 +316,34 @@ Ctrl+A 不向 renderer 返回路径列表。前端以 filter 快照 + 排除集�
 
 **canvas 要自己跟着换。** 波形只画一次，主题切换不会自动重绘，所以 `WaveformDock` 用 `MutationObserver` 盯根元素的 `data-mio-theme` / `data-ix-color-schema`。
 
+## 详情面板
+
+主面板右侧一个可折叠的 Inspector：`main-head / main-body（SoundTable + Inspector）/ WaveformDock`。
+
+**关闭时只渲染 26px 的竖排窄条。** 它是个 `button`，不是装饰：面板关掉之后，那是唯一回到面板的路。打开后窄条消失，面板头上有收起按钮，`aria-expanded` / `aria-controls` 两侧都写对。宽度默认 300、夹在 240–480 之间，左边缘可拖；`mio:inspector-open` / `mio:inspector-width` 各存一份。
+
+**它是布局列，不是 overlay。** 所以表格变窄走 CSS grid + `ResizeObserver`，不重查、不重建 segment。窄窗口里 `max-width: min(480px, 30vw)`，否则 600px 窗口会被面板吃掉一半。
+
+**点击语义是本轮真正的产品决定，全部在 `App` 里。** Inspector 只渲染值、调用回调；它不改 `queryTerms`，不做过滤器。两个分支：
+
+- **TEXT 追加**：文件名（去扩展名的 stem）、description、`matchedTerms`、可搜索的原始标签值 → 加进当前查询词，保留已有词与过滤器。值里没有字母数字就不做（会生成空 FTS 查询）；大小写不敏感去重。
+- **清空后应用**：分类/子类、UCS 分类/子类/CatID、文件夹、封面 → 先 `clearSearchState()`（一次状态重置，**不在这里查询**），再设目标值，最后只调一次 `runSearch()`。这里刻意不复用侧栏的 `toggleCategory` / `setFolderFilter`：它们各自清不同的邻居（那是一次点击侧栏行的含义），拼起来会丢掉这次点击没提到的过滤器，而且每步查一遍。
+- **文件夹是绝对路径**：`SoundRow.folder` 相对库根，后端过滤比较的是绝对路径区间；点击时从 `path` 取目录，不能用相对值。
+- **数值**（声道 / 采样率 / BPM）追加：每个字段一个值，点不同值替换、点同值取消，其他过滤器不动。**完整路径、时长、大小只复制**，不改变搜索。
+- **`active` 在 `clearSearchState` 里保留**：被点的文件按定义就在新结果里，清掉会让面板在用户正看着的那一行上消失。
+
+**"同封面"是图片字节的精确哈希。** `sha256(b"mio-cover\0" + bytes)` 取前 16 字节。同一张 JPEG 嵌在 MP3 和 FLAC 里算同一张，重新编码或改分辨率的不算——这是确认过的取舍，不做感知哈希。
+
+**原始标签按来源分组**（ID3 / Vorbis / M4A / bext / iXML / LIST INFO），已知 key 本地化，未知 key 原样显示四字码或 frame id。`searchable=false` 的值渲染成普通文本，不是按钮：UI 邀请点击而 FTS 里永远搜不到，那是个静默返回零行的过滤器。
+
+**详情 pass 没跑到时面板懒读当前文件。** DTO 的 `lazy` 明说这一点：这些值显示得出来，但**还不在搜索索引里**。这是可接受的过渡状态，不能当成完整索引来宣传。
+
+**`coverEpoch` 与 `dataEpoch` 分开。** 前者在 pass 完成/切库时 +1，只让缩略图与面板重取；后者会丢掉每个缓存 segment 重查列表。新缩略图不改变任何一行的成员或顺序，不该付一次查询。
+
+**表格封面列是固定 36px、不可拖动，可隐藏。** 24px 图在 28px 行上，`.cell.cover` 自己拥有内边距（默认 8px 会把它裁掉）。缩略图**只对可见行批量请求**（`get_cover_thumbnails`，最多 128 个 key，只读 `covers` 表），列隐藏时零请求；前端 Map 上限 1024 条。点击封面格 `stopPropagation()` 后走"清空 + 封面过滤"，不触发行选中/试听。
+
+**48px 缩略图入库，512px 面板图不入库。** 面板图从源文件解出来放 `AppState` 的 64 条 LRU（key 是 path + 文件 `(mtime, size)`，文件被重写就不会回放旧图）。给每张封面再存一份 512px BLOB 会把库数据库撑大，而只有一块面板在看它。
+
 ## 输出音量
 
 波形 dock 里 `AUTO PLAY` 左边一组：静音按钮 + 横向滑杆（104px）+ 百分比读数。
@@ -379,14 +411,23 @@ node ui/node_modules/@tauri-apps/cli/tauri.js icon logo/app-icon-1024.png -o cra
 **窗口内交互用 CDP 驱动真实窗口验证，不靠人看**（先 `./tools/run-app.sh` 起窗口，再跑脚本）：
 
 - `tools/check-interactions.mjs`——列表渲染、点击选中与激活、Ctrl/Shift 多选、状态栏计数、点列头排序并翻转方向、搜索过滤与空结果、右键菜单、分类 modal 打开/尺寸/Escape 关闭、`AUTO PLAY` 文字与切换并持久化（含「未覆盖设置前默认是开」的回归断言，脚本结束把 profile 还原）、播放头推进/暂停冻结/Stop 归零、波形点击 seek、设置 modal 与主题卡片。
-- `tools/check-region.mjs`——行真的可拖（`row.draggable === true` 且 `draggable="true"`）、波形拖拽选出区域、循环开关读到引擎且带选区、Esc 清选区后循环回落到整个文件、`export_region` 写出 WAV 并返回路径、最后真派发一次 `dragstart`。**这一份跑完 webview 会因原生 OLE 拖拽而不再响应 IPC**，必须单独跑、跑完重启应用。
+- `tools/check-region.mjs`——行真的可拖（`row.draggable === true` 且 `draggable="true"`）、波形拖拽选出区域、循环开关读到引擎且带选区、Esc 清选区后循环回落到整个文件、`export_region` 写出 WAV 并返回路径、最后真派发一次 `dragstart`。**这一份跑完 webview 会因原生 OLE 拖拽而不再响应 IPC**，必须单独跑、跑完重启应用。它需要 AUTO PLAY 为开（点击行才加载 clip），脚本自己打开并还原 `mio:settings`。
+- `tools/check-scroll-deep.mjs`——列表滚到 10/30/50/80/95% 各跳一次，断言每次都在 5s 内绘出**该偏移处**的真实行。真实 289k 库实测 134–217ms；一万行以上的合成库也能跑。
+- `tools/measure-details.mjs` / `measure-details2.mjs`——§8.2 的测量：批量缩略图、`inspect_sound` 冷/热、封面过滤与排序、FTS 标签查询。需要窗口开着且库已跑完 details pass。
+- `tools/lib-stats.py` / `lib-size.py` / `lib-tagprobe.py`——只读统计（行数、schema/fts 版本、封面计数、表体积、标签文本字节），一律 `mode=ro` 打开。
 - `tools/check-themes.mjs`——七套主题逐一应用，断言 DOM 里的 token 真的变了、每套互不相同、背景与文字的高低关系符合该主题的 schema（按 `data-ix-color-schema` 判，不按 id 猜）、覆盖块真的注入了且不是空块、**存着已删除的 `classic-dark` 时回退到默认**、重载后主题仍在，每套主题各自跑一遍十处文本元素的 WCAG 对比度，以及 AUTO PLAY 开态的 primary/contrast 对比度。
 - `tools/check-volume.mjs`——滑杆经 `valueChange` 改值后读**引擎的** `get_gain`（另一条命令，只改前端状态的实现过不了这一项）、静音→取消静音回到设定值（不是 100%）、静音后重载仍回到那个值、重载后电平仍在且被推回引擎。
 - `tools/check-layout.mjs`——五个区域的位置尺寸、表头与行列轨道对齐（容差 0.5px）、单元格与表头不被裁切、dock 控件簇的**顺序**（音量 → AUTO PLAY → 循环 → 暂停 → 停止）与间距、音量滑杆宽度、无元素逃出视口（滚动容器内的不算）。
 - `tools/check-tags.mjs`——侧栏模式下拉（存储、旧键迁移、切模式后的键盘导航）、库头无折叠三角与活跃态、文件夹行右键菜单、分类多选、BPM 列与排序、列拖动重排（表头与单元格同源、持久化、拖动后仍能排序、收藏星不可拖）、列宽拖动与重载保留、设置页与表头菜单的列显隐、表头右键菜单内容、横向滚动后的表头/行对齐、索引卡片无解释小字、界面缩放在 `innerWidth` 上真的生效、设置页无解释小字/无副标题。
 - `tools/check-i18n.mjs`——三语字典的键集与占位符一致性（`tsc` 管不到的那部分）。
+- `tools/check-inspector.mjs`——详情面板的布局与点击语义（可以对着 Vite dev server 的 fixture 跑，也可以对 `9223` 的真实窗口跑）：窄条 → 面板、`aria-expanded`、宽度持久化与拖动、表格与面板边界、TEXT 追加 vs 清空后应用、分类/文件夹/声道 chip、复制路径不重查；fixture 模式下另测封面列（表头顺序、24px 绘制、只有可见行的批量请求、隐藏列零请求）、`inspect_sound` 的标签分组与 `searchable` 按钮、封面点击的 `coverHash` 过滤。
+- `tools/check-inspector-live.mjs`——对着**真实文件**（`tools/make-inspector-fixture.py` 造的小库）验证另一半：内嵌 APIC 与 sidecar 封面各自产出缩略图、面板解的是 320px 源图而不是 48px 缩略图、ID3/bext/iXML/LIST 的标签都在、标签点击成为查询词、封面过滤只剩一行。
 - `tools/check-shipped.mjs`——对着**打包产物**而不是 `target/release`：解压 zip、用调试端口起那个 exe，断言窗口标题、`asio_compiled=true`、引擎开到设备、`#transport-loop` / `#volume-mute` / `.dock-hints` 存在、`get_loop` 有应答。对着开发目录跑它会漏掉打包环节的问题。
 - `tools/shot.mjs` / `shot-themes.mjs`——截图，给人看，不做断言。
+
+**详情/封面的测试库必须自己造。** `tools/make-inspector-fixture.py` 写一个 19 文件的小库（带 bext + iXML + LIST + ID3 与内嵌 PNG 的 WAV、sidecar `cover.png`、普通 WAV，其中两个文件名带 BPM），因为它既要有封面、有标签、有 BPM，又要足够长（5s）让播放/通道的回归断言仍然成立。**开发性的 details pass 不碰真实库**：要么用这个 fixture，要么用真实库的副本（只复制数据库，音频用硬链接或直接接受播放不可用），原库全程只读。`check-scroll-deep.mjs` 一万行以上就能跑。
+
+**行缩略图必须走 `get_cover_thumbnails`。** 每个 cell 自己 `invoke`、或者滚动时打开音频文件，都会在 289k 库上变成每帧几十次文件 IO；`check-inspector` 数的是批量请求次数与 key 的集合，不是"看起来有图"。
 
 **CDP 脚本固定英文 locale 再断言。** 六份会驱动窗口的 `check-*.mjs` 断言的文案是英文（`Length`、`AUTO PLAY`、`Resume`），在中文机器上会因为找不到 locator 而失败——那是脚本的前提问题，不是功能坏了。所以脚本开头写 `localStorage.setItem('mio:locale', 'en')` 再 reload；列头和菜单项另有 `data-sort-key` / `data-menu-id`，选元素时不依赖翻译。文案覆盖由 `check-i18n.mjs` 负责。
 

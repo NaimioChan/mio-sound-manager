@@ -1,5 +1,9 @@
 // Run against a desktop test session with the large benchmark library active.
 // node tools/check-indexing-feedback.mjs [port] [scratch-parent] [expected-library] [--measure-metadata]
+//
+// The "large library" precondition is 100,000 rows by default. It exists so a
+// 14,000-row fixture cannot accidentally stand in for the benchmark run; pass
+// `--min-rows=N` to run the same checks against a smaller fixture library.
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -21,7 +25,10 @@ let originalRoot
 try {
   await page.waitForSelector('.row[data-path]', { timeout: 30_000 })
   originalRoot = (await active()).root
-  if (process.argv[4]) assert.equal(originalRoot, process.argv[4])
+  // Positional arg 4 is the expected library root; flags (`--min-rows=N`, …) are
+  // separate so an option cannot be mistaken for a path.
+  const expectedRoot = process.argv.slice(4).find((arg) => !arg.startsWith('--'))
+  if (expectedRoot) assert.equal(originalRoot, expectedRoot)
   const start = performance.now()
   let state = await active()
   if (process.argv.includes('--measure-metadata')) console.log('initial library status:', JSON.stringify(state))
@@ -36,13 +43,17 @@ try {
     }
   }
   await page.evaluate(() => localStorage.setItem('mio:locale', 'zh'))
-  // This script assumes all eleven columns are visible to index header cells by key
-  // position; a hidden column from an earlier run would make the failures look like
-  // an index bug.
+  // This script assumes every column is visible to index header cells by key
+  // position; a hidden column from an earlier run would make the failures look
+  // like an index bug.
   await page.evaluate(() => {
     localStorage.removeItem('mio:column-hidden')
     localStorage.removeItem('mio:column-widths')
     localStorage.removeItem('mio:column-order')
+    // The inspector is a layout column; an open one narrows the table and moves
+    // every header cell the geometry checks below measure.
+    localStorage.removeItem('mio:inspector-open')
+    localStorage.removeItem('mio:inspector-width')
   })
   await page.reload()
   await page.waitForSelector('.row[data-path]', { timeout: 30_000 })
@@ -77,7 +88,9 @@ try {
   await page.setViewportSize({ width: 1280, height: 760 })
 
   const count = await invoke('count_matching', { request: {} })
-  assert.ok(count >= 100_000, `expected large library, got ${count} rows`)
+  const minRowsArg = process.argv.find((arg) => arg.startsWith('--min-rows='))
+  const minRows = minRowsArg ? Number(minRowsArg.split('=')[1]) : 100_000
+  assert.ok(count >= minRows, `expected at least ${minRows} rows, got ${count}`)
   for (const [key, sortBy] of [
     ['description', 'description'], ['description', 'description'], ['ucsSubcategory', 'ucs_subcategory'],
     ['ucsSubcategory', 'ucs_subcategory'], ['description', 'description'],

@@ -175,7 +175,32 @@ cargo run --release -p mio-cli -- classify-check expect.json
 **库文件叫 `mio-sm.db`，不再是 `slip-sound.db`。** 列名保持与参考实现一致是有目的的（旧库能直接打开、原地迁移、逐行比对），但文件名是我们自己的东西。`IndexDb::open` 会先做一次改名：`slip-sound.db` 存在而 `mio-sm.db` 不存在时，把主文件连同 `-wal` / `-shm` 一起改过来。**journal 必须跟着改**——SQLite 按名字找 WAL，主文件改名而日志留在旧名下，等于让引擎认为上次是干净关闭的，最后一个已提交事务就丢了。两个名字都在时（迁移中途被打断）保留新文件、不动旧文件，因为猜哪个是当前版本比留一个陈旧文件更糟。
 
 表结构与参考实现一致（`sounds` + `sounds_fts` + 三个触发器），新增 `mtime_ns`、`indexed_at`、
-`bpm`、`description`、`ucs_category`、`ucs_subcategory`、`ucs_cat_id` 七列和一个 `meta` 表。
+`bpm`、`description`、`ucs_category`、`ucs_subcategory`、`ucs_cat_id`、`tags`、`cover_hash`、
+`details_indexed` 十列，`sound_details` / `covers` 两张表和 `meta` 表。schema 版本 5。
+
+**详情三列与两张表（schema 5）。**
+
+- `sounds.tags` 是清洗后、可搜索的标签文本，进 `sounds_fts`；`sounds.cover_hash` 是图片字节的 32 位
+  hex；`sounds.details_indexed` 标记详情 pass 是否处理过这一行。它**不复用** `metadata_indexed`：
+  重跑标签提取不该把 28 万行重新分类一遍。
+- `sound_details(sound_id, tags_json, tags_truncated, updated_at)` 存面板要的原始标签列表
+  （`[{key, value, source, searchable}]`）。`details_indexed=0` 时这一行**不得展示**——文件被重写后，
+  旧标签属于旧版本的文件。
+- `covers(hash, thumb, thumb_mime, source_path, source_mtime_ns, updated_at)` 按图片哈希存一张 48px
+  缩略图；同一张专辑封面出现在 400 个文件里只解码一次、存一份。
+
+**upsert 对新增字段沿用指纹规则。** `(mtime, size)` 未变就保留 `cover_hash` / `tags` /
+`details_indexed`；变了就把三者清空、标记 0，由下一次 details pass 重新填。旧的 `sound_details` 行
+留着不删（每行一次 delete 不值，而且 `details_indexed=0` 本身就让它不可见）。
+
+**FTS 加 `tags` 列，`fts_version` 3 → 4。** 这是结构性变更：列集变了就必须 drop / recreate /
+rebuild，否则查询用的列和索引描述的列不是同一个东西，升级前写入的标签会静默搜不到。
+`sounds_trigram` 不变（只搜文件名）。
+
+**`idx_cover_hash` 与 `idx_sample_rate`。** 面板的"同封面"和采样率过滤都是等值条件，没有索引就是
+点击背后的一次 289k 行扫描。排序靠 `idx_cover_hash` + `NULLS LAST`，`EXPLAIN QUERY PLAN` 在单测里
+断言（`cover_filter_and_sort_use_the_index_and_group_by_hash`、
+`numeric_filters_are_exact_and_combine_with_other_filters`），不凭感觉加复合索引。
 
 三条容易破坏且难查的不变式：
 
@@ -235,3 +260,67 @@ walk  →  probe（并行）  →  classify（同一 worker）  →  write（批
 **基础索引复用遍历阶段的文件信息。** Windows 上 `DirEntry::metadata()` 直接取自 `FindNextFileW` 的结果。之前 `walkdir`、`probe_file`、增量检查各 stat 一次，实测 8.2s 浪费在重复 stat 上。后台 metadata 读取发生在基础索引之后，需在打开的文件句柄上核对 size 和 mtime，避免将已变化文件的描述写到旧行。
 
 **增量索引是稳态的主要路径。** `(mtime)` 匹配就跳过探测。28 万文件第二次运行：5.4s，探测 0 个文件。
+
+## details（标签与封面）
+
+`crates/mio-index/src/details.rs` 只做两件事：抽原始标签、给封面算身份。**不解码音频，不解码图片**——
+缩略图是 app 的事（`crates/mio-app/src/covers.rs`），index crate 没有理由依赖一个图片编解码器。
+
+**`searchable` 是一个承诺。** 标了 searchable 的值必须出现在 `sounds.tags` 里（也就是 FTS 里）；
+被清洗拒绝的值标成不可搜索，面板显示成普通文本。搜索文本只从这一份列表推导（`search_text()`），
+所以两者不可能不一致。长 GUID、超过 4KB 的 dump、几乎不可打印的值都归入"只显示、不搜索"。
+
+**复用 WAV 的 RIFF walker 和 ID3 reader，不写第二套。** `probe.rs` 的 `read_metadata_from` 与新加的
+`read_details_from` 共用同一个 chunk 遍历和 `read_id3v2` 调用：两套解析器意味着 `data` 块越过 EOF
+这种已经修过一次的情况要修第二次。
+
+**各格式的来源：**
+
+- WAV：`bext`（固定偏移的描述/录制者/日期/时间/时间参考 + 编码历史）、`iXML`（`ATTR` 块与常见裸标签）、
+  `LIST/INFO`（已知四字码 + 未知码原样保留）、内嵌 `ID3 ` 块、`_PMX`。
+- MP3 / FLAC / OGG / M4A：symphonia 的元数据读取器，遍历**所有 revision**——OGG 的 picture 是独立的
+  revision，只读 `current()` 会漏掉封面。
+- AIFF：可选内嵌 `ID3 ` 块；其余格式自有 chunk 不做第二套解析，文件照样标记 details done。
+
+**封面选择：** 优先 `FrontCover`，否则第一张可用的图；`-->`（URL）、空数据、超过 32MB 的跳过。
+哈希是 `sha256(b"mio-cover\0" + 图片字节)` 的前 16 字节——哈希的是图片，不是标签容器，所以同一张
+JPEG 嵌在 MP3 与 FLAC 里能匹配，重新编码的不会（已确认接受）。
+
+**sidecar 解析按目录缓存。** 候选顺序是 `cover.*` / `folder.*` / `front.*` / `album.*` / `artwork.*` /
+`art.*`，其次"该目录唯一的图片"，再往上找祖先目录。**一个目录里有几张互不相关的图片时不猜**——
+猜错会把同一张图贴到不相干的文件上，而哈希会声称它们是"同一张封面"。candidate 按路径排序，所以一个
+worker 里只保留最近一个目录的解析结果就够。**sidecar 的变化不会被音频 mtime 发现**，只有全量重建索引
+或重新跑 details pass 才会刷新。
+
+**details pass 和 metadata pass 是同一个 worker，两个分支。** 候选查询是
+`metadata_indexed = 0 OR details_indexed = 0`，一次覆盖两个半场；`details_rule` 是独立于
+`metadata_rule` 的版本键，改标签提取器不会重分类 28 万行（`prepare_details_pass` 只重置
+`details_indexed` / `tags` / `cover_hash`）。
+
+**缩略图只为库里还没有的 hash 解码。** 一批 candidate 先收集 hash 去重，再查 `covers` 一次，已知的
+直接跳过。失败（打不开、图片坏）按"无缩略图"处理并标记该行 done，不让一个坏文件每轮都回来。
+
+**全量 pass 结束后才清孤儿缩略图。** `DELETE FROM covers WHERE hash NOT IN (...)` 只在 `sounds` 已知
+完整时正确——每批清会删掉一行还没重写到的封面。
+
+**测量（本机，真实 289k 库的副本；原库只读，写入全部落在副本上）：**
+
+| 口径 | 实测 |
+| --- | --- |
+| schema 4 → 5 迁移 + 全量 details pass | **288,955 行，0 失败，0 deferred，455,844 ms（7 分 36 秒）** |
+| 有封面的行 / 不同封面 | 73,032 行（25.3%）/ 191 张 |
+| `covers` 表体积 | 191 行共 329,881 B，平均 1,727 B/张，最大 5,899 B |
+| 数据库增长 | 712 MB → 1,020 MB（+307 MB）。其中 `sound_details.tags_json` 208 MB、`sounds.tags` 63 MB；封面缩略图只占 0.3 MB |
+| 一屏 33 个封面 key 的批量缩略图 | p50 **9.8 ms**、p95 **18.6 ms**，返回 33/33，payload 69 KB |
+| `inspect_sound` 冷读 | p50 **18.5 ms**、p95 **21.0 ms** |
+| `inspect_sound` LRU 命中 | p50 **8.9 ms**、p95 **10.2 ms** |
+| 封面等值过滤 / 封面排序 | p50 6.0 ms / 23.7 ms（排序返回全表 288,955 行计数） |
+| FTS tags 列（`Vintage`） | 1,274 行，p50 15.2 ms |
+| `check-scroll-deep`（真实库） | 5 次深度跳转 134–217 ms 全部绘出真实行 |
+
+19 文件小库上一次 details pass 是 54 ms（19/19）。**库越大，每行越贵**：7 分 36 秒 / 288,955 ≈
+1.6 ms/行，而小库是 2.8 ms/行——差距来自真实库的 WAV 需要走 RIFF 尾部 chunk，小库的 chunk 更短。
+
+数据库增长的大头不是封面而是标签文本（208 + 63 = 271 MB）。若要把 `sound_details` 的 JSON 压小，
+第一步是只存面板真正会显示的 key，而不是全部可搜索值——那是另一个决定，本轮没做。
+
