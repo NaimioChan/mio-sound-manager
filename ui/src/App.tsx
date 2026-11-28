@@ -31,11 +31,13 @@ import {
 } from './columns'
 import { WaveformDock, type Region } from './WaveformDock'
 import { Sidebar, type SidebarMode } from './Sidebar'
+import { Inspector } from './Inspector'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { CategoryDialog } from './CategoryDialog'
 import { SettingsDialog, loadSettings, saveSettings, type Settings } from './SettingsDialog'
 import { IndexOverlay } from './IndexOverlay'
 import { UNCATEGORIZED, categoryName, editKindName, t } from './i18n'
+import { formatBpm, sampleRateLabel } from './format'
 import { ICON } from './icons'
 import { focusedElement, isTextEntry } from './keyboard'
 // The product mark, next to the name in the top bar. A file rather than inline
@@ -152,6 +154,23 @@ const UNMUTE_KEY = 'mio:unmute-gain'
 const SIDEBAR_MODE_KEY = 'mio:sidebar-mode'
 const SIDEBAR_MODES: SidebarMode[] = ['categories', 'ucs', 'folders']
 
+/** The inspector's saved open state and width, outside the settings blob. */
+const INSPECTOR_OPEN_KEY = 'mio:inspector-open'
+const INSPECTOR_WIDTH_KEY = 'mio:inspector-width'
+const INSPECTOR_MIN = 240
+const INSPECTOR_MAX = 480
+const INSPECTOR_DEFAULT = 300
+
+function loadInspectorOpen(): boolean {
+  return localStorage.getItem(INSPECTOR_OPEN_KEY) === '1'
+}
+
+function loadInspectorWidth(): number {
+  const stored = Number(localStorage.getItem(INSPECTOR_WIDTH_KEY))
+  if (!Number.isFinite(stored) || stored <= 0) return INSPECTOR_DEFAULT
+  return Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, Math.round(stored)))
+}
+
 function loadSidebarMode(): SidebarMode {
   const stored = localStorage.getItem(SIDEBAR_MODE_KEY)
   if (stored && (SIDEBAR_MODES as string[]).includes(stored)) return stored as SidebarMode
@@ -238,6 +257,38 @@ export function App() {
   const [folder, setFolder] = createSignal<string | null>(null)
   const [favoritesOnly, setFavoritesOnly] = createSignal(false)
   const [sidebarMode, setSidebarMode] = createSignal<SidebarMode>(loadSidebarMode())
+
+  /**
+   * The channel-count, sample-rate, tempo and exact-cover filters.
+   *
+   * One value each, because clicking a different count means "that one instead":
+   * equality filters intersect, so two counts would always match nothing.
+   */
+  const [channelsFilter, setChannelsFilter] = createSignal<number | null>(null)
+  const [sampleRateFilter, setSampleRateFilter] = createSignal<number | null>(null)
+  const [bpmFilter, setBpmFilter] = createSignal<number | null>(null)
+  const [coverFilter, setCoverFilter] = createSignal<string | null>(null)
+
+  /**
+   * The inspector.
+   *
+   * The open state and width live here rather than inside the component because
+   * the layout track has to reserve the width *around* the table: a panel that
+   * sized itself would desynchronise the grid from the table's ResizeObserver on
+   * the frame after every drag.
+   */
+  const [inspectorOpen, setInspectorOpen] = createSignal(loadInspectorOpen())
+  const [inspectorW, setInspectorW] = createSignal(loadInspectorWidth())
+  /**
+   * Bumped when a details pass finishes, a library switches, or a full reindex
+   * completes.
+   *
+   * Deliberately separate from `dataEpoch`: that one drops every cached segment
+   * and re-queries the list. New thumbnails and tags change no row's position or
+   * membership, so they must not cost a query — only the cover cells and the
+   * inspector re-read what they had cached.
+   */
+  const [coverEpoch, setCoverEpoch] = createSignal(0)
 
   const [sortKey, setSortKey] = createSignal<SortKey>('filename')
   const [sortAsc, setSortAsc] = createSignal(true)
@@ -393,6 +444,10 @@ export function App() {
     ucsCatIds: ucsCatIds().length > 0 ? ucsCatIds() : undefined,
     folder: folder() ?? undefined,
     favoriteOnly: favoritesOnly() ? true : undefined,
+    channels: channelsFilter() ?? undefined,
+    sampleRate: sampleRateFilter() ?? undefined,
+    bpm: bpmFilter() ?? undefined,
+    coverHash: coverFilter() ?? undefined,
     sortBy: SORT_WIRE[sortKey()],
     sortDir: (sortAsc() ? 'asc' : 'desc') as 'asc' | 'desc'
   }))
@@ -754,6 +809,9 @@ export function App() {
       setFavoritesOnly(false)
       clearSelection()
       setActive(null)
+      // A different database means every cached thumbnail and detail belongs to
+      // a hash or a path this library may not even contain.
+      setCoverEpoch((epoch) => epoch + 1)
       await refresh()
     } catch (e) {
       setNotice(String(e))
@@ -802,6 +860,10 @@ export function App() {
         }
         if (active && previous?.root === active.root &&
             ((previous.indexing && !active.indexing) || (previous.metadataIndexing && !active.metadataIndexing))) {
+          // A finished pass means new tags and thumbnails exist. The rows did not
+          // move, so only the cover cells and the inspector re-read; a `dataEpoch`
+          // bump here would throw away every cached segment for new pictures.
+          setCoverEpoch((epoch) => epoch + 1)
           void Promise.all([loadTree(), loadSidebar(), runSearch()])
         }
         if (next.some((library) => library.indexing || library.metadataIndexing)) {
@@ -1048,6 +1110,153 @@ export function App() {
     setUcsSubcategories([])
     setFavoritesOnly(false)
     void runSearch()
+  }
+
+  /**
+   * Clear every search filter, without re-querying.
+   *
+   * Deliberately not built from the rail's toggles: `toggleCategory` and
+   * `setFolderFilter` each clear a *different* set of neighbours (that is what a
+   * click on one rail row means), so composing them loses filters the click did
+   * not mention and runs a query per step. The inspector's exclusive clicks need
+   * one state reset followed by exactly one query, and this is that reset.
+   *
+   * The active row is kept: the sound whose value was clicked is, by definition,
+   * in the new result set, and dropping it would close the inspector (or blank
+   * it) for the row the user is still looking at.
+   */
+  const clearSearchState = () => {
+    setQueryTerms([])
+    setSearchDraft('')
+    setCategories([])
+    setSubcategories([])
+    setUcsCategories([])
+    setUcsSubcategories([])
+    setUcsCatIds([])
+    setFolder(null)
+    setFavoritesOnly(false)
+    setChannelsFilter(null)
+    setSampleRateFilter(null)
+    setBpmFilter(null)
+    setCoverFilter(null)
+    clearSelection()
+  }
+
+  /**
+   * Append one term to the query, keeping everything else.
+   *
+   * A value with no letter or digit is skipped: `fst::` or `—` would become an
+   * empty FTS expression, and the list would silently clear. The dedupe is
+   * case-insensitive because FTS5 treats `Door` and `door` as the same token.
+   */
+  const addQueryTerm = (text: string) => {
+    const term = text.trim()
+    if (!term || !/[0-9a-z]/i.test(term)) return
+    const lower = term.toLocaleLowerCase()
+    if (queryTerms().some((existing) => existing.toLocaleLowerCase() === lower)) return
+    setQueryTerms([...queryTerms(), term])
+    void runSearch()
+  }
+
+  /** A filter that replaces the whole search: clear, set one thing, one query. */
+  const showCategoryExclusive = (category: string) => {
+    clearSearchState()
+    setCategories([category])
+    void runSearch()
+  }
+
+  const showSubcategoryExclusive = (category: string, sub: string) => {
+    clearSearchState()
+    setCategories([category])
+    setSubcategories([{ category, sub }])
+    void runSearch()
+  }
+
+  const showUcsCategoryExclusive = (category: string) => {
+    clearSearchState()
+    setUcsCategories([category])
+    void runSearch()
+  }
+
+  const showUcsSubcategoryExclusive = (category: string, sub: string) => {
+    clearSearchState()
+    setUcsCategories([category])
+    setUcsSubcategories([{ category, sub }])
+    void runSearch()
+  }
+
+  const showUcsCatIdExclusive = (catId: string) => {
+    clearSearchState()
+    setUcsCatIds([catId])
+    void runSearch()
+  }
+
+  /**
+   * Filter to one folder.
+   *
+   * The caller passes an absolute path. `SoundRow.folder` is relative to the
+   * library root, and the backend's filter is a path range over absolute stored
+   * paths; handing it the relative value would match nothing.
+   */
+  const showFolderExclusive = (absolute: string | null) => {
+    clearSearchState()
+    setFolder(absolute)
+    void runSearch()
+  }
+
+  /**
+   * A numeric filter: replace this field, or clear it when it already is the
+   * value, and leave every other filter alone.
+   */
+  const toggleChannelsFilter = (channels: number) => {
+    setChannelsFilter(channelsFilter() === channels ? null : channels)
+    void runSearch()
+  }
+
+  const toggleSampleRateFilter = (rate: number) => {
+    setSampleRateFilter(sampleRateFilter() === rate ? null : rate)
+    void runSearch()
+  }
+
+  const toggleBpmFilter = (bpm: number) => {
+    setBpmFilter(bpmFilter() === bpm ? null : bpm)
+    void runSearch()
+  }
+
+  /**
+   * Filter to one cover, by its bytes.
+   *
+   * "Same cover" is exact, not visual: two files carrying the same JPEG share a
+   * hash, a re-encoded or re-scaled copy does not. That was accepted deliberately
+   * — a perceptual hash would merge artwork the user did not ask to merge.
+   */
+  const showCoverExclusive = (key: string) => {
+    clearSearchState()
+    setCoverFilter(key)
+    void runSearch()
+  }
+
+  const copyValue = (value: string) => {
+    void navigator.clipboard.writeText(value)
+    setNotice(t('notice.valueCopied', { value }))
+  }
+
+  /**
+   * The panel width while dragging, and once the drag settles.
+   *
+   * The signal drives every pointermove (the table resizes through CSS grid with
+   * no query), but writing `localStorage` per move would sync-flush the profile
+   * dozens of times a second. A trailing write is enough: the value only has to
+   * survive a reload.
+   */
+  let inspectorSave: number | undefined
+  const changeInspectorWidth = (px: number) => {
+    const clamped = Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, Math.round(px)))
+    setInspectorW(clamped)
+    if (inspectorSave !== undefined) window.clearTimeout(inspectorSave)
+    inspectorSave = window.setTimeout(() => {
+      localStorage.setItem(INSPECTOR_WIDTH_KEY, String(inspectorW()))
+    }, 200)
   }
 
   /**
@@ -1682,6 +1891,42 @@ export function App() {
         clear: () => setFolderFilter(null)
       })
     }
+    if (channelsFilter() !== null) {
+      chips.push({
+        label: t('search.channels', { value: channelsFilter()! }),
+        clear: () => {
+          setChannelsFilter(null)
+          void runSearch()
+        }
+      })
+    }
+    if (sampleRateFilter() !== null) {
+      chips.push({
+        label: t('search.sampleRate', { value: sampleRateLabel(sampleRateFilter()) }),
+        clear: () => {
+          setSampleRateFilter(null)
+          void runSearch()
+        }
+      })
+    }
+    if (bpmFilter() !== null) {
+      chips.push({
+        label: t('search.bpm', { value: formatBpm(bpmFilter()) }),
+        clear: () => {
+          setBpmFilter(null)
+          void runSearch()
+        }
+      })
+    }
+    if (coverFilter() !== null) {
+      chips.push({
+        label: t('search.sameCover'),
+        clear: () => {
+          setCoverFilter(null)
+          void runSearch()
+        }
+      })
+    }
     if (favoritesOnly()) {
       chips.push({
         label: t('search.favorites'),
@@ -1868,26 +2113,58 @@ export function App() {
               </div>
             }
           >
-            <SoundTable
-              epoch={dataEpoch()}
-              requestKey={JSON.stringify(request())}
-              selectionReset={selectionReset()}
-              request={request()}
-              fetchWindow={fetchWindow}
-              active={active()}
-              sortKey={sortKey()}
-              sortAsc={sortAsc()}
-              matching={matching()}
-              querying={querying()}
-              favoriteOverride={favoriteOverride()}
-              onSort={changeSort}
-              onSelectionChange={changeSelection}
-              onActivate={activate}
-              onRowMenu={setMenu}
-              onToggleFavorite={toggleFavorite}
-              onSelectAll={onSelectAll}
-              onHeaderMenu={(x, y) => setHeaderMenu({ x, y })}
-            />
+            <div class="main-body">
+              <SoundTable
+                epoch={dataEpoch()}
+                requestKey={JSON.stringify(request())}
+                selectionReset={selectionReset()}
+                request={request()}
+                fetchWindow={fetchWindow}
+                active={active()}
+                sortKey={sortKey()}
+                sortAsc={sortAsc()}
+                matching={matching()}
+                querying={querying()}
+                favoriteOverride={favoriteOverride()}
+                onSort={changeSort}
+                onSelectionChange={changeSelection}
+                onActivate={activate}
+                onRowMenu={setMenu}
+                onToggleFavorite={toggleFavorite}
+                onSelectAll={onSelectAll}
+                onHeaderMenu={(x, y) => setHeaderMenu({ x, y })}
+                coverEpoch={coverEpoch()}
+                onCoverSearch={showCoverExclusive}
+              />
+              <Inspector
+                row={active()}
+                selectionCount={selectionCount()}
+                open={inspectorOpen()}
+                width={inspectorW()}
+                coverEpoch={coverEpoch()}
+                onOpen={() => {
+                  setInspectorOpen(true)
+                  localStorage.setItem(INSPECTOR_OPEN_KEY, '1')
+                }}
+                onClose={() => {
+                  setInspectorOpen(false)
+                  localStorage.setItem(INSPECTOR_OPEN_KEY, '0')
+                }}
+                onResize={changeInspectorWidth}
+                onQueryTerm={addQueryTerm}
+                onCopy={copyValue}
+                onFolder={showFolderExclusive}
+                onCover={showCoverExclusive}
+                onCategory={showCategoryExclusive}
+                onSubcategory={showSubcategoryExclusive}
+                onUcsCategory={showUcsCategoryExclusive}
+                onUcsSubcategory={showUcsSubcategoryExclusive}
+                onUcsCatId={showUcsCatIdExclusive}
+                onChannels={toggleChannelsFilter}
+                onSampleRate={toggleSampleRateFilter}
+                onBpm={toggleBpmFilter}
+              />
+            </div>
           </Show>
 
           <WaveformDock

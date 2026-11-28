@@ -219,6 +219,10 @@ pub struct SoundDto {
     /// Tempo stated in the file name. `None` when the name states none; the table
     /// renders it as an empty cell, and sorting puts unmarked rows last.
     pub bpm: Option<f64>,
+    /// The row's cover identity, or `None` when it carries no picture (or the
+    /// details pass has not reached it). A key, never the picture: the table asks
+    /// for thumbnails in one batch for the rows it can see.
+    pub cover_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -247,6 +251,12 @@ pub struct SearchRequest {
     pub folder: Option<String>,
     pub min_confidence: Option<f64>,
     pub favorite_only: bool,
+    /// Exact cover identity; "same cover" as a filter.
+    pub cover_hash: Option<String>,
+    /// Exact sample rate. One value: two rates intersect to nothing.
+    pub sample_rate: Option<u32>,
+    /// Exact tempo.
+    pub bpm: Option<f64>,
     pub sort_by: Option<String>,
     pub sort_dir: Option<String>,
     pub limit: Option<u32>,
@@ -289,6 +299,9 @@ impl SearchRequest {
             folder: self.folder,
             min_confidence: self.min_confidence,
             favorite_only: self.favorite_only,
+            cover_hash: self.cover_hash,
+            sample_rate: self.sample_rate,
+            bpm: self.bpm,
             sort_by,
             sort_dir: self.sort_dir.as_deref().map(library::sort_dir),
             limit: self.limit.unwrap_or(200).clamp(1, 5_000),
@@ -320,6 +333,7 @@ impl From<Sound> for SoundDto {
             category_manual: s.category_manual,
             folder: s.folder,
             bpm: s.bpm,
+            cover_key: s.cover_hash,
         }
     }
 }
@@ -1068,6 +1082,83 @@ pub fn reveal_in_folder(app: tauri::AppHandle, path: String) -> AppResult<()> {
     app.opener()
         .reveal_item_in_dir(&path)
         .map_err(|e| AppError::internal(format!("reveal failed: {e}")))
+}
+
+/// One raw tag value, as the inspector shows it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TagDto {
+    pub key: String,
+    pub value: String,
+    pub source: String,
+    /// True only when the value is in `sounds.tags` and therefore in FTS. The
+    /// inspector only makes a searchable value clickable.
+    pub searchable: bool,
+}
+
+/// A picture for the inspector: a data URL, or a key with no bytes.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverDto {
+    /// The identity, or `None` when the file has no picture at all.
+    pub key: Option<String>,
+    /// 512px JPEG/PNG as a data URL. `None` when bytes exist but do not decode.
+    pub data_url: Option<String>,
+    pub mime: String,
+}
+
+/// Everything the details panel shows for one sound.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundDetailsDto {
+    pub path: String,
+    /// The file's mtime as the index last saw it, or `None` when it is not indexed.
+    pub mtime_ns: Option<i64>,
+    pub indexed_at: Option<i64>,
+    pub tags: Vec<TagDto>,
+    pub tags_truncated: bool,
+    pub cover: Option<CoverDto>,
+    /// True when the values came from reading the file now rather than from the
+    /// details pass: they are shown, but they are not in the search index yet.
+    pub lazy: bool,
+}
+
+/// A thumbnail for one cover identity.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverThumbDto {
+    pub key: String,
+    pub data_url: String,
+    pub mime: String,
+}
+
+/// Tags, cover identity and the 512px picture for the inspector.
+///
+/// Async + blocking worker: a row the details pass has not reached yet is read
+/// from disk here (tag containers plus one image decode), and neither may run on
+/// the main thread. The result is cached in `AppState` by path and fingerprint, so
+/// walking a list with the arrow keys re-reads only what it has not shown.
+#[tauri::command]
+pub async fn inspect_sound(app: tauri::AppHandle, path: String) -> AppResult<SoundDetailsDto> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().inspect_sound(&path))
+        .await
+        .map_err(|e| AppError::internal(format!("inspect task failed: {e}")))?
+}
+
+/// Thumbnails for up to 128 cover identities in one round trip.
+///
+/// Reads the `covers` table only: no file IO and no decoding. Unknown keys are
+/// omitted, and the table draws its placeholder for them.
+#[tauri::command]
+pub async fn get_cover_thumbnails(
+    app: tauri::AppHandle,
+    keys: Vec<String>,
+) -> AppResult<Vec<CoverThumbDto>> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().cover_thumbnails(keys))
+        .await
+        .map_err(|e| AppError::internal(format!("cover thumbnails task failed: {e}")))?
 }
 
 #[cfg(test)]

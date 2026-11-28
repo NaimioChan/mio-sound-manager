@@ -9,6 +9,11 @@
 //! 8 threads probe ~20k files/s. That is fast enough that the walk and the
 //! SQLite write are now the comparable costs, which is why the indexer times all
 //! three stages separately.
+//!
+//! [`read_details_checked`] is the slower second pass: it opens the tag containers
+//! and the embedded pictures that [`probe_basic_with_meta`] deliberately skips. It
+//! shares this module's RIFF walker and ID3 reader rather than growing a second
+//! parser for the same chunks.
 
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
@@ -21,6 +26,8 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+
+use crate::details::{self, EmbeddedDetails};
 
 const MAX_DESCRIPTION_BYTES: usize = 4 * 1024 * 1024;
 
@@ -252,6 +259,336 @@ pub fn metadata_only_with_meta_checked(
     }
     let metadata = read_metadata_from(path, &mut file);
     Ok(matches(file.metadata()?).then(|| metadata.into()))
+}
+
+/// Raw tags and cover bytes for the details pass, from a single open handle.
+///
+/// Same fingerprint contract as [`metadata_only_with_meta_checked`]: `Ok(None)`
+/// means the file changed under the pass and this row is deferred, not failed.
+/// The fingerprint is re-checked after extraction because decoding a picture can
+/// take long enough for the file to be replaced.
+pub fn details_only_with_meta_checked(
+    path: &Path,
+    filesize: u64,
+    expected_mtime_ns: i64,
+) -> std::io::Result<Option<EmbeddedDetails>> {
+    let mut file = File::open(path)?;
+    let matches = |meta: Metadata| meta.len() == filesize && mtime_ns(&meta) == expected_mtime_ns;
+    if !matches(file.metadata()?) {
+        return Ok(None);
+    }
+    let details = read_details_from(path, &mut file);
+    Ok(matches(file.metadata()?).then_some(details))
+}
+
+/// Lazy version for the inspector: no fingerprint, reads whatever is on disk now.
+///
+/// This is the "show the current file even though the pass has not reached it"
+/// path. It deliberately does not write anything: the tags it returns are for
+/// display, and a value it shows is not necessarily in the search index yet.
+pub fn read_details_now(path: &Path) -> std::io::Result<EmbeddedDetails> {
+    let mut file = File::open(path)?;
+    Ok(read_details_from(path, &mut file))
+}
+
+fn read_details_from(path: &Path, file: &mut File) -> EmbeddedDetails {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut out = EmbeddedDetails::default();
+    match ext.as_str() {
+        "wav" | "wave" => read_wav_details(file, &mut out),
+        "aif" | "aiff" => read_aiff_details(file, &mut out),
+        _ => read_symphonia_details(path, &mut out),
+    }
+    details::finalize(out)
+}
+
+/// The RIFF walk WAV tags need.
+///
+/// One walker serves both passes: the metadata pass asks for the description
+/// fields, this one asks for every tag and the picture. Copying the chunk walker
+/// would mean two places to fix the `data`-chunk-past-EOF case the first one
+/// already handles.
+fn read_wav_details(file: &mut File, out: &mut EmbeddedDetails) {
+    let mut header = [0u8; 12];
+    if file.read_exact(&mut header).is_err() {
+        return;
+    }
+    if &header[..4] != b"RIFF" || &header[8..12] != b"WAVE" {
+        return;
+    }
+    loop {
+        let mut chunk = [0u8; 8];
+        if file.read_exact(&mut chunk).is_err() {
+            break;
+        }
+        let size = u32::from_le_bytes(chunk[4..8].try_into().unwrap()) as u64;
+        let interesting = matches!(&chunk[..4], b"bext" | b"iXML" | b"LIST" | b"ID3 " | b"_PMX");
+        let body = if interesting {
+            let read_size = size.min(MAX_DESCRIPTION_BYTES as u64) as usize;
+            let mut body = vec![0u8; read_size];
+            if file.read_exact(&mut body).is_err() {
+                break;
+            }
+            if size > read_size as u64 {
+                if file
+                    .seek(SeekFrom::Current((size - read_size as u64) as i64))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            body
+        } else {
+            if file.seek(SeekFrom::Current(size as i64)).is_err() {
+                break;
+            }
+            Vec::new()
+        };
+        if size & 1 == 1 {
+            if file.seek(SeekFrom::Current(1)).is_err() {
+                break;
+            }
+        }
+
+        match &chunk[..4] {
+            b"bext" => bext_tags(&body, out),
+            b"iXML" => ixml_tags(&body, out),
+            b"LIST" => info_tags(&body, out),
+            b"ID3 " => id3_details(&body, out),
+            b"_PMX" => {
+                if let Some(value) = ascii_description(&body) {
+                    details::push_field(out, "info", "info.comment", &value);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// AIFF tags: an optional embedded `ID3 ` chunk. Other metadata lives in the
+/// format's own chunks and is not worth a second parser for the share of real
+/// libraries that use it; the details pass still marks the file done.
+fn read_aiff_details(file: &mut File, out: &mut EmbeddedDetails) {
+    let mut header = [0u8; 12];
+    if file.read_exact(&mut header).is_err() {
+        return;
+    }
+    if &header[..4] != b"FORM" || &header[8..12] != b"AIFF" {
+        return;
+    }
+    loop {
+        let mut chunk = [0u8; 8];
+        if file.read_exact(&mut chunk).is_err() {
+            break;
+        }
+        let size = u32::from_be_bytes(chunk[4..8].try_into().unwrap()) as u64;
+        if &chunk[..4] == b"ID3 " {
+            let read_size = size.min(MAX_DESCRIPTION_BYTES as u64) as usize;
+            let mut body = vec![0u8; read_size];
+            if file.read_exact(&mut body).is_err() {
+                break;
+            }
+            id3_details(&body, out);
+        } else if file.seek(SeekFrom::Current(size as i64)).is_err() {
+            break;
+        }
+        if size & 1 == 1 && file.seek(SeekFrom::Current(1)).is_err() {
+            break;
+        }
+    }
+}
+
+/// Formats whose metadata symphonia already parses correctly (FLAC, OGG, M4A,
+/// MP3). The reader is opened with the metadata limits the pass wants and every
+/// revision in the log is read, because OGG stores a picture as its own revision.
+fn read_symphonia_details(path: &Path, out: &mut EmbeddedDetails) {
+    let Ok(file) = File::open(path) else {
+        return;
+    };
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let mut probed = match symphonia::default::get_probe().format(
+        &hint,
+        stream,
+        &FormatOptions::default(),
+        &details::metadata_options(),
+    ) {
+        Ok(probed) => probed,
+        Err(_) => return,
+    };
+    let source = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("flac") => "vorbis",
+        Some("ogg") | Some("opus") => "vorbis",
+        Some("m4a") | Some("m4b") | Some("mp4") | Some("aac") => "m4a",
+        _ => "id3",
+    };
+    let mut metadata = probed.format.metadata();
+    // All revisions, oldest first. A tag written later usually supersedes an
+    // earlier one, but the inspector shows what the file declares; duplicates are
+    // collapsed by `finalize`.
+    loop {
+        if let Some(revision) = metadata.current() {
+            details::from_revision(revision, source, out);
+        }
+        if metadata.pop().is_none() {
+            break;
+        }
+    }
+}
+
+fn bext_tags(body: &[u8], out: &mut EmbeddedDetails) {
+    // The BWF `bext` chunk: fixed offsets for description (0..256),
+    // originator (256..288), originator reference (288..320), date (320..330),
+    // time (330..338), time reference low (338..342), high (342..346), then a
+    // version field and a free-form coding history.
+    let field = |range: std::ops::Range<usize>| -> Option<String> {
+        if body.len() < range.end {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&body[range]).to_string();
+        let text = text.trim_matches('\0').trim().to_string();
+        (!text.is_empty()).then_some(text)
+    };
+    let mut push = |key: &str, value: Option<String>| {
+        if let Some(value) = value {
+            details::push_field(out, "bext", key, &value);
+        }
+    };
+    push("bext.description", field(0..256));
+    push("bext.originator", field(256..288));
+    push("bext.originator_reference", field(288..320));
+    push("bext.origination_date", field(320..330));
+    push("bext.origination_time", field(330..338));
+    if body.len() >= 346 {
+        let low = u32::from_le_bytes(body[338..342].try_into().unwrap()) as u64;
+        let high = u32::from_le_bytes(body[342..346].try_into().unwrap()) as u64;
+        let reference = (high << 32) | low;
+        if reference > 0 {
+            details::push_field(out, "bext", "bext.time_reference", &reference.to_string());
+        }
+    }
+    // Coding history starts after the 602-byte fixed part (or 348 for version 0)
+    // and runs to the end of the chunk. It is prose about the recording chain,
+    // which is exactly the "where did this come from" note the inspector wants.
+    let history_start = if body.len() > 602 { 602 } else { 348 };
+    if body.len() > history_start {
+        let history = String::from_utf8_lossy(&body[history_start..]).to_string();
+        let history = history.trim_matches('\0').trim().to_string();
+        if !history.is_empty() {
+            details::push_field(out, "bext", "bext.coding_history", &history);
+        }
+    }
+}
+
+fn ixml_tags(body: &[u8], out: &mut EmbeddedDetails) {
+    let text = String::from_utf8_lossy(body);
+    let lower = text.to_ascii_lowercase();
+    // `ATTR` blocks: `<ATTR><NAME>Foo</NAME><VALUE>Bar</VALUE></ATTR>`, which is
+    // what Pro Tools and most recorders write.
+    let mut at = 0;
+    while let Some(relative) = lower[at..].find("<attr>") {
+        let start = at + relative;
+        let Some(end) = lower[start..].find("</attr>").map(|offset| start + offset) else {
+            break;
+        };
+        let block = &text[start..end];
+        let block_lower = &lower[start..end];
+        if let (Some(name_start), Some(value_start)) = (block_lower.find("<name>"), block_lower.find("<value>")) {
+            let name_start = name_start + "<name>".len();
+            let value_start = value_start + "<value>".len();
+            if let (Some(name_end), Some(value_end)) =
+                (block_lower[name_start..].find("</name>"), block_lower[value_start..].find("</value>"))
+            {
+                let name = block[name_start..name_start + name_end].trim();
+                let value = block[value_start..value_start + value_end].trim();
+                if let Some(key) = details::ixml_key(name) {
+                    details::push_field(out, "ixml", key, value);
+                } else if !name.is_empty() {
+                    details::push_field(out, "ixml", &format!("ixml.{}", name.to_ascii_lowercase()), value);
+                }
+            }
+        }
+        at = end + "</attr>".len();
+    }
+    // Unadorned elements: `<PROJECT>Foo</PROJECT>`. Text that is itself a dump is
+    // refused downstream by `clean_value`, so no filtering happens here.
+    for (raw_name, key) in [
+        ("PROJECT", "ixml.project"),
+        ("SCENE", "ixml.scene"),
+        ("TAKE", "ixml.take"),
+        ("TAPE", "ixml.tape"),
+        ("NOTE", "ixml.note"),
+        ("CIRCLED", "ixml.circled"),
+        ("CATEGORY", "ixml.category"),
+        ("SUBCATEGORY", "ixml.subcategory"),
+    ] {
+        let open = format!("<{}>", raw_name.to_ascii_lowercase());
+        let close = format!("</{}>", raw_name.to_ascii_lowercase());
+        let mut cursor = 0;
+        while let Some(relative) = lower[cursor..].find(&open) {
+            let value_start = cursor + relative + open.len();
+            let Some(value_end) = lower[value_start..].find(&close).map(|offset| value_start + offset) else {
+                break;
+            };
+            details::push_field(out, "ixml", key, text[value_start..value_end].trim());
+            cursor = value_end + close.len();
+        }
+    }
+}
+
+fn info_tags(body: &[u8], out: &mut EmbeddedDetails) {
+    if body.len() < 4 || &body[..4] != b"INFO" {
+        return;
+    }
+    let mut at = 4usize;
+    while at + 8 <= body.len() {
+        let code = &body[at..at + 4];
+        let size = u32::from_le_bytes(body[at + 4..at + 8].try_into().unwrap()) as usize;
+        at += 8;
+        let end = at.saturating_add(size).min(body.len());
+        let value = String::from_utf8_lossy(&body[at..end]).to_string();
+        let key = match details::info_key(code) {
+            Some(key) => key,
+            None => {
+                let text = String::from_utf8_lossy(code).to_string();
+                // An unknown code is still a field: show it under its own name.
+                details::push_field(out, "info", &format!("info.{text}"), &value);
+                at = end.saturating_add(size & 1);
+                continue;
+            }
+        };
+        details::push_field(out, "info", key, &value);
+        at = end.saturating_add(size & 1);
+    }
+}
+
+fn id3_details(body: &[u8], out: &mut EmbeddedDetails) {
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataBuilder;
+    use symphonia_metadata::id3v2::read_id3v2;
+
+    let mut stream = MediaSourceStream::new(
+        Box::new(std::io::Cursor::new(body.to_vec())),
+        Default::default(),
+    );
+    let mut builder = MetadataBuilder::new();
+    if read_id3v2(&mut stream, &mut builder).is_err() {
+        return;
+    }
+    let revision = builder.metadata();
+    details::from_revision(&revision, "id3", out);
 }
 
 /// Fill in what the RIFF header says when symphonia would not open the file.
@@ -1001,5 +1338,121 @@ mod tests {
         assert!(riff_info_descriptions(b"INFOICMT\x13\0\0\0Codec: PCM 24 bit").is_empty());
         assert_eq!(ascii_description(b"Metal impact\0\0"), Some("Metal impact".into()));
         assert_eq!(ascii_description(b"00112233445566778899aabbccddeeff"), None);
+    }
+
+    /// A WAV with one chunk appended after the audio data. `size` is the payload
+    /// length, and the RIFF size is left wrong on purpose: the walker never trusts
+    /// it, and real files with editors' junk chunks often have a stale one.
+    fn wav_with_chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = wav_bytes(10);
+        bytes.extend_from_slice(id);
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        if payload.len() & 1 == 1 {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    fn tag_value<'a>(details: &'a EmbeddedDetails, key: &str) -> Option<&'a str> {
+        details
+            .tags
+            .iter()
+            .find(|tag| tag.key == key)
+            .map(|tag| tag.value.as_str())
+    }
+
+    #[test]
+    fn bext_tags_keep_the_originator_and_the_recording_date() {
+        let mut full = vec![0u8; 602];
+        full[0..13].copy_from_slice(b"Door slam 03.");
+        full[256..266].copy_from_slice(b"Naimio Rec");
+        full[320..330].copy_from_slice(b"2026-11-28");
+        full[330..338].copy_from_slice(b"14:03:22");
+        full.extend_from_slice(b"A=96 kHz\r\nF=24 bit\r\n");
+        let bytes = wav_with_chunk(b"bext", &full);
+        let path = write_temp("details-bext.wav", &bytes);
+        let details = read_details_now(&path).unwrap();
+        assert_eq!(tag_value(&details, "bext.description"), Some("Door slam 03."));
+        assert_eq!(tag_value(&details, "bext.originator"), Some("Naimio Rec"));
+        assert_eq!(
+            tag_value(&details, "bext.origination_date"),
+            Some("2026-11-28")
+        );
+        assert!(tag_value(&details, "bext.coding_history").is_some());
+    }
+
+    #[test]
+    fn ixml_tags_keep_attr_pairs_and_bare_elements() {
+        let xml = br#"<BWFXML><PROJECT>Rain Pack</PROJECT><SCENE>Alley</SCENE><STEINBERG><ATTR_LIST><ATTR><NAME>TAKE</NAME><VALUE>7</VALUE></ATTR></ATTR_LIST></STEINBERG></BWFXML>"#;
+        let bytes = wav_with_chunk(b"iXML", xml);
+        let path = write_temp("details-ixml.wav", &bytes);
+        let details = read_details_now(&path).unwrap();
+        assert_eq!(tag_value(&details, "ixml.project"), Some("Rain Pack"));
+        assert_eq!(tag_value(&details, "ixml.scene"), Some("Alley"));
+        assert_eq!(tag_value(&details, "ixml.take"), Some("7"));
+    }
+
+    #[test]
+    fn list_info_tags_use_their_known_codes_and_keep_unknown_ones() {
+        let mut body = b"INFO".to_vec();
+        let push = |body: &mut Vec<u8>, code: &[u8; 4], value: &[u8]| {
+            body.extend_from_slice(code);
+            body.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            body.extend_from_slice(value);
+            // The RIFF pad byte is outside the declared size and only exists for
+            // an odd payload: writing it unconditionally shifted every following
+            // code by one byte, which is exactly the bug this test would hide.
+            if value.len() & 1 == 1 {
+                body.push(0);
+            }
+        };
+        push(&mut body, b"IART", b"Naimio");
+        push(&mut body, b"INAM", b"Door Slam");
+        push(&mut body, b"ZZZZ", b"custom note");
+        let bytes = wav_with_chunk(b"LIST", &body);
+        let path = write_temp("details-info.wav", &bytes);
+        let details = read_details_now(&path).unwrap();
+        assert_eq!(tag_value(&details, "info.artist"), Some("Naimio"));
+        assert_eq!(tag_value(&details, "info.title"), Some("Door Slam"));
+        assert_eq!(tag_value(&details, "info.ZZZZ"), Some("custom note"));
+        // Every one of those values is in the search text, because every one of
+        // them is marked searchable.
+        let text = details.search_text();
+        for value in ["Naimio", "Door Slam", "custom note"] {
+            assert!(text.contains(value), "{value} missing from {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_details_read_refuses_a_value_it_cannot_search() {
+        let mut body = b"INFO".to_vec();
+        body.extend_from_slice(b"ICMT");
+        let value = b"checksum 0123456789abcdef0123456789abcdef";
+        body.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        body.extend_from_slice(value);
+        let bytes = wav_with_chunk(b"LIST", &body);
+        let path = write_temp("details-dump.wav", &bytes);
+        let details = read_details_now(&path).unwrap();
+        let comment = details
+            .tags
+            .iter()
+            .find(|tag| tag.key == "info.comment")
+            .expect("shown for display");
+        assert!(!comment.searchable, "a GUID dump must not enter FTS");
+        assert!(!details.search_text().contains("checksum"));
+    }
+
+    #[test]
+    fn the_fingerprint_check_defers_a_changed_file() {
+        let bytes = wav_with_chunk(b"iXML", br#"<BWFXML><PROJECT>Rain Pack</PROJECT></BWFXML>"#);
+        let path = write_temp("details-fingerprint.wav", &bytes);
+        let size = bytes.len() as u64;
+        let meta = std::fs::metadata(&path).unwrap();
+        let mtime = mtime_ns(&meta);
+        let kept = details_only_with_meta_checked(&path, size, mtime).unwrap();
+        assert!(kept.is_some(), "the unchanged file is read");
+        let deferred = details_only_with_meta_checked(&path, size, mtime + 1).unwrap();
+        assert!(deferred.is_none(), "a moved fingerprint is not written");
     }
 }

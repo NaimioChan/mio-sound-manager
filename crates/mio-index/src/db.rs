@@ -27,10 +27,11 @@ use crate::folders::{build_folder_tree, folder_range, relative_folder, FolderNod
 
 /// Current schema version, stored in `meta`. Bump when a migration is added.
 ///
-/// 2 added `bpm`; 3 added metadata and native UCS fields; 4 adds UCS fields to FTS.
-/// Rule-only changes use
-/// the dedicated backfill keys below rather than bumping this structural version.
-pub const SCHEMA_VERSION: i64 = 4;
+/// 2 added `bpm`; 3 added metadata and native UCS fields; 4 adds UCS fields to FTS;
+/// 5 adds the details columns (`cover_hash`, `tags`, `details_indexed`) and the
+/// `sound_details` / `covers` tables. Rule-only changes use the dedicated backfill
+/// keys below rather than bumping this structural version.
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// `meta` key recording which version of the tempo rule last touched the `bpm`
 /// column, and the current version.
@@ -43,6 +44,13 @@ pub const BPM_BACKFILL: &str = "2";
 pub const METADATA_BACKFILL_KEY: &str = "metadata_rule";
 pub const METADATA_BACKFILL: &str = "8";
 
+/// The details pass: embedded tags, raw tag values and cover identity.
+///
+/// Its own key, not a bump of `metadata_rule`: re-running the details extractor
+/// must not reset `metadata_indexed` and re-classify 289k rows.
+pub const DETAILS_BACKFILL_KEY: &str = "details_rule";
+pub const DETAILS_BACKFILL: &str = "1";
+
 /// File name of the index inside a library folder.
 ///
 /// Was `slip-sound.db` while this project shared the reference implementation's
@@ -50,6 +58,12 @@ pub const METADATA_BACKFILL: &str = "8";
 /// library still has, and [`IndexDb::open`] renames it in place rather than
 /// leaving a user with an empty index and a reindex.
 pub const DB_FILENAME: &str = "mio-sm.db";
+
+/// Version of the `sounds_fts` column set. Bumping it drops, recreates and
+/// rebuilds the index on open: adding `tags` without the rebuild would leave the
+/// index describing a column set the query now uses, and searches would silently
+/// miss every tag written before the upgrade.
+const FTS_VERSION: &str = "4";
 
 /// The name earlier builds wrote. Only read, never written.
 pub const LEGACY_DB_FILENAME: &str = "slip-sound.db";
@@ -96,6 +110,56 @@ pub struct MetadataUpdate {
     pub classification: crate::classify::Classification,
 }
 
+/// One row the details pass is going to (or has just) enriched.
+///
+/// `metadata_pending` and `details_pending` are captured by the candidate query,
+/// because the metadata half is cleared by the same worker shortly before the
+/// details half runs: asking "is it pending" again after the metadata write would
+/// be a different question than the one the batch was selected on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailsCandidate {
+    pub path: String,
+    pub filesize: u64,
+    pub mtime_ns: i64,
+    pub metadata_pending: bool,
+    pub details_pending: bool,
+}
+
+/// What the details pass writes for one file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailsUpdate {
+    pub path: String,
+    pub filesize: u64,
+    pub mtime_ns: i64,
+    /// Serialized `MetadataTag` list for the inspector.
+    pub tags_json: String,
+    /// Cleaned searchable text for the `sounds.tags` / FTS column.
+    pub tags_text: String,
+    pub cover_hash: Option<String>,
+    pub truncated: bool,
+}
+
+/// One decoded thumbnail, keyed by the cover hash.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverRow {
+    pub hash: String,
+    /// 48px long edge, encoded as JPEG or PNG. The table draws it at 24px.
+    pub thumb: Vec<u8>,
+    pub thumb_mime: String,
+    /// The audio file for an embedded picture, the image file for a sidecar.
+    pub source_path: Option<String>,
+    pub source_mtime_ns: Option<i64>,
+}
+
+/// One row of `sound_details`, only meaningful while `details_indexed = 1`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundDetailsRow {
+    pub tags_json: String,
+    pub tags_truncated: bool,
+    /// The cover hash as `sounds.cover_hash` holds it.
+    pub cover_hash: Option<String>,
+}
+
 /// A row as read back, including the user-editable state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sound {
@@ -120,6 +184,17 @@ pub struct Sound {
     pub category_manual: bool,
     pub folder: Option<String>,
     pub bpm: Option<f64>,
+    /// Cover identity, `None` when the file has no picture or has not been
+    /// through the details pass. The row carries the hash only: the picture
+    /// itself is a separate `covers` lookup.
+    pub cover_hash: Option<String>,
+    /// Whether the details pass has processed this row. Tags are only shown and
+    /// searched when it is true; a `tags` value left over from a previous version
+    /// of the file is ignored.
+    pub details_indexed: bool,
+    /// The row's fingerprint and index time, for the inspector's staleness check.
+    pub mtime_ns: Option<i64>,
+    pub indexed_at: Option<i64>,
 }
 
 /// The fields the app's undo record needs, without decoding display-only data.
@@ -149,6 +224,7 @@ pub enum SortColumn {
     Description,
     UcsCategory,
     UcsSubcategory,
+    Cover,
 }
 
 impl SortColumn {
@@ -170,6 +246,9 @@ impl SortColumn {
             SortColumn::Description => "s.description COLLATE NOCASE",
             SortColumn::UcsCategory => "s.ucs_category COLLATE NOCASE",
             SortColumn::UcsSubcategory => "s.ucs_subcategory COLLATE NOCASE",
+            // "Group by cover", not "sort pictures by how they look": equal hashes
+            // end up adjacent, which is what the column claims.
+            SortColumn::Cover => "s.cover_hash",
         }
     }
 }
@@ -203,6 +282,12 @@ pub struct SearchParams {
     pub folder: Option<String>,
     pub min_confidence: Option<f64>,
     pub favorite_only: bool,
+    /// Exact picture identity, as `sounds.cover_hash` holds it.
+    pub cover_hash: Option<String>,
+    /// Exact sample rate. One value: two rates intersect to nothing.
+    pub sample_rate: Option<u32>,
+    /// Exact tempo, compared against the stored f64.
+    pub bpm: Option<f64>,
     pub sort_by: Option<SortColumn>,
     pub sort_dir: Option<SortDir>,
     pub limit: u32,
@@ -436,7 +521,7 @@ impl IndexDb {
         };
         db.create_base_schema()?;
         db.migrate(backfill)?;
-        if db.get_meta("fts_version")?.as_deref() != Some("3") {
+        if db.get_meta("fts_version")?.as_deref() != Some(FTS_VERSION) {
             db.conn.execute_batch(
                 "DROP TABLE IF EXISTS sounds_fts;
                  DROP TRIGGER IF EXISTS sounds_ai;
@@ -445,7 +530,7 @@ impl IndexDb {
             )?;
             db.create_fts()?;
             db.rebuild_fts()?;
-            db.set_meta("fts_version", "3")?;
+            db.set_meta("fts_version", FTS_VERSION)?;
         } else {
             db.create_fts()?;
         }
@@ -662,6 +747,25 @@ impl IndexDb {
             CREATE INDEX IF NOT EXISTS idx_filename ON sounds(filename COLLATE NOCASE);
             CREATE INDEX IF NOT EXISTS idx_filesize ON sounds(filesize);
 
+            -- Details pass output. `cover_hash` is the picture's identity, not its
+            -- bytes: the `covers` table holds one thumbnail per hash, and the rows
+            -- only ever carry the key.
+            CREATE TABLE IF NOT EXISTS sound_details (
+                sound_id INTEGER PRIMARY KEY REFERENCES sounds(id) ON DELETE CASCADE,
+                tags_json TEXT NOT NULL,
+                tags_truncated INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS covers (
+                hash TEXT PRIMARY KEY,
+                thumb BLOB NOT NULL,
+                thumb_mime TEXT NOT NULL,
+                source_path TEXT,
+                source_mtime_ns INTEGER,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -706,11 +810,18 @@ impl IndexDb {
             "ucs_category",
             "ucs_subcategory",
             "ucs_cat_id",
+            "tags",
+            "cover_hash",
         ] {
             if !has(column) {
                 self.conn
                     .execute_batch(&format!("ALTER TABLE sounds ADD COLUMN {column} TEXT"))?;
             }
+        }
+        if !has("details_indexed") {
+            self.conn.execute_batch(
+                "ALTER TABLE sounds ADD COLUMN details_indexed INTEGER NOT NULL DEFAULT 0",
+            )?;
         }
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_ucs_category ON sounds(ucs_category);
@@ -721,7 +832,11 @@ impl IndexDb {
              -- Without this index both were whole-table scans: 5.9 s per page and
              -- 447 ms per refresh on the reference library.
              CREATE INDEX IF NOT EXISTS idx_ucs_cat_id ON sounds(ucs_cat_id);
-             CREATE INDEX IF NOT EXISTS idx_description ON sounds(description);",
+             CREATE INDEX IF NOT EXISTS idx_description ON sounds(description);
+             -- The inspector's numeric filters and the same-cover filter: equality
+             -- on a column without an index is a 289k-row scan behind a click.
+             CREATE INDEX IF NOT EXISTS idx_cover_hash ON sounds(cover_hash);
+             CREATE INDEX IF NOT EXISTS idx_sample_rate ON sounds(sample_rate);",
         )?;
         // Filename ties stay ascending in both directions, so a reverse scan of
         // the ascending index cannot serve the descending sort.
@@ -957,9 +1072,8 @@ impl IndexDb {
         Ok(())
     }
 
-    /// FTS5 external-content table over the searchable filename/category/UCS
-    /// columns, plus the
-    /// three triggers that keep it correct.
+    /// FTS5 external-content table over the searchable filename/category/UCS/tag
+    /// columns, plus the three triggers that keep it correct.
     fn create_fts(&self) -> Result<()> {
         self.conn.execute_batch(
             r#"
@@ -971,6 +1085,7 @@ impl IndexDb {
                  description,
                  ucs_category,
                  ucs_subcategory,
+                 tags,
                  content='sounds',
                 content_rowid='id',
                 tokenize = "unicode61 remove_diacritics 2"
@@ -984,25 +1099,25 @@ impl IndexDb {
             );
 
             CREATE TRIGGER IF NOT EXISTS sounds_ai AFTER INSERT ON sounds BEGIN
-              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
-              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description, new.ucs_category, new.ucs_subcategory);
+              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory, tags)
+              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description, new.ucs_category, new.ucs_subcategory, new.tags);
               INSERT INTO sounds_trigram(rowid, filename) VALUES (new.id, new.filename);
             END;
 
             CREATE TRIGGER IF NOT EXISTS sounds_ad AFTER DELETE ON sounds BEGIN
-              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
-              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description, old.ucs_category, old.ucs_subcategory);
+              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory, tags)
+              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description, old.ucs_category, old.ucs_subcategory, old.tags);
               INSERT INTO sounds_trigram(sounds_trigram, rowid, filename)
               VALUES ('delete', old.id, old.filename);
             END;
 
             CREATE TRIGGER IF NOT EXISTS sounds_au AFTER UPDATE ON sounds BEGIN
-              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
-              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description, old.ucs_category, old.ucs_subcategory);
+              INSERT INTO sounds_fts(sounds_fts, rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory, tags)
+              VALUES ('delete', old.id, old.filename, old.category, old.subcategory, old.folder, old.description, old.ucs_category, old.ucs_subcategory, old.tags);
               INSERT INTO sounds_trigram(sounds_trigram, rowid, filename)
               VALUES ('delete', old.id, old.filename);
-              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory)
-              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description, new.ucs_category, new.ucs_subcategory);
+              INSERT INTO sounds_fts(rowid, filename, category, subcategory, folder, description, ucs_category, ucs_subcategory, tags)
+              VALUES (new.id, new.filename, new.category, new.subcategory, new.folder, new.description, new.ucs_category, new.ucs_subcategory, new.tags);
               INSERT INTO sounds_trigram(rowid, filename) VALUES (new.id, new.filename);
             END;
             "#,
@@ -1056,8 +1171,8 @@ impl IndexDb {
                     (path, filename, duration, channels, sample_rate, filesize,
                      category, subcategory, confidence, matched_terms, folder,
                      description, ucs_category, ucs_subcategory, ucs_cat_id, ucs_manual,
-                     metadata_indexed, mtime_ns, indexed_at, bpm)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                     metadata_indexed, mtime_ns, indexed_at, bpm, tags, cover_hash, details_indexed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, NULL, NULL, 0)
                 ON CONFLICT(path) DO UPDATE SET
                     filename = excluded.filename,
                     folder = excluded.folder,
@@ -1088,6 +1203,22 @@ impl IndexDb {
                      metadata_indexed = CASE WHEN sounds.mtime_ns = excluded.mtime_ns
                                                   AND sounds.filesize = excluded.filesize
                                              THEN sounds.metadata_indexed ELSE 0 END,
+                     -- The details columns follow the same fingerprint rule as
+                     -- `metadata_indexed`: an unchanged file keeps what the details
+                     -- pass wrote, a changed one drops both the tag text and the
+                     -- cover identity and is picked up by the next details pass.
+                     -- The old `sound_details` row is left in place (it costs a
+                     -- delete per rewritten file and is ignored while the flag is
+                     -- 0), so nothing here touches that table.
+                     tags = CASE WHEN sounds.mtime_ns = excluded.mtime_ns
+                                      AND sounds.filesize = excluded.filesize
+                                 THEN sounds.tags ELSE NULL END,
+                     cover_hash = CASE WHEN sounds.mtime_ns = excluded.mtime_ns
+                                            AND sounds.filesize = excluded.filesize
+                                       THEN sounds.cover_hash ELSE NULL END,
+                     details_indexed = CASE WHEN sounds.mtime_ns = excluded.mtime_ns
+                                                 AND sounds.filesize = excluded.filesize
+                                            THEN sounds.details_indexed ELSE 0 END,
                     mtime_ns = excluded.mtime_ns,
                     indexed_at = excluded.indexed_at,
                     bpm = excluded.bpm,
@@ -1215,6 +1346,245 @@ impl IndexDb {
             params![candidate.path, candidate.mtime_ns, candidate.filesize as i64],
         )?;
         Ok(changed != 0)
+    }
+
+    /// Schedule the details pass: reset rows when the extraction rule changed.
+    ///
+    /// Separate from [`Self::prepare_metadata_pass`] on purpose. A metadata reset
+    /// re-classifies 289k rows; the details extractor can be widened without
+    /// touching a single category. The candidate query covers every supported
+    /// format, unlike the metadata one, which is limited to the formats that
+    /// carry descriptive prose.
+    pub fn prepare_details_pass(&mut self) -> Result<()> {
+        if self.get_meta(DETAILS_BACKFILL_KEY)?.as_deref() == Some(DETAILS_BACKFILL) {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE sounds SET details_indexed = 0, tags = NULL, cover_hash = NULL
+             WHERE details_indexed <> 0 OR tags IS NOT NULL OR cover_hash IS NOT NULL",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![DETAILS_BACKFILL_KEY, DETAILS_BACKFILL],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Rows the details worker still has to process, either half or both.
+    ///
+    /// `pending` is captured per row so the worker can tell a row that only needs
+    /// tags from one that also needs the (slower) metadata re-classification.
+    pub fn details_candidates_after(
+        &self,
+        after_path: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DetailsCandidate>> {
+        let (sql, args): (&str, Vec<rusqlite::types::Value>) = match after_path {
+            Some(path) => (
+                "SELECT path, filesize, mtime_ns, metadata_indexed = 0, details_indexed = 0
+                 FROM sounds
+                 WHERE (metadata_indexed = 0 OR details_indexed = 0) AND path > ?1
+                 ORDER BY path LIMIT ?2",
+                vec![
+                    rusqlite::types::Value::Text(path.to_owned()),
+                    rusqlite::types::Value::Integer(limit as i64),
+                ],
+            ),
+            None => (
+                "SELECT path, filesize, mtime_ns, metadata_indexed = 0, details_indexed = 0
+                 FROM sounds
+                 WHERE (metadata_indexed = 0 OR details_indexed = 0)
+                 ORDER BY path LIMIT ?1",
+                vec![rusqlite::types::Value::Integer(limit as i64)],
+            ),
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
+            Ok(DetailsCandidate {
+                path: row.get(0)?,
+                filesize: row.get::<_, i64>(1)? as u64,
+                mtime_ns: row.get(2)?,
+                metadata_pending: row.get::<_, i64>(3)? == 1,
+                details_pending: row.get::<_, i64>(4)? == 1,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    pub fn details_candidate_count(&self) -> Result<usize> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM sounds WHERE metadata_indexed = 0 OR details_indexed = 0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize)
+    }
+
+    /// Write one details batch: tags, cover identity and `details_indexed = 1`.
+    ///
+    /// The `sounds.tags` update runs the FTS trigger, which is what makes a tag
+    /// searchable the moment the pass reaches it. Rows whose fingerprint moved
+    /// under the pass are skipped (the `WHERE` clause); the next base pass will
+    /// reset them anyway, so this is not a retry mechanism.
+    pub fn apply_details_batch(&mut self, updates: &[DetailsUpdate]) -> Result<u64> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let tx = self.conn.transaction()?;
+        let mut changed = 0u64;
+        {
+            let mut update_sound = tx.prepare(
+                "UPDATE sounds SET tags = ?1, cover_hash = ?2, details_indexed = 1
+                 WHERE path = ?3 AND mtime_ns = ?4 AND filesize = ?5",
+            )?;
+            let mut upsert_details = tx.prepare(
+                "INSERT INTO sound_details(sound_id, tags_json, tags_truncated, updated_at)
+                 SELECT id, ?1, ?2, ?3 FROM sounds WHERE path = ?4
+                 ON CONFLICT(sound_id) DO UPDATE SET
+                     tags_json = excluded.tags_json,
+                     tags_truncated = excluded.tags_truncated,
+                     updated_at = excluded.updated_at",
+            )?;
+            for update in updates {
+                let rows = update_sound.execute(params![
+                    update.tags_text,
+                    update.cover_hash,
+                    update.path,
+                    update.mtime_ns,
+                    update.filesize as i64,
+                ])?;
+                if rows == 0 {
+                    continue;
+                }
+                changed += rows as u64;
+                upsert_details.execute(params![
+                    update.tags_json,
+                    update.truncated as i64,
+                    now,
+                    update.path,
+                ])?;
+            }
+        }
+        if changed > 0 {
+            bump_index_version_in(&tx)?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Mark a row the extractor failed on as done, so a broken file does not come
+    /// back on every pass. The same contract as [`Self::mark_metadata_failed`].
+    pub fn mark_details_failed(&mut self, candidate: &DetailsCandidate) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE sounds SET details_indexed = 1, tags = NULL, cover_hash = NULL
+             WHERE path = ?1 AND mtime_ns = ?2 AND filesize = ?3",
+            params![candidate.path, candidate.mtime_ns, candidate.filesize as i64],
+        )?;
+        Ok(changed != 0)
+    }
+
+    /// Insert thumbnails for hashes not already present. A duplicate costs one
+    /// comparison instead of a decode, which is the point of doing this by hash.
+    pub fn upsert_covers(&mut self, covers: &[CoverRow]) -> Result<u64> {
+        if covers.is_empty() {
+            return Ok(0);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let tx = self.conn.transaction()?;
+        let mut inserted = 0u64;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO covers(hash, thumb, thumb_mime, source_path, source_mtime_ns, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for cover in covers {
+                inserted += stmt.execute(params![
+                    cover.hash,
+                    cover.thumb,
+                    cover.thumb_mime,
+                    cover.source_path,
+                    cover.source_mtime_ns,
+                    now,
+                ])? as u64;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// Thumbnail bytes for the given hashes, for the table's batch request.
+    /// Unknown hashes simply do not appear in the result.
+    pub fn cover_thumbs(&self, hashes: &[String]) -> Result<Vec<(String, Vec<u8>, String)>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let holes = std::iter::repeat_n("?", hashes.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT hash, thumb, thumb_mime FROM covers WHERE hash IN ({holes})");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(hashes.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, String>(2)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Everything the inspector shows for one row, or `None` when the row is not
+    /// in this library.
+    ///
+    /// Tags are returned only when `details_indexed = 1`: a row that has been
+    /// rewritten since the pass ran would otherwise show the previous file's tags
+    /// under the current file's name.
+    pub fn sound_details(&self, path: &str) -> Result<Option<(Sound, Option<SoundDetailsRow>)>> {
+        let Some(sound) = self.get_by_path(path)? else {
+            return Ok(None);
+        };
+        if !sound.details_indexed {
+            return Ok(Some((sound, None)));
+        }
+        let details = self
+            .conn
+            .query_row(
+                "SELECT tags_json, tags_truncated FROM sound_details WHERE sound_id = ?1",
+                params![sound.id],
+                |row| {
+                    Ok(SoundDetailsRow {
+                        tags_json: row.get(0)?,
+                        tags_truncated: row.get::<_, i64>(1)? == 1,
+                        cover_hash: None,
+                    })
+                },
+            )
+            .optional()?
+            .map(|mut row| {
+                row.cover_hash = sound.cover_hash.clone();
+                row
+            });
+        Ok(Some((sound, details)))
+    }
+
+    /// Delete thumbnails no row refers to.
+    ///
+    /// Only correct when the `sounds` rows are complete (after a full pass), which
+    /// is why the caller decides. `NOT IN` is fine here and `NOT EXISTS` was
+    /// required for prune: this runs once per pass on a table measured in hundreds
+    /// of rows, not per batch on 289k.
+    pub fn prune_unused_covers(&mut self) -> Result<u64> {
+        Ok(self.conn.execute(
+            "DELETE FROM covers WHERE hash NOT IN
+                 (SELECT cover_hash FROM sounds WHERE cover_hash IS NOT NULL)",
+            [],
+        )? as u64)
     }
 
     pub fn apply_metadata_batch(&mut self, updates: &[MetadataUpdate]) -> Result<u64> {
@@ -1953,6 +2323,22 @@ impl IndexDb {
         if params.favorite_only {
             clauses.push("s.favorite = 1".to_string());
         }
+        if let Some(hash) = &params.cover_hash {
+            clauses.push("s.cover_hash = ?".to_string());
+            args.push(Value::Text(hash.clone()));
+        }
+        if let Some(rate) = params.sample_rate {
+            clauses.push("s.sample_rate = ?".to_string());
+            args.push(Value::Integer(rate as i64));
+        }
+        if let Some(bpm) = params.bpm {
+            // Equality against the stored f64. The values come from a row the
+            // index wrote, not from user arithmetic, so there is no epsilon to
+            // tune: a filter that matched a value it did not come from would be
+            // a different filter.
+            clauses.push("s.bpm = ?".to_string());
+            args.push(Value::Real(bpm));
+        }
         if !excluded.is_empty() {
             let holes = std::iter::repeat_n("?", excluded.len())
                 .collect::<Vec<_>>()
@@ -2102,7 +2488,8 @@ const SOUND_COLUMNS: &str = "s.id, s.path, s.filename, s.duration, s.channels, s
      CASE WHEN s.description IS NULL THEN NULL ELSE \
        (SELECT COUNT(*) FROM sounds d WHERE d.description = s.description) END, \
      s.ucs_category, \
-      s.ucs_subcategory, s.ucs_cat_id, s.ucs_manual";
+      s.ucs_subcategory, s.ucs_cat_id, s.ucs_manual, s.cover_hash, s.details_indexed, \
+     s.mtime_ns, s.indexed_at";
 
 fn bump_index_version_in(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     tx.execute(
@@ -2141,6 +2528,10 @@ fn read_sound(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sound> {
         ucs_subcategory: row.get(18)?,
         ucs_cat_id: row.get(19)?,
         ucs_manual: row.get::<_, i64>(20)? == 1,
+        cover_hash: row.get(21)?,
+        details_indexed: row.get::<_, i64>(22)? == 1,
+        mtime_ns: row.get(23)?,
+        indexed_at: row.get(24)?,
     })
 }
 
@@ -2714,8 +3105,7 @@ mod tests {
     }
 
     #[test]
-    fn several_categories_are_or_ed_and_narrow_by_subcategory() {
-        let mut db = db();
+    fn several_categories_are_or_ed_and_narrow_by_subcategory() {        let mut db = db();
         let mut a = row("C:/lib/a.wav", "Drums");
         a.subcategory = Some("Kicks".into());
         let mut b = row("C:/lib/b.wav", "Bass");
@@ -2818,8 +3208,7 @@ mod tests {
     }
 
     #[test]
-    fn bpm_sorts_with_unmarked_rows_last_and_round_trips() {
-        let mut db = db();
+    fn bpm_sorts_with_unmarked_rows_last_and_round_trips() {        let mut db = db();
         let mut a = row("C:/lib/Kick_90BPM.wav", "Drums");
         a.bpm = Some(90.0);
         let mut b = row("C:/lib/Kick_140BPM.wav", "Drums");
@@ -2957,5 +3346,282 @@ mod tests {
         let sound = db.get_by_path("C:/lib/aircraft.wav").unwrap().unwrap();
         assert_eq!(sound.description, None);
         assert!(db.search(&SearchParams::new("unicorn")).unwrap().is_empty());
+    }
+
+    // ------------------------------------------------- details pass
+
+    fn details_row(path: &str, tags: &str, cover: Option<&str>) -> DetailsUpdate {
+        DetailsUpdate {
+            path: path.to_string(),
+            filesize: 100,
+            mtime_ns: 1,
+            tags_json: format!(
+                "[{{\"key\":\"artist\",\"value\":\"{tags}\",\"source\":\"id3\",\"searchable\":true}}]"
+            ),
+            tags_text: tags.to_string(),
+            cover_hash: cover.map(str::to_string),
+            truncated: false,
+        }
+    }
+
+    fn thumb(hash: &str) -> CoverRow {
+        CoverRow {
+            hash: hash.to_string(),
+            thumb: vec![0xff, 0xd8, 0xff],
+            thumb_mime: "image/jpeg".into(),
+            source_path: Some("C:/lib/a.wav".into()),
+            source_mtime_ns: Some(1),
+        }
+    }
+
+    #[test]
+    fn a_tag_value_is_searchable_as_soon_as_the_details_batch_commits() {
+        let mut db = db();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
+        assert!(db.search(&SearchParams::new("harmonica")).unwrap().is_empty());
+
+        let update = details_row("C:/lib/a.wav", "harmonica solo", None);
+        assert_eq!(db.apply_details_batch(&[update]).unwrap(), 1);
+        let hits = db.search(&SearchParams::new("harmonica")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].details_indexed);
+    }
+
+    #[test]
+    fn a_details_batch_requires_the_fingerprint_it_was_prepared_for() {
+        let mut db = db();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
+        let mut stale = details_row("C:/lib/a.wav", "harmonica", None);
+        stale.mtime_ns = 999;
+        assert_eq!(db.apply_details_batch(&[stale]).unwrap(), 0);
+        assert!(db.search(&SearchParams::new("harmonica")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sound_details_returns_tags_only_while_the_row_is_details_indexed() {
+        let mut db = db();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
+        db.apply_details_batch(&[details_row("C:/lib/a.wav", "harmonica", Some("abc"))])
+            .unwrap();
+
+        let (sound, details) = db.sound_details("C:/lib/a.wav").unwrap().unwrap();
+        assert_eq!(sound.cover_hash.as_deref(), Some("abc"));
+        let details = details.expect("indexed rows carry details");
+        assert!(details.tags_json.contains("harmonica"));
+
+        // A reindex that changed the file resets the flag; the old payload must
+        // not be served under the new file.
+        let mut changed = row("C:/lib/a.wav", "Foley");
+        changed.mtime_ns = 2;
+        db.upsert_batch(&[changed]).unwrap();
+        let (sound, details) = db.sound_details("C:/lib/a.wav").unwrap().unwrap();
+        assert!(!sound.details_indexed);
+        assert_eq!(sound.cover_hash, None);
+        assert!(details.is_none());
+    }
+
+    #[test]
+    fn an_unchanged_upsert_keeps_the_details_columns() {
+        let mut db = db();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
+        db.apply_details_batch(&[details_row("C:/lib/a.wav", "harmonica", Some("abc"))])
+            .unwrap();
+        // Same fingerprint: the incremental index rewrites the row with fresh
+        // classification but must not drop what the details pass found.
+        db.upsert_batch(&[row("C:/lib/a.wav", "Ambience")]).unwrap();
+        let sound = db.get_by_path("C:/lib/a.wav").unwrap().unwrap();
+        assert!(sound.details_indexed);
+        assert_eq!(sound.cover_hash.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn cover_filter_and_sort_use_the_index_and_group_by_hash() {
+        let mut db = db();
+        db.upsert_batch(&[
+            row("C:/lib/a.wav", "Foley"),
+            row("C:/lib/b.wav", "Foley"),
+            row("C:/lib/c.wav", "Foley"),
+        ])
+        .unwrap();
+        db.apply_details_batch(&[
+            details_row("C:/lib/a.wav", "x", Some("cover1")),
+            details_row("C:/lib/b.wav", "y", None),
+            details_row("C:/lib/c.wav", "z", Some("cover1")),
+        ])
+        .unwrap();
+
+        let mut params = SearchParams::new("");
+        params.cover_hash = Some("cover1".into());
+        let hits = db.search(&params).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(db.count_matching(&params).unwrap(), 2);
+
+        let mut sorted = SearchParams::new("");
+        sorted.sort_by = Some(SortColumn::Cover);
+        sorted.limit = 10;
+        let rows = db.search(&sorted).unwrap();
+        // NULLS LAST, so the covered rows come first and stay adjacent.
+        assert!(rows[0].cover_hash.is_some());
+        assert!(rows[1].cover_hash.is_some());
+        assert_eq!(rows[2].cover_hash, None);
+
+        let plan: Vec<String> = db
+            .connection()
+            .prepare("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM sounds WHERE cover_hash = 'cover1'")
+            .unwrap()
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(
+            plan.iter().any(|detail| detail.contains("idx_cover_hash")),
+            "cover filter should use its index: {plan:?}"
+        );
+
+        // Sorting by the cover groups equal hashes; it may sort through a temp
+        // B-tree (the documented fallback) but must not scan the table to build the
+        // ORDER BY. Assert what the plan actually does so a future index change is
+        // a visible decision rather than a silent scan.
+        let sort_plan: Vec<String> = db
+            .connection()
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM sounds ORDER BY cover_hash ASC NULLS LAST, filename COLLATE NOCASE ASC
+                 LIMIT 50",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(
+            sort_plan.iter().any(|detail| detail.contains("idx_cover_hash"))
+                || sort_plan.iter().any(|detail| detail.contains("USE TEMP B-TREE")),
+            "cover sort should either walk the index or sort a bounded set: {sort_plan:?}"
+        );
+        assert!(
+            !sort_plan.iter().any(|detail| detail.contains("SCAN sounds"))
+                || sort_plan.iter().any(|detail| detail.contains("idx_cover_hash")),
+            "cover sort must not be an unindexed table scan: {sort_plan:?}"
+        );
+    }
+
+    #[test]
+    fn numeric_filters_are_exact_and_combine_with_other_filters() {
+        let mut db = db();
+        let mut a = row("C:/lib/a.wav", "Foley");
+        a.sample_rate = Some(48_000);
+        a.bpm = Some(140.0);
+        a.channels = Some(2);
+        let mut b = row("C:/lib/b.wav", "Foley");
+        b.sample_rate = Some(44_100);
+        b.bpm = Some(90.0);
+        b.channels = Some(1);
+        db.upsert_batch(&[a, b]).unwrap();
+
+        let mut params = SearchParams::new("");
+        params.sample_rate = Some(48_000);
+        params.bpm = Some(140.0);
+        assert_eq!(db.search(&params).unwrap().len(), 1);
+
+        params.bpm = Some(90.0);
+        assert_eq!(db.search(&params).unwrap().len(), 0, "equality intersects");
+
+        params.sample_rate = None;
+        params.bpm = None;
+        params.channels = Some(1);
+        assert_eq!(db.search(&params).unwrap().len(), 1);
+
+        let plan: Vec<String> = db
+            .connection()
+            .prepare("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM sounds WHERE sample_rate = 48000")
+            .unwrap()
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(
+            plan.iter().any(|detail| detail.contains("idx_sample_rate")),
+            "sample rate filter should use its index: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn cover_thumbnails_are_inserted_once_and_unknown_keys_are_omitted() {
+        let mut db = db();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
+        assert_eq!(db.upsert_covers(&[thumb("cover1"), thumb("cover1")]).unwrap(), 1);
+        let rows = db.cover_thumbs(&["cover1".into(), "missing".into()]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "cover1");
+        assert_eq!(rows[0].2, "image/jpeg");
+    }
+
+    #[test]
+    fn pruning_covers_keeps_every_hash_a_row_still_refers_to() {
+        let mut db = db();
+        db.upsert_batch(&[
+            row("C:/lib/a.wav", "Foley"),
+            row("C:/lib/b.wav", "Foley"),
+        ])
+        .unwrap();
+        db.apply_details_batch(&[
+            details_row("C:/lib/a.wav", "x", Some("keep")),
+            details_row("C:/lib/b.wav", "y", Some("drop")),
+        ])
+        .unwrap();
+        db.upsert_covers(&[thumb("keep"), thumb("drop")]).unwrap();
+        // `b.wav` changes under the pass: its cover identity is cleared, so only
+        // `a.wav` still refers to a thumbnail.
+        let mut changed = row("C:/lib/b.wav", "Foley");
+        changed.mtime_ns = 2;
+        db.upsert_batch(&[changed]).unwrap();
+        assert_eq!(db.prune_unused_covers().unwrap(), 1);
+        assert_eq!(db.cover_thumbs(&["keep".into()]).unwrap().len(), 1);
+        assert!(db.cover_thumbs(&["drop".into()]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn preparing_a_details_pass_resets_the_flag_only_for_a_new_rule() {
+        let mut db = db();
+        // The worker prepares before it applies anything, which records the rule.
+        db.prepare_details_pass().unwrap();
+        db.upsert_batch(&[row("C:/lib/a.wav", "Foley")]).unwrap();
+        // Pretend the metadata half already ran: this test is about details only.
+        db.connection()
+            .execute("UPDATE sounds SET metadata_indexed = 1", [])
+            .unwrap();
+        db.apply_details_batch(&[details_row("C:/lib/a.wav", "harmonica", Some("abc"))])
+            .unwrap();
+        // Same rule: nothing is reset.
+        db.prepare_details_pass().unwrap();
+        assert_eq!(db.details_candidate_count().unwrap(), 0);
+        assert!(db.get_by_path("C:/lib/a.wav").unwrap().unwrap().details_indexed);
+
+        db.set_meta(DETAILS_BACKFILL_KEY, "0").unwrap();
+        db.prepare_details_pass().unwrap();
+        assert_eq!(db.details_candidate_count().unwrap(), 1);
+        let sound = db.get_by_path("C:/lib/a.wav").unwrap().unwrap();
+        assert!(!sound.details_indexed);
+        assert_eq!(sound.cover_hash, None);
+        // The tags column is cleared so a stale value cannot be searched while the
+        // row waits for the next pass.
+        assert!(db.search(&SearchParams::new("harmonica")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_details_candidate_query_covers_every_audio_format() {
+        let mut db = db();
+        let mut mp3 = row("C:/lib/a.mp3", "Foley");
+        mp3.filename = "a.mp3".into();
+        let mut flac = row("C:/lib/b.flac", "Foley");
+        flac.filename = "b.flac".into();
+        let mut aiff = row("C:/lib/c.aiff", "Foley");
+        aiff.filename = "c.aiff".into();
+        db.upsert_batch(&[mp3, flac, aiff]).unwrap();
+        // The metadata pass is deliberately limited to WAV/MP3; the details pass is
+        // not, so its own candidate query has to see the other two.
+        assert_eq!(db.metadata_candidate_count().unwrap(), 1);
+        assert_eq!(db.details_candidate_count().unwrap(), 3);
     }
 }

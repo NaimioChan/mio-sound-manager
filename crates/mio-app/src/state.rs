@@ -321,6 +321,22 @@ pub struct AppState {
 
     /// Where the chosen output device is remembered. Same file, same rules.
     audio_config: Option<AudioStore>,
+
+    /// The inspector's last few payloads, keyed by path.
+    ///
+    /// Walking a list with the arrow keys asks for the same rows repeatedly (up
+    /// and down a pack), and every miss would re-open the file and re-decode the
+    /// cover. Keyed by path *and* by the file's `(mtime, size)` so a rewritten file
+    /// is never served a stale picture. Small on purpose: the panel shows one row.
+    inspect_cache: Mutex<InspectCache>,
+}
+
+/// The inspector's LRU. 64 entries is roughly a minute of arrow-key walking.
+const INSPECT_CACHE_ENTRIES: usize = 64;
+
+#[derive(Default)]
+struct InspectCache {
+    entries: Vec<(String, crate::commands::SoundDetailsDto)>,
 }
 
 /// The open libraries plus which one the window is showing.
@@ -410,6 +426,7 @@ impl AppState {
             history: Mutex::new(crate::history::History::new()),
             session: None,
             audio_config: None,
+            inspect_cache: Mutex::new(InspectCache::default()),
         }
     }
 
@@ -1077,6 +1094,177 @@ impl AppState {
     /// Root folder of the active library, if any.
     pub fn library_root(&self) -> AppResult<PathBuf> {
         Ok(self.library()?.root().to_path_buf())
+    }
+
+    /// Tags, cover identity and the 512px picture for one row.
+    ///
+    /// Three sources, in order:
+    ///
+    /// 1. the LRU, when the file has not changed since it was cached;
+    /// 2. `sounds` + `sound_details`, when the details pass has processed this row
+    ///    at this fingerprint;
+    /// 3. the file itself, read now, for a row the pass has not reached yet.
+    ///
+    /// The third case is a deliberate compromise: the inspector can show a file's
+    /// tags before the pass gets there, but those values are **not** in the search
+    /// index until the pass writes them. The DTO says which it is (`lazy`), so the
+    /// UI never claims more than it has.
+    pub fn inspect_sound(&self, path: &str) -> AppResult<crate::commands::SoundDetailsDto> {
+        let library = self.library()?;
+        let disk = std::fs::metadata(path).ok();
+        let file_mtime = disk.as_ref().and_then(|meta| {
+            meta.modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as i64)
+        });
+
+        if let Ok(mut cache) = self.inspect_cache.lock() {
+            if let Some(index) = cache
+                .entries
+                .iter()
+                .position(|(cached_path, dto)| cached_path == path && dto.mtime_ns == file_mtime)
+            {
+                let entry = cache.entries.remove(index);
+                let dto = entry.1.clone();
+                cache.entries.insert(0, entry);
+                return Ok(dto);
+            }
+        }
+
+        // An unindexed file (not in `sounds` at all) still belongs to the library
+        // root; the inspector shows what it can and says nothing it cannot.
+        let (sound, details) = library
+            .sound_details(path)?
+            .map(|(sound, details)| (Some(sound), details))
+            .unwrap_or((None, None));
+        // The details rows are only used when the file on disk is the one the pass
+        // saw. A row whose fingerprint moved is stale by definition; its tags
+        // belong to the previous version of the file.
+        let current = match (&sound, file_mtime) {
+            (Some(sound), Some(mtime)) => sound.mtime_ns == Some(mtime),
+            _ => false,
+        };
+        let use_db = current && sound.as_ref().is_some_and(|sound| sound.details_indexed);
+
+        let mut tags = Vec::new();
+        let mut tags_truncated = false;
+        let mut cover_hash = None;
+        let mut lazy = false;
+        let mut embedded: Option<mio_index::EmbeddedDetails> = None;
+        if use_db {
+            let row = details.expect("details_indexed rows carry a sound_details row");
+            cover_hash = row.cover_hash.clone();
+            tags_truncated = row.tags_truncated;
+            let parsed: Vec<mio_index::MetadataTag> = serde_json::from_str(&row.tags_json)
+                .unwrap_or_default();
+            tags.extend(parsed.into_iter().map(|tag| crate::commands::TagDto {
+                key: tag.key,
+                value: tag.value,
+                source: tag.source.to_string(),
+                searchable: tag.searchable,
+            }));
+        } else if std::path::Path::new(path).is_file() {
+            lazy = true;
+            match mio_index::read_details_now(std::path::Path::new(path)) {
+                Ok(read) => {
+                    cover_hash = read.cover.as_ref().map(|cover| cover.hash());
+                    tags_truncated = read.truncated;
+                    tags.extend(read.tags.iter().map(|tag| crate::commands::TagDto {
+                        key: tag.key.clone(),
+                        value: tag.value.clone(),
+                        source: tag.source.to_string(),
+                        searchable: tag.searchable,
+                    }));
+                    embedded = Some(read);
+                }
+                Err(error) => {
+                    log::debug!("inspect could not read {path}: {error}");
+                }
+            }
+        }
+
+        // The database stores 48px thumbnails, which would be a visible upscale in
+        // a 300px panel, so the preview always comes from the source bytes. For a
+        // lazily-read row those are already in hand; for an indexed one the file is
+        // opened once more. The result is cached in the LRU above, so arrow-key
+        // walking does not pay for it twice.
+        if embedded.is_none() && std::path::Path::new(path).is_file() {
+            embedded = mio_index::read_details_now(std::path::Path::new(path)).ok();
+        }
+        let cover = embedded.as_ref().and_then(|read| {
+            let mut sidecar_cache = crate::covers::SidecarCache::new();
+            let (bytes, _sidecar) = crate::covers::cover_for(
+                read,
+                &mut sidecar_cache,
+                std::path::Path::new(path),
+                library.root(),
+            )?;
+            let key = cover_hash
+                .clone()
+                .or_else(|| Some(mio_index::details::cover_hash(&bytes.data)));
+            let mime = bytes.media_type.clone();
+            let data_url = crate::covers::preview_data_url(&bytes);
+            Some(crate::commands::CoverDto {
+                key,
+                data_url,
+                mime,
+            })
+        });
+        // An indexed row with a hash but no picture that decodes now still reports
+        // its identity: the "same cover" click works even when the preview does not.
+        let cover = cover.or_else(|| {
+            cover_hash.map(|key| crate::commands::CoverDto {
+                key: Some(key),
+                data_url: None,
+                mime: "image/jpeg".to_string(),
+            })
+        });
+
+        let dto = crate::commands::SoundDetailsDto {
+            path: path.to_string(),
+            mtime_ns: file_mtime.or_else(|| sound.as_ref().and_then(|sound| sound.mtime_ns)),
+            indexed_at: sound.as_ref().and_then(|sound| sound.indexed_at),
+            tags,
+            tags_truncated,
+            cover,
+            lazy,
+        };
+        if let Ok(mut cache) = self.inspect_cache.lock() {
+            cache.entries.retain(|(cached, _)| cached != path);
+            cache.entries.insert(0, (path.to_string(), dto.clone()));
+            cache.entries.truncate(INSPECT_CACHE_ENTRIES);
+        }
+        Ok(dto)
+    }
+
+    /// Thumbnails for a batch of cover identities, straight out of `covers`.
+    pub fn cover_thumbnails(
+        &self,
+        keys: Vec<String>,
+    ) -> AppResult<Vec<crate::commands::CoverThumbDto>> {
+        let library = self.library()?;
+        // The IPC is a public boundary: dedupe and bound it before it reaches SQL.
+        const MAX_KEYS: usize = 128;
+        let mut unique: Vec<String> = Vec::new();
+        for key in keys {
+            if unique.len() >= MAX_KEYS {
+                break;
+            }
+            if key.is_empty() || unique.iter().any(|existing| existing == &key) {
+                continue;
+            }
+            unique.push(key);
+        }
+        let rows = library.cover_thumbs(&unique)?;
+        Ok(rows
+            .into_iter()
+            .map(|(key, thumb, mime)| crate::commands::CoverThumbDto {
+                data_url: format!("data:{mime};base64,{}", crate::covers::base64(&thumb)),
+                key,
+                mime,
+            })
+            .collect())
     }
 
     /// Open a folder, replacing whatever was open.

@@ -238,6 +238,17 @@ button {
   min-width: 0;
 }
 
+/* The list and the inspector share one row; the dock stays full width below
+   both, which is why the inspector cannot be a third column of `.app`. */
+.main-body {
+  display: grid;
+  /* The inspector track is sized inline from its signal, clamped to what the
+     window can give it: a 480px panel in a 600px window would leave no list. */
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 0;
+  min-width: 0;
+}
+
 /* The search bar lives at the top of the list column, not the window: it filters
    the list, so it belongs with the list. */
 .main-head {
@@ -710,6 +721,46 @@ button {
   color: var(--theme-color-soft-text);
 }
 
+/* The cover cell holds one 24px picture on a 28px row. The `.cell` padding is
+   8px a side, which would leave 20px inside a 36px track and crop the image;
+   the cell therefore owns its padding. */
+.cell.cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+}
+
+.cell.cover.clickable {
+  cursor: pointer;
+}
+
+.cell.cover.clickable:hover .cover-thumb,
+.cell.cover.clickable:hover .cover-blank {
+  outline: 1px solid var(--theme-color-primary);
+  outline-offset: 1px;
+}
+
+.cover-thumb {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 2px;
+  object-fit: cover;
+  background: var(--theme-color-1);
+}
+
+/* A row with no picture: a quiet frame rather than a spinner. Most of a sample
+   library has no cover, so this is the normal state, not a loading one. */
+.cover-blank {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 2px;
+  background: var(--theme-color-3);
+  opacity: 0.5;
+}
+
 .description-count {
   margin-left: 6px;
   color: var(--theme-color-weak-text);
@@ -744,6 +795,316 @@ button {
 
 .foot-querying {
   color: var(--theme-color-primary);
+}
+
+/* ------------------------------------------------- inspector */
+
+/* Closed: one narrow column of vertical text. It is a button, not a label,
+   because it is the only way back to the panel once it is shut. */
+.inspector-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 8px 0;
+  border-left: 1px solid var(--theme-color-3);
+  background: var(--theme-color-2);
+  color: var(--theme-color-soft-text);
+  font-size: var(--mio-ms--1);
+  writing-mode: vertical-rl;
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+
+.inspector-strip:hover {
+  color: var(--theme-color-std-text);
+  background: var(--theme-color-ghost--hover);
+}
+
+.inspector-strip:focus-visible {
+  outline-offset: -2px;
+}
+
+.inspector {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* The signal is the designed width; the clamp is what keeps a 480px panel
+     usable in a 600px window. `30vw` because the inspector is a reference
+     column, never the main surface. */
+  max-width: min(var(--mio-inspector-max, 480px), 30vw);
+  min-width: 0;
+  border-left: 1px solid var(--theme-color-3);
+  background: var(--theme-color-2);
+}
+
+/* The left edge is the resize grip. Like the rail's, it sits on the border and
+   is invisible until hovered so it does not read as a second rule. */
+.inspector-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.inspector-resize:hover {
+  background: var(--theme-color-primary);
+}
+
+.inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--mio-head-h);
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--theme-color-3);
+  flex: none;
+}
+
+.inspector-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-color-soft-text);
+  font-size: var(--mio-ms--1);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.inspector-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--mio-radius-sm);
+  color: var(--theme-color-soft-text);
+}
+
+.inspector-close:hover {
+  color: var(--theme-color-std-text);
+  background: var(--theme-color-ghost--hover);
+}
+
+.inspector-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 12px 16px;
+}
+
+.inspector-empty {
+  padding: 16px 12px;
+  color: var(--theme-color-weak-text);
+  font-size: var(--mio-ms--1);
+}
+
+.inspector-count {
+  margin-bottom: 8px;
+  color: var(--theme-color-soft-text);
+  font-size: var(--mio-ms--1);
+}
+
+/* Phase 2 replaces the placeholder with the 512px cover. The 1:1 frame is kept
+   now so the panel's first real cover does not push everything down. */
+.inspector-cover {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  margin-bottom: 10px;
+  padding: 0;
+  border: 1px solid var(--theme-color-3);
+  border-radius: var(--mio-radius);
+  overflow: hidden;
+  background: var(--theme-color-1);
+  cursor: pointer;
+}
+
+.inspector-cover:not(.placeholder):hover {
+  border-color: var(--theme-color-primary);
+}
+
+/* The skeleton is the panel's own background, not a spinner: the picture either
+   arrives in a few dozen milliseconds or the file has none. */
+.inspector-cover.placeholder {
+  cursor: default;
+  background: var(--theme-color-2);
+  animation: inspector-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes inspector-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.inspector-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.inspector-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.inspector-label {
+  color: var(--theme-color-weak-text);
+  font-size: var(--mio-ms--2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inspector-field {
+  min-width: 0;
+}
+
+/* A clickable value. The affordance is the underline on hover and the accent
+   colour of the focus ring; a permanently underlined panel would read as a page
+   of links. */
+.inspector-value {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--theme-color-std-text);
+  font-family: var(--mio-font);
+  font-size: var(--mio-ms--1);
+  border-radius: var(--mio-radius-sm);
+}
+
+.inspector-value.static,
+.inspector-value.dim {
+  color: var(--theme-color-soft-text);
+}
+
+button.inspector-value:hover {
+  color: var(--theme-color-primary);
+  text-decoration: underline;
+}
+
+.inspector-block {
+  margin-top: 10px;
+}
+
+.inspector-description {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 0;
+  text-align: left;
+  color: var(--theme-color-soft-text);
+  font-family: var(--mio-font);
+  font-size: var(--mio-ms--1);
+  line-height: 1.4;
+  /* Descriptions are the one value that wraps: they are prose, and a clipped
+     prose block is a description nobody can read. */
+  overflow-wrap: anywhere;
+}
+
+.inspector-description:hover {
+  color: var(--theme-color-primary);
+  text-decoration: underline;
+}
+
+.inspector-terms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.inspector-term {
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--theme-color-3);
+  border-radius: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-color-soft-text);
+  font-size: var(--mio-ms--2);
+}
+
+.inspector-term:hover {
+  border-color: var(--theme-color-primary);
+  color: var(--theme-color-primary);
+}
+
+/* Tag values are a two-column list inside each source: the label is the file's
+   own key (translated when known), the value is what it says. Long values wrap
+   rather than ellipsize — a truncated comment is a comment nobody can read. */
+.inspector-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--theme-color-weak-text);
+  font-size: var(--mio-ms--2);
+  line-height: 1.35;
+}
+
+.inspector-tag-group {
+  margin-top: 8px;
+}
+
+.inspector-tag-source {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--theme-color-weak-text);
+  font-size: var(--mio-ms--2);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.inspector-tag {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 6px;
+  padding: 1px 0;
+  align-items: baseline;
+}
+
+.inspector-tag-key {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-color-soft-text);
+  font-size: var(--mio-ms--2);
+}
+
+.inspector-tag-value {
+  min-width: 0;
+  color: var(--theme-color-std-text);
+  font-size: var(--mio-ms--1);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+button.inspector-tag-value {
+  padding: 0;
+  text-align: left;
+  font-family: var(--mio-font);
+}
+
+button.inspector-tag-value:hover {
+  color: var(--theme-color-primary);
+  text-decoration: underline;
 }
 
 /* ------------------------------------------------------------------- dock */

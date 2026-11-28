@@ -729,8 +729,7 @@ fn playback_error_is_consumed_once_and_stop_clears_it() {
 }
 
 #[test]
-fn opening_a_library_indexes_it_before_returning_and_search_finds_the_rows() {
-    let Some(state) = state() else { return };
+fn opening_a_library_indexes_it_before_returning_and_search_finds_the_rows() {    let Some(state) = state() else { return };
     let root = scratch("library");
     write_wav(&root.join(r"Foley\door_slam.wav"), 44_100, 2, 4_410);
     write_wav(
@@ -1477,8 +1476,7 @@ fn matching_edit_respects_filter_exclusions_window_and_undo() {
 }
 
 #[test]
-fn a_multi_row_edit_undoes_as_one_step() {
-    let Some(state) = state() else { return };
+fn a_multi_row_edit_undoes_as_one_step() {    let Some(state) = state() else { return };
     let root = settled_library(&state, "undo-batch");
 
     let rows = state
@@ -1501,4 +1499,182 @@ fn a_multi_row_edit_undoes_as_one_step() {
     assert_eq!(favorites, 0, "one undo cleared the whole selection");
 
     drop(root);
+}
+
+// ------------------------------------------------------- details inspector
+
+/// A WAV with a `bext` chunk and a sidecar `cover.png` next to it, so the
+/// inspector has both a tag and a picture to show.
+fn tagged_wav_with_sidecar(root: &Path) {
+    use std::io::Write;
+    let path = root.join(r"Harbour\door_slam.wav");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut bext = vec![0u8; 602];
+    bext[..17].copy_from_slice(b"Dock door, take 3");
+    bext[256..272].copy_from_slice(b"Field Recorder U");
+    let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0\x77\x01\0\x02\0\x10\0data\x02\0\0\0\0\0".to_vec();
+    bytes.extend_from_slice(b"bext");
+    bytes.extend_from_slice(&(bext.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&bext);
+    let size = (bytes.len() - 8) as u32;
+    bytes[4..8].copy_from_slice(&size.to_le_bytes());
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(&bytes).unwrap();
+
+    let mut png = Vec::new();
+    {
+        use image::ImageEncoder;
+        let rgba = image::RgbaImage::from_pixel(96, 64, image::Rgba([30, 90, 200, 255]));
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(rgba.as_raw(), 96, 64, image::ExtendedColorType::Rgba8)
+            .unwrap();
+    }
+    std::fs::write(root.join(r"Harbour\cover.png"), png).unwrap();
+}
+
+#[test]
+fn the_inspector_reads_a_row_the_details_pass_has_not_reached() {
+    let Some(state) = state() else { return };
+    let root = scratch("inspect-lazy");
+    tagged_wav_with_sidecar(&root);
+    state
+        .add_library(&root.to_string_lossy(), false, |_, _| {})
+        .expect("open");
+
+    // The pass runs in the background, so it may or may not have reached the row;
+    // the lazy path is what the panel falls back on either way. Delete the details
+    // rows to force it, which is also the state a fresh library is in.
+    {
+        let library = state.library().unwrap();
+        let db = mio_index::IndexDb::open_fast(library.root()).unwrap();
+        db.connection()
+            .execute("DELETE FROM sound_details", [])
+            .unwrap();
+        db.connection()
+            .execute("UPDATE sounds SET details_indexed = 0, tags = NULL, cover_hash = NULL", [])
+            .unwrap();
+    }
+
+    let path = mio_index::folders::store_path(&root.join(r"Harbour\door_slam.wav"));
+    let details = state.inspect_sound(&path).expect("inspect");
+    assert!(details.lazy, "an unindexed row is read from disk");
+    assert!(
+        details.tags.iter().any(|tag| tag.key == "bext.originator"
+            && tag.value == "Field Recorder U"
+            && tag.searchable),
+        "the bext tag is shown: {:?}",
+        details.tags
+    );
+    let cover = details.cover.expect("the sidecar cover");
+    assert!(cover.key.is_some(), "the sidecar has an identity");
+    let url = cover.data_url.expect("a 512px data URL");
+    assert!(url.starts_with("data:image/jpeg;base64,"), "{url}");
+    // The sidecar is 96×64 and smaller than the 512px panel, so it is not upscaled.
+    let bytes = base64_decode(url.split(',').nth(1).unwrap());
+    let image = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((image.width(), image.height()), (96, 64));
+
+    // A second inspect is answered from the LRU: same content, no second read.
+    let again = state.inspect_sound(&path).expect("cached inspect");
+    assert_eq!(again.path, details.path);
+    assert_eq!(again.tags.len(), details.tags.len());
+
+    // A file that does not exist is still a shape the panel can render.
+    let missing = state
+        .inspect_sound(&format!("{}\\gone.wav", root.display()))
+        .expect("missing file");
+    assert!(missing.tags.is_empty());
+    assert!(missing.cover.is_none());
+
+    drop(root);
+}
+
+#[test]
+fn a_cover_filter_and_a_numeric_filter_reach_the_search() {
+    let Some(state) = state() else { return };
+    let root = settled_library(&state, "filters");
+    // Give one row a cover identity the way the details pass would, so the filter
+    // has something to match without an image in the fixture. The `sounds` UPDATE
+    // trigger rewrites the FTS row, which is fine: this test reads it back through
+    // the ordinary search path.
+    {
+        let library = state.library().unwrap();
+        let db = mio_index::IndexDb::open_fast(library.root()).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE sounds SET cover_hash = 'abc123' WHERE filename = 'gunshot_01.wav'",
+                [],
+            )
+            .unwrap();
+        // The search connection this state opened predates the write; SQLite's
+        // snapshot is per statement, so a fresh statement sees it. Assert the write
+        // landed through that same connection's future reads.
+        let stored: Option<String> = db
+            .connection()
+            .query_row(
+                "SELECT cover_hash FROM sounds WHERE filename = 'gunshot_01.wav'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("abc123"));
+    }
+
+    // The UI's connection is a different one; a WAL reader only sees a commit made
+    // after its current read snapshot ends, which the first `search` below starts.
+    let by_cover = state
+        .search(SearchRequest {
+            cover_hash: Some("abc123".into()),
+            ..Default::default()
+        })
+        .expect("cover search");
+    assert_eq!(by_cover.len(), 1);
+    assert_eq!(by_cover[0].filename, "gunshot_01.wav");
+    assert_eq!(by_cover[0].cover_key.as_deref(), Some("abc123"));
+
+    let by_rate = state
+        .search(SearchRequest {
+            sample_rate: Some(44_100),
+            ..Default::default()
+        })
+        .expect("rate search");
+    assert_eq!(by_rate.len(), 3, "every fixture file is 44.1k");
+
+    let by_other_rate = state
+        .search(SearchRequest {
+            sample_rate: Some(48_000),
+            ..Default::default()
+        })
+        .expect("rate search");
+    assert!(by_other_rate.is_empty(), "equality is exact");
+
+    let sorted = state
+        .search(SearchRequest {
+            sort_by: Some("cover".into()),
+            ..Default::default()
+        })
+        .expect("cover sort");
+    assert_eq!(sorted[0].cover_key.as_deref(), Some("abc123"));
+
+    drop(root);
+}
+
+fn base64_decode(text: &str) -> Vec<u8> {
+    const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for ch in text.chars() {
+        if ch == '=' {
+            break;
+        }
+        let Some(value) = ALPHABET.find(ch) else { continue };
+        buffer = (buffer << 6) | value as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    out
 }

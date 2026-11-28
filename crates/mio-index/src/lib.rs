@@ -22,6 +22,7 @@
 pub mod bpm;
 pub mod classify;
 pub mod db;
+pub mod details;
 pub mod error;
 pub mod folders;
 pub mod indexer;
@@ -30,9 +31,10 @@ pub mod wav_header;
 
 pub use classify::{Classification, Classifier};
 pub use db::{
-    CategoryFacet, EditState, IndexDb, MetadataCandidate, MetadataUpdate, SearchParams,
-    SortColumn, SortDir, Sound, SoundRow, UcsFacet,
+    CategoryFacet, CoverRow, DetailsCandidate, DetailsUpdate, EditState, IndexDb, MetadataCandidate,
+    MetadataUpdate, SearchParams, SortColumn, SortDir, Sound, SoundDetailsRow, SoundRow, UcsFacet,
 };
+pub use details::{CoverBytes, EmbeddedDetails, MetadataTag};
 pub use error::{IndexError, Result};
 pub use folders::{FolderNode, build_folder_tree, folder_range, relative_folder};
 pub use indexer::{
@@ -40,7 +42,8 @@ pub use indexer::{
     index_folder, index_folder_with_events,
 };
 pub use probe::{
-    AudioMeta, EmbeddedMetadata, FileEntry, SkippedDir, WalkReport, is_audio_path,
-    metadata_only_with_meta_checked, probe_basic_with_meta, probe_file, probe_with_meta,
-    walk_audio_entries, walk_audio_entries_with_report, walk_audio_files,
+    AudioMeta, EmbeddedMetadata, FileEntry, SkippedDir, WalkReport, details_only_with_meta_checked,
+    is_audio_path, metadata_only_with_meta_checked, probe_basic_with_meta, probe_file,
+    probe_with_meta, read_details_now, walk_audio_entries, walk_audio_entries_with_report,
+    walk_audio_files,
 };

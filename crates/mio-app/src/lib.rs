@@ -18,6 +18,7 @@
 
 mod audio_config;
 mod commands;
+mod covers;
 mod error;
 mod history;
 mod library;
@@ -131,6 +132,8 @@ pub fn run() {
             commands::get_history,
             commands::pick_library_folder,
             commands::reveal_in_folder,
+            commands::inspect_sound,
+            commands::get_cover_thumbnails,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Mio Sound Manager")

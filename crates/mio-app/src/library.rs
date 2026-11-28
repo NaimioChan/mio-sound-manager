@@ -9,10 +9,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use mio_index::{
-    index_folder_with_events, CategoryFacet, EditState, FolderNode, IndexDb,
-    IndexOptions, IndexPhase, IndexProgress as CoreIndexProgress, IndexReport, MetadataUpdate,
-    SearchParams, SkippedDir, SortColumn, SortDir, Sound,
+    index_folder_with_events, CategoryFacet, CoverRow, DetailsUpdate, EditState,
+    FolderNode, IndexDb, IndexOptions, IndexPhase, IndexProgress as CoreIndexProgress,
+    IndexReport, MetadataUpdate, SearchParams, SkippedDir, SortColumn, SortDir, Sound,
 };
+
+use crate::covers::{self, SidecarCache};
 
 use crate::error::{AppError, AppResult};
 
@@ -455,6 +457,19 @@ impl Library {
         Ok(self.db()?.get_by_path(path)?)
     }
 
+    /// One row plus its details payload, when the details pass has reached it.
+    pub fn sound_details(
+        &self,
+        path: &str,
+    ) -> AppResult<Option<(Sound, Option<mio_index::SoundDetailsRow>)>> {
+        Ok(self.db()?.sound_details(path)?)
+    }
+
+    /// Thumbnail bytes for a batch of cover hashes.
+    pub fn cover_thumbs(&self, hashes: &[String]) -> AppResult<Vec<(String, Vec<u8>, String)>> {
+        Ok(self.db()?.cover_thumbs(hashes)?)
+    }
+
     pub fn count_matching(&self, params: &SearchParams) -> AppResult<u64> {
         Ok(self.db()?.count_matching(params)?)
     }
@@ -639,7 +654,11 @@ fn run_metadata_worker(
     }
     let mut db = IndexDb::open_fast(root)?;
     db.prepare_metadata_pass()?;
-    let total = db.metadata_candidate_count()?;
+    db.prepare_details_pass()?;
+    // The candidate query covers both halves of the pass, so one total drives the
+    // progress bar. It counts a row that only needs details as one row, which is
+    // exactly the work the worker does for it.
+    let total = db.details_candidate_count()?;
     if let Ok(mut state) = status.lock() {
         state.total = total;
     }
@@ -647,6 +666,10 @@ fn run_metadata_worker(
     let mut indexed = 0usize;
     let mut deferred = 0usize;
     let mut failed = 0usize;
+    // One directory's sidecars per worker: candidates arrive in path order, so a
+    // folder's files are a run and `SidecarCache` only re-reads the directory when
+    // the folder changes.
+    let mut sidecar_cache = SidecarCache::new();
     const BATCH: usize = 5_000;
     let mut after_path: Option<String> = None;
 
@@ -654,74 +677,172 @@ fn run_metadata_worker(
         if cancelled() {
             return Err(mio_index::IndexError::Cancelled);
         }
-        let candidates = db.metadata_candidates_after(after_path.as_deref(), BATCH)?;
+        let candidates = db.details_candidates_after(after_path.as_deref(), BATCH)?;
         if candidates.is_empty() {
             break;
         }
         after_path = candidates.last().map(|candidate| candidate.path.clone());
-        let mut updates = Vec::with_capacity(candidates.len());
+        let mut metadata_updates = Vec::with_capacity(candidates.len());
+        let mut details_updates = Vec::with_capacity(candidates.len());
+        let mut cover_rows: Vec<CoverRow> = Vec::new();
+        let mut seen_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
         for candidate in candidates {
             if cancelled() {
                 return Err(mio_index::IndexError::Cancelled);
             }
             let path = PathBuf::from(&candidate.path);
-            let metadata = match mio_index::metadata_only_with_meta_checked(
-                &path,
-                candidate.filesize,
-                candidate.mtime_ns,
-            ) {
-                Ok(Some(metadata)) => metadata,
-                Ok(None) => {
-                    // The file's fingerprint changed while the pass was running,
-                    // so this row was deliberately left alone and will be picked
-                    // up by the next base pass. It is not indexed; counting it as
-                    // such reached 100% with rows still outstanding and made
-                    // `total` and `indexed` mean different things.
-                    deferred += 1;
-                    if let Ok(mut state) = status.lock() {
-                        state.deferred = deferred;
+
+            // The metadata half re-reads the description and re-runs the
+            // classifier. It runs first because the details half needs the same
+            // file open and a single failed open must be judged once.
+            let mut metadata_error = false;
+            if candidate.metadata_pending {
+                match mio_index::metadata_only_with_meta_checked(
+                    &path,
+                    candidate.filesize,
+                    candidate.mtime_ns,
+                ) {
+                    Ok(Some(metadata)) => {
+                        let classification = classifier.classify_with_metadata(
+                            &candidate.path,
+                            metadata.description.as_deref(),
+                            metadata.ucs_category.as_deref(),
+                            metadata.ucs_subcategory.as_deref(),
+                        );
+                        metadata_updates.push(MetadataUpdate {
+                            path: candidate.path.clone(),
+                            filesize: candidate.filesize,
+                            mtime_ns: candidate.mtime_ns,
+                            description: metadata.description,
+                            classification,
+                        });
                     }
-                    continue;
+                    Ok(None) => {
+                        deferred += 1;
+                        if let Ok(mut state) = status.lock() {
+                            state.deferred = deferred;
+                        }
+                        continue;
+                    }
+                    Err(_) => metadata_error = true,
                 }
-                Err(_) => {
-                    if db.mark_metadata_failed(&candidate)? {
-                        failed += 1;
-                        indexed += 1;
+            }
+
+            let mut details_done = false;
+            let mut failed_this_row = false;
+            if candidate.details_pending {
+                match mio_index::details_only_with_meta_checked(
+                    &path,
+                    candidate.filesize,
+                    candidate.mtime_ns,
+                ) {
+                    Ok(Some(details)) => {
+                        let (cover, sidecar) =
+                            match covers::cover_for(&details, &mut sidecar_cache, &path, root) {
+                                Some(pair) => (Some(pair.0), pair.1),
+                                None => (None, None),
+                            };
+                        let cover_hash = cover.as_ref().map(|cover| cover.hash());
+                        if let (Some(hash), Some(bytes)) = (&cover_hash, &cover) {
+                            if seen_hashes.insert(hash.clone()) {
+                                // A thumbnail is only encoded for a hash the
+                                // database does not already have; a pack's repeated
+                                // album art decodes once for the whole library.
+                                let known = !db.cover_thumbs(std::slice::from_ref(hash))?.is_empty();
+                                if !known {
+                                    if let Ok(thumb) = covers::thumbnail(bytes) {
+                                        cover_rows.push(CoverRow {
+                                            hash: hash.clone(),
+                                            thumb: thumb.bytes,
+                                            thumb_mime: thumb.mime.to_string(),
+                                            source_path: Some(match &sidecar {
+                                                Some(sidecar) => sidecar.path.to_string_lossy().into_owned(),
+                                                None => candidate.path.clone(),
+                                            }),
+                                            source_mtime_ns: Some(match &sidecar {
+                                                Some(sidecar) => sidecar.mtime_ns,
+                                                None => candidate.mtime_ns,
+                                            }),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        details_updates.push(DetailsUpdate {
+                            path: candidate.path.clone(),
+                            filesize: candidate.filesize,
+                            mtime_ns: candidate.mtime_ns,
+                            tags_json: mio_index::details::tags_json(&details),
+                            tags_text: details.search_text(),
+                            cover_hash,
+                            truncated: details.truncated,
+                        });
+                        details_done = true;
                     }
-                    if let Ok(mut state) = status.lock() {
-                        state.indexed = indexed;
-                        state.failed = failed;
-                        state.generation = generation;
+                    Ok(None) => {
+                        deferred += 1;
+                        if let Ok(mut state) = status.lock() {
+                            state.deferred = deferred;
+                        }
+                        continue;
                     }
-                    continue;
+                    Err(_) => {
+                        if db.mark_details_failed(&candidate)? {
+                            failed_this_row = true;
+                        }
+                    }
                 }
-            };
-            let classification = classifier.classify_with_metadata(
-                &candidate.path,
-                metadata.description.as_deref(),
-                metadata.ucs_category.as_deref(),
-                metadata.ucs_subcategory.as_deref(),
-            );
-            updates.push(MetadataUpdate {
-                path: candidate.path,
-                filesize: candidate.filesize,
-                mtime_ns: candidate.mtime_ns,
-                description: metadata.description,
-                classification,
-            });
-            indexed += 1;
-            if let Ok(mut state) = status.lock() {
-                state.indexed = indexed;
-                state.failed = failed;
-                state.generation = generation;
+            }
+
+            if metadata_error {
+                // The file could not be opened at all: both halves are marked done
+                // so the candidate query stops returning it. The next base pass
+                // will reset them if the file changes. One failure per row, not one
+                // per half: the two halves read the same file.
+                if db.mark_metadata_failed(&mio_index::MetadataCandidate {
+                    path: candidate.path.clone(),
+                    filesize: candidate.filesize,
+                    mtime_ns: candidate.mtime_ns,
+                })? && !failed_this_row
+                {
+                    failed_this_row = true;
+                }
+                let _ = db.mark_details_failed(&candidate)?;
+            }
+            if failed_this_row {
+                failed += 1;
+            }
+
+            if details_done || candidate.metadata_pending || metadata_error {
+                indexed += 1;
+                if let Ok(mut state) = status.lock() {
+                    state.indexed = indexed;
+                    state.failed = failed;
+                    state.generation = generation;
+                }
             }
         }
         if cancelled() {
             return Err(mio_index::IndexError::Cancelled);
         }
-        db.apply_metadata_batch(&updates)?;
+        db.upsert_covers(&cover_rows)?;
+        db.apply_metadata_batch(&metadata_updates)?;
+        db.apply_details_batch(&details_updates)?;
     }
-    log::info!("metadata pass: {indexed}/{total} processed, {failed} failed in {:.0}ms", started.elapsed().as_secs_f64() * 1000.0);
+    log::info!(
+        "details pass: {indexed}/{total} processed, {failed} failed, {deferred} deferred in {:.0}ms",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    // A completed pass is the one moment the `sounds` rows are known complete, so
+    // it is also the only safe moment to drop thumbnails nothing refers to. Doing
+    // it per batch would delete a cover whose row had not been rewritten yet.
+    if !cancelled() {
+        match db.prune_unused_covers() {
+            Ok(0) => {}
+            Ok(pruned) => log::info!("details pass: pruned {pruned} unused cover thumbnails"),
+            Err(error) => log::warn!("could not prune cover thumbnails: {error}"),
+        }
+    }
     Ok(())
 }
 
@@ -740,6 +861,7 @@ pub fn sort_column(name: &str) -> Option<SortColumn> {
         "description" => SortColumn::Description,
         "ucs_category" => SortColumn::UcsCategory,
         "ucs_subcategory" => SortColumn::UcsSubcategory,
+        "cover" => SortColumn::Cover,
         _ => return None,
     })
 }
@@ -854,5 +976,149 @@ mod tests {
         library.close();
         stopped.try_recv().unwrap();
         assert!(library.metadata.lock().unwrap().worker.is_none());
+    }
+
+    /// A WAV carrying a `bext` chunk and a sidecar-style embedded picture, to drive
+    /// the whole details pass: extract, hash, thumbnail, store.
+    fn tagged_wav(path: &Path) {
+        use std::io::Write;
+        let mut bext = vec![0u8; 602];
+        bext[..17].copy_from_slice(b"Dock door, take 3");
+        bext[256..272].copy_from_slice(b"Field Recorder U");
+        let mut picture = Vec::new();
+        {
+            use image::ImageEncoder;
+            let rgba = image::RgbaImage::from_pixel(64, 64, image::Rgba([180, 80, 40, 255]));
+            image::codecs::png::PngEncoder::new(&mut picture)
+                .write_image(rgba.as_raw(), 64, 64, image::ExtendedColorType::Rgba8)
+                .unwrap();
+        }
+        let mut frames = Vec::new();
+        // APIC: UTF-8, mime, type 3 (front cover), empty description, picture.
+        let mut apic = Vec::new();
+        apic.extend_from_slice(b"\x03image/png\x00\x03\x00");
+        apic.extend_from_slice(&picture);
+        frames.extend_from_slice(b"APIC");
+        frames.extend_from_slice(&(apic.len() as u32).to_be_bytes());
+        frames.extend_from_slice(&[0, 0]);
+        frames.extend_from_slice(&apic);
+        let size = frames.len();
+        let mut tag = b"ID3\x03\x00\x00".to_vec();
+        tag.extend_from_slice(&[
+            ((size >> 21) & 0x7f) as u8,
+            ((size >> 14) & 0x7f) as u8,
+            ((size >> 7) & 0x7f) as u8,
+            (size & 0x7f) as u8,
+        ]);
+        tag.extend_from_slice(&frames);
+
+        let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0\x77\x01\0\x02\0\x10\0data\x02\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(b"bext");
+        bytes.extend_from_slice(&(bext.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&bext);
+        bytes.extend_from_slice(b"ID3 ");
+        bytes.extend_from_slice(&(tag.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&tag);
+        let size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&size.to_le_bytes());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(&bytes).unwrap();
+    }
+
+    #[test]
+    fn the_details_pass_writes_tags_a_cover_identity_and_a_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        tagged_wav(&root.join("Pack/Door_Slam.wav"));
+        std::fs::write(root.join("Pack/Plain.wav"), {
+            let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0\x77\x01\0\x02\0\x10\0data\x02\0\0\0\0\0".to_vec();
+            let size = (bytes.len() - 8) as u32;
+            bytes[4..8].copy_from_slice(&size.to_le_bytes());
+            bytes
+        })
+        .unwrap();
+
+        mio_index::index_folder(root, &IndexOptions::default(), |_, _| {}).unwrap();
+        let generation = AtomicU64::new(1);
+        let status = Mutex::new(MetadataProgress::default());
+        let cancel = AtomicBool::new(false);
+        run_metadata_worker(root, 1, &generation, &cancel, &status).unwrap();
+
+        let db = IndexDb::open_fast(root).unwrap();
+        let (sound, details) = db
+            .sound_details(&mio_index::folders::store_path(&root.join("Pack/Door_Slam.wav")))
+            .unwrap()
+            .expect("the row was indexed");
+        assert!(sound.details_indexed);
+        let details = details.expect("the details payload was written");
+        let cover_hash = sound.cover_hash.clone().expect("the embedded cover was hashed");
+        assert!(details.tags_json.contains("bext.originator"));
+
+        // The thumbnail was stored once, at 48px, and the row's key finds it.
+        let thumb = db
+            .cover_thumbs(std::slice::from_ref(&cover_hash))
+            .unwrap();
+        assert_eq!(thumb.len(), 1);
+        let image = image::load_from_memory(&thumb[0].1).unwrap();
+        assert_eq!(image.width(), 48);
+        assert_eq!(image.height(), 48);
+
+        // A row with no picture gets no hash, and the candidate query is empty —
+        // the pass must not look at the same files again.
+        let plain = db
+            .get_by_path(&mio_index::folders::store_path(&root.join("Pack/Plain.wav")))
+            .unwrap()
+            .unwrap();
+        assert!(plain.details_indexed);
+        assert_eq!(plain.cover_hash, None);
+        assert_eq!(db.details_candidate_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_sidecar_cover_is_shared_by_the_files_around_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("Pack/Discs")).unwrap();
+        for name in ["Pack/a.wav", "Pack/b.wav", "Pack/Discs/c.wav"] {
+            std::fs::write(root.join(name), {
+                let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\0\x77\x01\0\x02\0\x10\0data\x02\0\0\0\0\0".to_vec();
+                let size = (bytes.len() - 8) as u32;
+                bytes[4..8].copy_from_slice(&size.to_le_bytes());
+                bytes
+            })
+            .unwrap();
+        }
+        let mut png = Vec::new();
+        {
+            use image::ImageEncoder;
+            let rgba = image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 120, 200, 255]));
+            image::codecs::png::PngEncoder::new(&mut png)
+                .write_image(rgba.as_raw(), 32, 32, image::ExtendedColorType::Rgba8)
+                .unwrap();
+        }
+        std::fs::write(root.join("Pack/cover.png"), png).unwrap();
+
+        mio_index::index_folder(root, &IndexOptions::default(), |_, _| {}).unwrap();
+        let generation = AtomicU64::new(1);
+        let status = Mutex::new(MetadataProgress::default());
+        let cancel = AtomicBool::new(false);
+        run_metadata_worker(root, 1, &generation, &cancel, &status).unwrap();
+
+        let db = IndexDb::open_fast(root).unwrap();
+        let mut hashes = Vec::new();
+        for name in ["Pack/a.wav", "Pack/b.wav", "Pack/Discs/c.wav"] {
+            let sound = db
+                .get_by_path(&mio_index::folders::store_path(&root.join(name)))
+                .unwrap()
+                .unwrap();
+            hashes.push(sound.cover_hash.expect("a sidecar cover was found"));
+        }
+        assert!(
+            hashes.iter().all(|hash| hash == &hashes[0]),
+            "the same bytes must produce one identity: {hashes:?}"
+        );
+        // One hash, one thumbnail, however many rows point at it.
+        assert_eq!(db.cover_thumbs(std::slice::from_ref(&hashes[0])).unwrap().len(), 1);
     }
 }

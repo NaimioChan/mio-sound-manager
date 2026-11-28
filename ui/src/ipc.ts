@@ -125,6 +125,51 @@ export interface SoundRow {
   folder: string | null
   /** Tempo stated in the file name; `null` when the name states none. */
   bpm: number | null
+  /**
+   * The row's cover identity, or `null` when it carries no picture.
+   *
+   * A key, never the picture: the table asks for thumbnails for the rows it can
+   * see, in one batch. The key is the picture's bytes, so two files carrying the
+   * same artwork share it.
+   */
+  coverKey: string | null
+}
+
+/** One raw tag value, as the inspector shows it. */
+export interface Tag {
+  key: string
+  value: string
+  /** `id3`, `vorbis`, `m4a`, `bext`, `ixml`, `info`. */
+  source: string
+  /** True only when the value is in the search index. Unsearchable tags are text. */
+  searchable: boolean
+}
+
+export interface Cover {
+  key: string | null
+  dataUrl: string | null
+  mime: string
+}
+
+/** Everything the details panel shows for one sound. */
+export interface SoundDetails {
+  path: string
+  mtimeNs: number | null
+  indexedAt: number | null
+  tags: Tag[]
+  tagsTruncated: boolean
+  cover: Cover | null
+  /**
+   * The values were read from the file now because the details pass has not
+   * reached it. They are shown, but they are not in the search index yet.
+   */
+  lazy: boolean
+}
+
+export interface CoverThumb {
+  key: string
+  dataUrl: string
+  mime: string
 }
 
 export interface FolderNode {
@@ -216,6 +261,12 @@ export interface SearchRequest {
   folder?: string
   minConfidence?: number
   favoriteOnly?: boolean
+  /** Exact cover identity, for "same cover". */
+  coverHash?: string
+  /** Exact sample rate. One value: two rates intersect to nothing. */
+  sampleRate?: number
+  /** Exact tempo. */
+  bpm?: number
   sortBy?: string
   sortDir?: 'asc' | 'desc'
   limit?: number
@@ -421,7 +472,25 @@ export const api = {
   /** Native folder picker. Resolves `null` when the user cancels. */
   pickLibraryFolder: () => invoke<string | null>('pick_library_folder'),
 
-  revealInFolder: (path: string) => invoke<void>('reveal_in_folder', { path })
+  revealInFolder: (path: string) => invoke<void>('reveal_in_folder', { path }),
+
+  /**
+   * Tags, cover identity and the 512px picture for one row.
+   *
+   * The backend answers from the details pass when it has the row, and reads the
+   * file itself when it does not, so the panel is never empty for a sound the
+   * user just selected. `lazy` says which of the two it was.
+   */
+  inspectSound: (path: string) => invoke<SoundDetails>('inspect_sound', { path }),
+
+  /**
+   * Thumbnails for a batch of cover identities.
+   *
+   * At most 128 keys per call, deduplicated server-side. Unknown keys are
+   * omitted, so the caller must draw a placeholder for every key it asked for
+   * and did not get back.
+   */
+  coverThumbnails: (keys: string[]) => invoke<CoverThumb[]>('get_cover_thumbnails', { keys })
 }
 
 /**

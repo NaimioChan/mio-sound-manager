@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { categoryName, channelLabel, t } from './i18n'
 import { api, startDrag, type SearchRequest, type SoundRow } from './ipc'
+import { formatBpm, formatBytes, formatRate } from './format'
 import { focusedElement, isTextEntry } from './keyboard'
 import {
   gridTemplate,
@@ -30,29 +31,6 @@ import {
 const ROW_H = 28
 const OVERSCAN = 8
 
-function formatBytes(bytes: number | null): string {
-  if (bytes === null) return '—'
-  if (bytes < 1024) return `${bytes} B`
-  const kb = bytes / 1024
-  if (kb < 1024) return `${kb.toFixed(0)} KB`
-  return `${(kb / 1024).toFixed(1)} MB`
-}
-
-/**
- * `128`, or `126.5` for the packs that write half tempos, or an em dash when the
- * name states none. The column is 56px wide, so more than one decimal would clip
- * and more than one decimal is never a real tempo.
- */
-function formatBpm(bpm: number | null): string {
-  if (bpm === null) return '—'
-  return Number.isInteger(bpm) ? String(bpm) : bpm.toFixed(1)
-}
-
-function formatRate(rate: number | null): string {
-  if (rate === null) return '—'
-  return `${(rate / 1000).toFixed(rate % 1000 === 0 ? 0 : 1)}k`
-}
-
 export interface RowMenuRequest {
   x: number
   y: number
@@ -78,9 +56,48 @@ export type EditScope =
  * header reorderable means both sides have to be generated from the same column
  * list, or a drag would leave the labels sitting over the wrong values — and that
  * is a class of bug no CSS can catch.
+ *
+ * The cover cell is the one case where the value is not in the row: the row
+ * carries a key and the picture comes from a batch request. It is a component so
+ * the map update re-renders the cells that use it and not the row list; a
+ * `cellNode` that read `thumbs()` would rebuild every visible row whenever one
+ * thumbnail arrived.
  */
-function cellNode(col: SortKey, row: SoundRow) {
+function CoverCell(props: { row: SoundRow; thumbs: () => Map<string, string>; onSearch: (key: string) => void }) {
+  const key = () => props.row.coverKey
+  const thumb = () => {
+    const value = key()
+    return value === null ? undefined : props.thumbs().get(value)
+  }
+  return (
+    <span
+      class="cell cover"
+      classList={{ clickable: key() !== null }}
+      title={key() ? t('search.sameCover') : undefined}
+      onClick={(event) => {
+        // A cover click filters to that picture; it must not also select and
+        // audition the row, which is what the body's delegated click does.
+        if (!key()) return
+        event.stopPropagation()
+        props.onSearch(key()!)
+      }}
+    >
+      <Show when={thumb()} fallback={<span class="cover-blank" aria-hidden="true" />}>
+        {(url) => <img class="cover-thumb" src={url()} alt="" draggable={false} />}
+      </Show>
+    </span>
+  )
+}
+
+function cellNode(
+  col: SortKey,
+  row: SoundRow,
+  thumbs: () => Map<string, string>,
+  onCoverSearch: (key: string) => void
+) {
   switch (col) {
+    case 'cover':
+      return <CoverCell row={row} thumbs={thumbs} onSearch={onCoverSearch} />
     case 'favorite':
       // Always a glyph, never an empty span: an empty cell has zero width, so the
       // star could not be clicked until the sound was already a favorite.
@@ -181,6 +198,13 @@ interface Props {
   onSelectAll: (count: number) => void
   /** Right-click on the header: show/hide columns, open column settings. */
   onHeaderMenu: (x: number, y: number) => void
+  /**
+   * Bumped when new thumbnails exist (a details pass finished, the library
+   * changed). The thumbnail cache is cleared and visible rows re-request.
+   */
+  coverEpoch: number
+  /** A cover cell click: filter to that picture. */
+  onCoverSearch: (key: string) => void
 }
 
 const SEGMENT_ROWS = 500
@@ -222,6 +246,29 @@ export function SoundTable(props: Props) {
   const [segments, setSegments] = createSignal<Map<number, SoundRow[]>>(new Map())
   const [segmentsEpoch, setSegmentsEpoch] = createSignal(props.epoch)
   const [segmentsRequestKey, setSegmentsRequestKey] = createSignal(props.requestKey)
+  /**
+   * Cover thumbnails by hash, as data URLs.
+   *
+   * One map, one batch request per viewport, and the cells read it through a
+   * component so an arriving thumbnail repaints only the cells that show it. The
+   * picture is never part of a row DTO: the same album art appears on hundreds of
+   * rows and would be transferred once per row.
+   */
+  const [thumbs, setThumbs] = createSignal<Map<string, string>>(new Map())
+  /** Cover keys already asked for. Removed on response, never a permanent flag. */
+  const coversInFlight = new Set<string>()
+  /** Keys this `coverEpoch` answered without a thumbnail. Cleared on a new epoch. */
+  let missingCovers = new Set<string>()
+  let thumbGen = 0
+  /**
+   * The front-end ceiling on the thumbnail map, ~1024 × 2KB of JPEG.
+   *
+   * Eviction only deletes the URL; the key is not re-added to `missing`, so a
+   * row scrolled back into view re-requests it like any other uncached key.
+   * `Map` preserves insertion order, which is the access order this uses: a
+   * re-request after eviction inserts again at the end.
+   */
+  const MAX_THUMBS = 1024
   const segmentUse = new Map<number, number>()
   let useClock = 0
   const [selection, setSelection] = createSignal<Selection>({ mode: 'paths', paths: new Set() })
@@ -548,6 +595,101 @@ export function SoundTable(props: Props) {
     return Array.from({ length: last - first }, (_, offset) => first + offset)
   })
 
+  /**
+   * A new epoch means a pass wrote new thumbnails or the library changed: the
+   * remembered misses and in-flight bookkeeping belong to the old one. Declared
+   * before the request effect so the reset runs first and the request that follows
+   * sees an empty cache.
+   */
+  createEffect(() => {
+    props.coverEpoch
+    thumbGen += 1
+    coversInFlight.clear()
+    missingCovers = new Set()
+    setThumbs(new Map())
+  })
+
+  /**
+   * Ask for thumbnails only for the rows on screen.
+   *
+   * This is the whole reason the table is allowed a cover column at all: one
+   * request for the viewport's distinct hashes, no request when the column is
+   * hidden, and no file IO anywhere on this path (`get_cover_thumbnails` reads
+   * the `covers` table only). Scrolling opens a new window and the effect runs
+   * again; nothing per cell, ever.
+   */
+  createEffect(() => {
+    props.coverEpoch
+    const showing = columns().some((column) => column.key === 'cover')
+    if (!showing) {
+      // Zero requests while the column is hidden, whatever the viewport holds.
+      return
+    }
+    const rows = visibleIndices()
+    const epoch = props.epoch
+    const requestKey = props.requestKey
+    const wanted = new Set<string>()
+    for (const index of rows) {
+      const row = rowAt(index)
+      const key = row?.coverKey
+      if (key) wanted.add(key)
+    }
+    const current = thumbs()
+    const keys = [...wanted].filter(
+      (key) => !current.has(key) && !coversInFlight.has(key) && !missingCovers.has(key)
+    )
+    if (keys.length === 0) return
+    const generation = thumbGen
+    // Debounce that also coalesces two scroll events into one request. A 50ms
+    // timer is below the eye's threshold for a scrollbar drag and far above the
+    // event rate of a flick.
+    window.setTimeout(() => {
+      if (generation !== thumbGen) return
+      if (epoch !== props.epoch || requestKey !== props.requestKey) return
+      // Re-check the cache inside the timer: an earlier effect run's request may
+      // have answered between the read above and this line, and asking again for
+      // a URL already in the map would double the IPC on every mount.
+      const cached = thumbs()
+      const still = keys.filter((key) => !cached.has(key) && !coversInFlight.has(key))
+      if (still.length === 0) return
+      for (const key of still) coversInFlight.add(key)
+      void api
+        .coverThumbnails(still.slice(0, 128))
+        .then((answer) => {
+          if (generation !== thumbGen) return
+          const next = new Map(thumbs())
+          const answered = new Set<string>()
+          for (const thumb of answer) {
+            next.set(thumb.key, thumb.dataUrl)
+            answered.add(thumb.key)
+          }
+          for (const key of still) {
+            // A key sent but not returned has no thumbnail in `covers`; asking
+            // again on every scroll frame would be a request per frame.
+            if (!answered.has(key)) missingCovers.add(key)
+          }
+          evictThumbs(next)
+          setThumbs(next)
+        })
+        .catch(() => {
+          // A failed batch is allowed to retry on the next viewport change; the
+          // cells keep their placeholder meanwhile.
+        })
+        .finally(() => {
+          for (const key of still) coversInFlight.delete(key)
+        })
+    }, 50)
+  })
+
+  /** Trim the thumbnail map to its ceiling, oldest first. */
+  const evictThumbs = (map: Map<string, string>) => {
+    while (map.size > MAX_THUMBS) {
+      const oldest = map.keys().next()
+      if (oldest.done) break
+      map.delete(oldest.value)
+    }
+  }
+
   createEffect(() => {
     const epoch = props.epoch
     if (!props.querying && props.matching === 0 && (segmentsEpoch() !== epoch || segmentsRequestKey() !== props.requestKey)) {
@@ -820,6 +962,10 @@ export function SoundTable(props: Props) {
       props.onToggleFavorite(found.row)
       return
     }
+    // The cover cell handles its own click and stops it from reaching here. This
+    // guard is the belt to that braces: a click that lands on the cell's padding
+    // (not the image) must still filter, never select.
+    if (target instanceof Element && target.closest('.cell.cover')) return
     handleRowClick(found.row, found.index, event)
   }
 
@@ -1068,7 +1214,7 @@ export function SoundTable(props: Props) {
                         }}
                         draggable={true}
                       >
-                        {columns().map((col) => cellNode(col.key, currentRow))}
+                        {columns().map((col) => cellNode(col.key, currentRow, thumbs, props.onCoverSearch))}
                       </div>
                     )
                   }}

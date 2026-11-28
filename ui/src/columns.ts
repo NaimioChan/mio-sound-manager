@@ -16,6 +16,7 @@ import { t } from './i18n'
  */
 export type SortKey =
   | 'favorite'
+  | 'cover'
   | 'filename'
   | 'category'
   | 'ucsCategory'
@@ -47,6 +48,10 @@ export interface Column {
 
 export const COLUMNS: Column[] = [
   { key: 'favorite', label: () => '★', defaultWidth: 32, minWidth: 32, pinned: true, resizable: false },
+  // The cover column is fixed: it holds one 24px picture on a 28px row, and a
+  // resized 36px track would either crop it or float it in a sea of empty. It can
+  // be hidden; that is the choice worth offering.
+  { key: 'cover', label: () => t('col.cover'), defaultWidth: 36, minWidth: 36, resizable: false },
   { key: 'filename', label: () => t('col.name'), defaultWidth: 236, minWidth: 120, resizable: true },
   { key: 'category', label: () => t('col.category'), defaultWidth: 100, minWidth: 64, resizable: true },
   { key: 'ucsCategory', label: () => t('col.ucsCategory'), defaultWidth: 92, minWidth: 56, resizable: true },
@@ -73,6 +78,7 @@ export const COLUMNS: Column[] = [
  */
 export const SORT_WIRE: Record<SortKey, string> = {
   favorite: 'favorite',
+  cover: 'cover',
   filename: 'filename',
   category: 'category',
   ucsCategory: 'ucs_category',
@@ -91,6 +97,7 @@ export const SORT_WIRE: Record<SortKey, string> = {
  */
 export const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   favorite: 'desc',
+  cover: 'asc',
   filename: 'asc',
   category: 'asc',
   ucsCategory: 'asc',
@@ -119,6 +126,12 @@ const PINNED_KEYS = new Set(COLUMNS.filter((c) => c.pinned).map((c) => c.key))
  * Stored as a plain list of keys rather than an index per column: a key that is
  * no longer in `COLUMNS` simply drops out on load, and a column added later
  * appears at the end instead of vanishing because it was not in a stale list.
+ *
+ * `cover` is the exception, and the reason this function has a migration at all:
+ * appended at the end it would sit past Description on every profile that existed
+ * before it, which is not where a picture column belongs. A stored order without
+ * it gets it inserted after the star, once; after that the user's own drag order
+ * is the truth.
  */
 function loadColumnOrder(): SortKey[] {
   let stored: unknown
@@ -134,6 +147,13 @@ function loadColumnOrder(): SortKey[] {
   const order = [...seen, ...ALL_KEYS.filter((k) => !seen.includes(k))]
   const favorite = order.indexOf('favorite')
   if (favorite > 0) order.unshift(...order.splice(favorite, 1))
+  const cover = order.indexOf('cover')
+  if (cover > 1 && !seen.includes('cover')) {
+    // The star is pinned first, so "after favorite" is index 1.
+    order.splice(1, 0, ...order.splice(cover, 1))
+    const next = order
+    store(ORDER_KEY, next)
+  }
   return order
 }
 
